@@ -8,6 +8,13 @@
       "when": 1784808473785,
       "tag": "0000_crazy_justin_hammer",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1784811240300,
+      "tag": "0001_powerful_mandroid",
+      "breakpoints": true
     }
   ]
 }

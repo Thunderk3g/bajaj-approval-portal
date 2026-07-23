@@ -15,10 +15,14 @@ export const auditLog = pgTable(
   'audit_log',
   {
     id: bigserial('id', { mode: 'number' }).primaryKey(),
-    // actorId nulls out if the user is removed, but actorEmail and actorRole are
-    // plain copies so the row stays readable — which is precisely when an audit
-    // trail matters most.
-    actorId: text('actor_id').references(() => user.id, { onDelete: 'set null' }),
+    // RESTRICT, not SET NULL. Spec section 4.2: users are never hard-deleted —
+    // deactivation sets is_active = false. SET NULL was unreachable anyway: the
+    // FK issues an UPDATE on audit_log, which the append-only trigger rejects,
+    // so deleting any audited user failed outright. Enforcing the no-delete rule
+    // here is better than widening the immutability trigger to permit it.
+    // actorEmail and actorRole remain plain copies so the row stays readable
+    // even if the user record is later renamed or re-roled.
+    actorId: text('actor_id').references(() => user.id, { onDelete: 'restrict' }),
     actorEmail: text('actor_email'),
     actorRole: text('actor_role'),
     action: text('action').notNull(),

@@ -3,7 +3,12 @@ import { config } from 'dotenv';
 
 config({ path: '.env.local' });
 
-process.env.NODE_ENV = 'test';
+// Next's ambient types declare process.env.NODE_ENV readonly, which makes a
+// plain assignment a build-time type error (`next build` type-checks this file
+// too). The write itself still has to happen before @/db/client is imported —
+// that is how the pool picks DATABASE_URL_TEST over DATABASE_URL — so it goes
+// through a cast rather than being dropped.
+(process.env as { NODE_ENV?: string }).NODE_ENV = 'test';
 
 // A suite that truncates tables must not be one typo away from the dev database.
 if (!process.env.DATABASE_URL_TEST) {
