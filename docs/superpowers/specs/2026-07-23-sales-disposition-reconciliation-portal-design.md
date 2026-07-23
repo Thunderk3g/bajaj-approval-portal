@@ -55,13 +55,23 @@ add credentials or infrastructure that the current build does not need.
 | Auth | Better Auth | Database-backed sessions, role support, no self-signup |
 | Database | PostgreSQL 16 via Docker Compose | No credentials to source; `jsonb`, `numeric`, and partial indexes all used |
 | ORM | Drizzle + drizzle-kit | Typed schema, parameterized SQL only, migrations in-repo |
-| Excel | ExcelJS | Reads and writes `.xlsx`, supports cell fills and comments needed for the export |
+| Excel read | SheetJS (`xlsx` 0.20.3, official CDN tarball) | The source file is `.xlsb`, which ExcelJS cannot read at all |
+| Excel write | ExcelJS | Cell fills and comments needed by the export; SheetJS CE does not write them |
 | UI | Tailwind CSS + shadcn/ui | Accessible primitives; no design system to build from scratch |
 | Validation | Zod | One schema shared by client hints and server enforcement |
 | Tests | Vitest | Unit coverage of pure logic plus integration against a throwaway database |
 
-**Money is `numeric(18,2)`, never a float.** APE and FRP are premium values; binary floating
-point would introduce rounding drift across import, correction, and export.
+**Money is `numeric(18,2)`, never a float.** ANP and FP are premium values; binary floating
+point would introduce rounding drift across import, correction, and export. The source data
+already contains fractional premiums (e.g. `FP = 4195.42`), so this is not hypothetical.
+
+**Two Excel libraries is a deliberate split, not redundancy.** The source workbook is `.xlsb`
+(Excel Binary), a format ExcelJS does not support in any version. SheetJS reads it; ExcelJS
+writes the styled export. Neither library alone covers both ends.
+
+`npm install https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz` — the official SheetJS
+distribution, not the abandoned `xlsx` package on the public npm registry, whose last published
+version (0.18.5) carries unpatched prototype-pollution and ReDoS advisories.
 
 ## 4. Security model
 
@@ -156,16 +166,33 @@ and a real error report before deciding to commit.
 
 ### 5.4 `sales_record` — current master state
 
-Unique on `apps_no`. Columns: `sm_id`, `sm_name`, `policy_no`, `ape numeric(18,2)`,
-`frp numeric(18,2)`, `autopay`, `mapping`, `issuance_date date`, `others`, plus `extra` (jsonb,
-holding every source column that was not mapped to a canonical field), `source_batch_id`,
-`source_row_number`, `current_version`, `has_corrections`, and timestamps.
+Unique on `apps_no`. First-class columns, named after the real source headers:
 
-Preserving unmapped columns in `extra` means no data is lost on import even when the incoming
+| Group | Columns |
+|---|---|
+| Identity | `apps_no` (text), `policy_no` (text), `client_name`, `lead_id` |
+| Attribution | `sm_id`, `sm_name`, `tl_id`, `tl_name`, `ccm_id`, `ccm_name`, `location` |
+| Dates | `login_date date`, `issued_date date` |
+| Money | `fp numeric(18,2)`, `anp numeric(18,2)` |
+| Product | `product_name`, `product_type`, `product_variant`, `booking_frequency`, `pay_mode` |
+| Status | `status`, `status_2`, `autopay` |
+
+Plus `extra` (jsonb, every source column not mapped to a first-class field — `FY`,
+`Login_Month`, `Issued_Month`, `Login Week`, `Source`, `RECEIPT_NO`, `Product_Code`, `PPT`,
+`BT`, `WROP`, `BASBA`, `LA Occupation`, `IP_GENDER`), `source_batch_id`, `source_row_number`,
+`current_version`, `has_corrections`, and timestamps.
+
+`apps_no` and `policy_no` are **text**, not numeric, even though the source stores them as
+numbers. They are identifiers, never arithmetic operands; storing them as text prevents both
+scientific-notation formatting (the source workbook already displays `5.92E+09` in places) and
+any future precision loss if identifier length grows.
+
+Preserving unmapped columns in `extra` means no data is lost on import even when a later
 workbook carries columns this spec did not anticipate, and those values remain searchable.
 
-Indexes: unique on `apps_no`; btree on `sm_id`, `policy_no`, `issuance_date`; GIN trigram
-(`pg_trgm`) on `apps_no`, `policy_no`, and `sm_name` for substring search; GIN on `extra`.
+Indexes: unique on `apps_no`; btree on `sm_id`, `policy_no`, `issued_date`, `status`; GIN
+trigram (`pg_trgm`) on `apps_no`, `policy_no`, `client_name`, and `sm_name` for substring
+search; GIN on `extra`.
 
 ### 5.5 `sales_record_version` — history
 
@@ -228,7 +255,7 @@ hardcoded to a header spelling; the Admin confirms the mapping and sees the cons
 committing.
 
 ```
-Upload .xlsx ─► store file + hash ─► parse headers & rows into staging
+Upload .xlsb/.xlsx ─► store file + hash ─► pick sheet ─► parse rows into staging
      └─► auto-suggest mapping (fuzzy match vs canonical fields)
            └─► ADMIN CONFIRMS MAPPING  ◄── human gate
                  └─► validate + normalize + detect duplicates
@@ -237,37 +264,109 @@ Upload .xlsx ─► store file + hash ─► parse headers & rows into staging
                                    └─► upsert sales_record + write version rows
 ```
 
-### 6.1 Canonical fields
+### 6.1 Sheet selection
 
-`Apps_No`, `SM_ID`, `SM_Name`, `Policy_No`, `APE`, `FRP`, `AutoPay`, `Mapping`,
-`Issuance_Date`, `Others`. Auto-suggestion normalizes candidate headers (lowercase, strip
-non-alphanumerics) and scores them against each canonical field's alias list, e.g. `Apps_No`
-matches `application no`, `app number`, `appno`. The Admin can override every suggestion, and
-can mark a column as unmapped — unmapped columns land in `extra`, not the bin.
+The source is a 10-sheet dashboard workbook, not a flat extract. The Admin picks the sheet;
+`Login Data` is the transaction sheet and the default suggestion. Sheet choice matters for
+performance as well as correctness: parsing all 10 sheets takes **37 s**, while parsing only
+`Login Data` and `Manpower` takes **2.7 s**, because `Lead Dump` alone holds 54,508 rows and
+16,383 columns of mostly-empty formatting. Import therefore passes an explicit sheet allowlist
+to SheetJS rather than reading the whole workbook.
 
-### 6.2 Normalization
+Header row is configurable per batch and defaults to 1. This is not theoretical: `Login Data`
+has headers on row 1, but `SM Summary` has totals on row 1 and headers on row 2.
+
+The mapping UI must tolerate malformed header rows — `Lead Dump` has two columns both titled
+`Location` and trailing untitled columns. Blank headers are shown as `(column N)` and duplicate
+headers are disambiguated by index, so neither silently collides.
+
+### 6.2 Canonical fields
+
+The original requirement named ten fields. Four do not exist under those names in the real
+workbook, and the mapping below is the correction:
+
+| Requirement | Actual source column | Note |
+|---|---|---|
+| `Apps_No` | `Apps_No` | Stored numeric, 10 digits |
+| `SM_ID` | `SM_ID` | |
+| `SM_Name` | `SM_Name` | |
+| `Policy_No` | `Policy_No` | Stored numeric |
+| `APE` | **`ANP`** | Annualised New Premium |
+| `FRP` | **`FP`** | First Premium. `ANP = FP × frequency multiplier`, verified exact (12 for Monthly, 1 for Annual) |
+| `AutoPay` | `AutoPay` | |
+| `Issuance_Date` | **`Issued_Date`** | Excel serial numbers |
+| `Mapping` | **no such column** | See §6.6 — it is SM attribution, held in a separate sheet |
+| `Others` | **no such column** | Correct as-is: a catch-all correction category, not a field |
+
+Auto-suggestion normalizes candidate headers (lowercase, strip non-alphanumerics) and scores
+them against each canonical field's alias list — so `ANP` resolves to APE, `FP` to FRP, and
+`Issued_Date` to issuance date without the Admin having to know the rename. Every suggestion is
+overridable, and a column can be left unmapped, in which case it lands in `extra`, not the bin.
+
+### 6.3 Normalization
+
+**The `-` sentinel is the single most important rule here.** The source workbook uses a literal
+hyphen, not an empty cell, to mean "no value": 86% of `Source`, 100% of `BASBA`, `LA
+Occupation` and `IP_GENDER`, and 29% of `AutoPay` are `-`. Treating `-` as data would make gap
+detection useless, because the fields most in need of reconciliation would all read as
+populated. Normalization maps `-`, `NA`, `N/A`, `NULL`, `#N/A` and empty to NULL, for every
+column.
 
 | Field | Rule |
 |---|---|
-| All strings | Trim; collapse internal whitespace |
-| `Apps_No` | Required; uppercase; spaces stripped. Empty is an ERROR. A value not matching `^[A-Z0-9/-]{3,50}$` is a WARNING, not a rejection |
-| `SM_ID` | Required; uppercase; trimmed. Empty is an ERROR |
-| `APE`, `FRP` | Strip currency symbols, commas, spaces; parse to `numeric(18,2)`. Blank → NULL. Negative → ERROR. Unparseable → ERROR |
-| `Issuance_Date` | Accept Excel serial numbers, native dates, and `dd/MM/yyyy`, `dd-MM-yyyy`, `yyyy-MM-dd`, `MM/dd/yyyy`. **Default interpretation is `dd/MM/yyyy`** (Indian convention), selectable per batch on the mapping screen. Outside 1990-01-01 … today + 1 year → WARNING |
-| `AutoPay` | `Y`/`YES`/`TRUE`/`1`/`ACTIVE` → `Yes`; `N`/`NO`/`FALSE`/`0`/`INACTIVE` → `No`; blank → NULL; anything else → WARNING, raw value retained |
-| `Mapping`, `Others` | Free text, trimmed |
+| All strings | Trim; collapse internal whitespace; sentinel values above → NULL |
+| `Apps_No` | Required. Read as a **raw number, converted to an integer string** — never via display text, which yields `5.92E+09`. Empty is an ERROR. Observed: 10 digits, all numeric |
+| `SM_ID` | Required; **uppercased**; trimmed. Empty is an ERROR |
+| `Policy_No` | Raw number → integer string. NULL when absent |
+| `ANP` (APE), `FP` (FRP) | Strip currency symbols, commas, spaces; parse to `numeric(18,2)`. Blank → NULL. Negative → ERROR. Unparseable → ERROR |
+| `Issued_Date`, `Login_Date` | Accept Excel serial numbers (the observed form), native dates, and `dd/MM/yyyy`, `dd-MM-yyyy`, `yyyy-MM-dd`, `MM/dd/yyyy`. **Default interpretation `dd/MM/yyyy`**, selectable per batch. Serials convert on the 1900 system with the Lotus leap-year offset. Outside 1990-01-01 … today + 1 year → WARNING |
+| `AutoPay` | `Y`/`YES`/`TRUE`/`1`/`ACTIVE` → `Yes`; `N`/`NO`/`FALSE`/`0`/`INACTIVE` → `No`; sentinel or blank → NULL; anything else → WARNING, raw retained |
+| `Status`, `Status 2` | Uppercased, trimmed |
 
-Ambiguous dates are the one place where silent guessing would corrupt data invisibly —
+Uppercasing `SM_ID` is not cosmetic. The file contains 164 distinct `SM_ID` values that collapse
+to **158** once uppercased — six reps appear in both cases (`c2cm21350` and `C2CM21350`).
+Without normalization those six would each see a partial view of their own book, with the
+remainder invisible and unfixable.
+
+Ambiguous dates are the other place where silent guessing corrupts data invisibly —
 `03/04/2026` is either 3 April or 4 March. Hence the explicit per-batch format selector rather
 than heuristic detection.
 
-### 6.3 Severity model
+### 6.4 Gap detection is status-conditional
+
+A blank field is not automatically a defect, and the data proves it:
+
+| Status | Rows | No `Issued_Date` | No `Policy_No` | No `AutoPay` |
+|---|---|---|---|---|
+| ISSUED | 839 | **0** | **3** | **249** |
+| PENDING | 174 | 105 | 105 | 113 |
+| REJECTED | 158 | 0 | 0 | 84 |
+
+Every blank `Issued_Date` in the file belongs to a PENDING application — which is correct, not
+broken: an unissued policy has no issuance date. A naive "field is empty" rule would raise 105
+false reconciliation tasks and 108 more for `Policy_No`, burying the real work.
+
+Gap rules:
+
+- `Issued_Date` and `Policy_No` are flagged missing **only when `Status = ISSUED`.**
+- `AutoPay` is flagged missing **only when `Status = ISSUED`**, since AutoPay on a rejected or
+  pending application is not actionable.
+- Everything else is informational, shown but not counted as a gap.
+
+Applying these rules to the June file yields **250 ISSUED rows with at least one genuine gap,
+spread across 100 of 158 reps** — a median of 6 rows per rep, maximum 30. That is the actual
+workload the portal exists to clear, and it comfortably fits the default page size of 25.
+
+The three ISSUED rows with no `Policy_No` are true anomalies and should surface at the top of
+the Admin dashboard.
+
+### 6.5 Severity model
 
 **ERROR** blocks a row from being committed. **WARNING** allows commit and is surfaced in the
 report and on the record. The Admin can commit a batch containing warnings; rows with errors
 are skipped and listed with their row numbers, so nothing fails silently.
 
-### 6.4 Duplicate `Apps_No`
+### 6.6 Duplicate `Apps_No`
 
 Duplicates are detected on normalized `Apps_No` both **within** the incoming batch and
 **against** existing master records. Within-batch duplicates are flagged with a pointer to the
@@ -275,7 +374,28 @@ first occurrence; the first occurrence is treated as authoritative and later one
 `DUPLICATE` and excluded from commit unless the Admin explicitly selects one. Duplicates are
 never silently dropped — the count appears on the batch summary and the rows are listed.
 
-### 6.5 Re-import conflict policy
+In the June file `Apps_No` is **1,171 distinct across 1,171 rows — no duplicates at all.** The
+detection stays, because the risk is not within one month's extract but across the monthly
+re-uploads the master table accumulates (§6.7), where the same application legitimately reappears.
+
+### 6.7 `Mapping` means SM attribution
+
+There is no `Mapping` column. The workbook instead carries a separate sheet, `Mapping Changes
+Latest`, holding 292 rows of exactly two columns: `App Number` → `SM ID`. A "mapping" issue is
+therefore **an application credited to the wrong salesperson**, and a mapping correction
+reassigns `sm_id` (and `sm_name` with it).
+
+Those 292 applications have **zero overlap** with the 1,171 in `Login Data` — the app-number
+ranges differ by a full 200 million (5.91bn vs 6.16bn), meaning they are prior-month
+applications. Two consequences:
+
+1. The master table **accumulates across monthly uploads**; it is not scoped to one batch. A rep
+   must be able to raise a correction against a record imported months earlier.
+2. `Mapping Changes Latest` is imported as an optional secondary sheet, creating pre-approved
+   mapping corrections attributed to the Admin who uploaded them, so existing reassignments
+   carry into the system with provenance rather than being retyped.
+
+### 6.8 Re-import conflict policy
 
 When a batch contains an `Apps_No` that already exists:
 
@@ -317,14 +437,47 @@ A Sales user may withdraw their own request while it is `PENDING` or `RETURNED`.
 
 ### 7.1 Categories
 
-`AutoPay`, `Mapping`, and `Issuance Date` map to a fixed canonical field. `Others` requires the
-salesperson to name the field and supply a description; a Zod discriminated union enforces this
-on the server and the `CHECK` constraint of §5.6 enforces it in the database. Client-side
-requiredness is a convenience, never the control.
+| Category | Target field | Notes |
+|---|---|---|
+| `AUTOPAY` | `autopay` | `Yes` / `No`; the dominant workload at 249 ISSUED gaps |
+| `MAPPING` | `sm_id` (+ `sm_name`) | Reassigns the sale to a different rep — see §7.2 |
+| `ISSUANCE_DATE` | `issued_date` | Date picker, bounded to the batch's plausible range |
+| `OTHERS` | rep names the field | Field name **and** description both required |
+
+`Others` requiredness is enforced by a Zod discriminated union on the server and by the `CHECK`
+constraint of §5.6 in the database. Client-side requiredness is a convenience, never the control.
 
 At least one attachment is required to submit.
 
-### 7.2 Applying an approval
+### 7.2 Mapping claims: the scoping exception
+
+Mapping corrections break the rule that a Sales user only sees their own `SM_ID`. A rep whose
+sale was credited to someone else cannot see that record — so under strict scoping they could
+never raise the very claim the category exists for. This is the one place where the security
+model and the business requirement genuinely conflict, and it needs an explicit, narrow
+exception rather than an accidental one.
+
+The exception:
+
+- A Sales user may perform an **exact-match `Apps_No` lookup** across all records. Nothing else —
+  no wildcards, no partial match, no browsing, no listing, no filtering by another `SM_ID`.
+- The result is a **restricted projection**: `Apps_No`, `Client_Name`, `Product_Name`,
+  `Status`, `Issued_Date`, and the current owner's `SM_Name`. No premium figures, no policy
+  number, no contact fields, no attachments.
+- Rate-limited to 20 lookups per user per hour, so the endpoint cannot be walked to enumerate
+  the book. `Apps_No` is a 10-digit space and enumeration would be infeasible anyway, but the
+  limit makes intent visible in the audit log.
+- Every lookup writes an audit row, whether or not it matched.
+
+Enumeration by lookup is the threat here, and the restricted projection plus rate limit is what
+makes the exception safe to grant.
+
+On approval of a mapping claim the record moves to the claimant's `SM_ID`. Both the losing and
+gaining rep are notified, since the record silently vanishing from one rep's list would
+otherwise look like data loss. The approver sees both reps' identities side by side before
+deciding.
+
+### 7.3 Applying an approval
 
 A single database transaction:
 
@@ -384,10 +537,11 @@ are Server Actions.
 
 ### 9.1 Search, filtering, pagination
 
-Search spans `Apps_No`, `Policy_No`, `SM_Name`, and the preserved `extra` columns — so a
-customer name or mobile column present in the source workbook becomes searchable without a
-schema change. Trigram indexes back substring matching. Filters: batch, `SM_ID` (Admin only),
-issuance date range, AutoPay present/absent, has-corrections, and correction status.
+Search spans `Apps_No`, `Policy_No`, `Client_Name`, `SM_Name`, and the preserved `extra`
+columns, all backed by trigram indexes for substring matching. `Client_Name` is the "customer
+details" axis the requirement asked for; it is fully populated in the source. Filters: batch,
+`SM_ID` (Admin only), `Status`, issued-date range, gap type (missing AutoPay / issuance date /
+policy number, per the status-conditional rules of §6.4), has-corrections, and correction status.
 Pagination is offset-based with a total count and a page-size selector, defaulting to 25 —
 keyset pagination does not combine cleanly with arbitrary sort columns and trigram relevance
 ordering, and the record volumes here do not justify the complexity.
@@ -398,7 +552,8 @@ ordering, and the record volumes here do not justify the complexity.
 |---|---|
 | Correction submitted or resubmitted | All active Approvers |
 | Approved, rejected, or returned | The submitting salesperson |
-| Batch committed | Sales users whose `SM_ID` appears in that batch |
+| Mapping claim approved | **Both** the gaining and the losing rep (§7.2) |
+| Batch committed | Sales users whose `SM_ID` appears in that batch, with their gap count |
 | Export generated | The requesting Admin |
 
 Delivered in-app via a bell with unread count, polled on an interval. Notifications link
@@ -406,10 +561,18 @@ directly to the relevant request or record.
 
 ## 11. Testing
 
-**Unit (Vitest)** — the pure logic that carries the risk: header fuzzy-matching, value
-normalization (`AutoPay` vocabulary, currency stripping, all date formats including Excel
-serials), duplicate detection, severity classification, the correction Zod schemas including
-the `Others` branch, and Excel export construction.
+**Unit (Vitest)** — the pure logic that carries the risk: header fuzzy-matching (including the
+`ANP`→APE and `FP`→FRP renames), the `-` sentinel normalization, `SM_ID` uppercasing,
+`Apps_No` numeric-to-string conversion (asserting no scientific notation), `AutoPay`
+vocabulary, currency stripping, Excel serial-date conversion, status-conditional gap detection
+against the §6.4 table, duplicate detection, severity classification, the correction Zod
+schemas including the `Others` branch, and Excel export construction.
+
+A trimmed `.xlsb` fixture cut from the real workbook — a few hundred rows preserving the
+sentinel values, mixed-case `SM_ID`s, serial dates, and all three `Status` values — is
+committed as the parser test input. The status-conditional gap tests assert the exact counts
+from §6.4, so a regression that reintroduces naive blank-checking fails loudly rather than
+quietly flooding the queue.
 
 **Integration (Vitest against a `sales_portal_test` database)** — batch commit including the
 re-import conflict policy; the approval transaction including the concurrent-approval race;
@@ -421,30 +584,62 @@ ones that fail loudly if a future refactor drops a scoping predicate.
 
 ```
 docker compose up -d      # PostgreSQL 16 on :5432
-npm install
+npm install               # includes the SheetJS CDN tarball pinned in package.json
 npm run db:migrate
 npm run setup:admin       # interactive; refuses once any user exists
 npm run dev
 ```
 
+The SheetJS dependency resolves to `https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`, so
+`npm install` requires network access to that host on first run. This is worth knowing before
+deploying behind a restrictive proxy; the tarball can be vendored into the repo if outbound
+access is not available.
+
 `storage/` is git-ignored and holds `uploads/`, `proofs/`, and `exports/`. In a server
 deployment it is a mounted volume, not container-local disk.
 
-## 13. Pending inputs from the master workbook
+## 13. Source data profile
 
-The user is supplying the real Excel file. The design does not block on it — column mapping is
-an admin-driven runtime step, header spellings are not hardcoded, and unmapped columns are
-preserved in `extra`. On receipt, these are confirmed and the alias lists and defaults tuned:
+Measured from `Businesses Dashboard Jun'26.xlsb` (9.14 MB, 10 sheets) on 2026-07-23. Every
+question left open in the first draft is now answered from the file itself.
 
-1. Exact header spellings, sheet name, and header row index.
-2. Whether a customer name / mobile / email column exists. If so it is promoted from `extra` to
-   a first-class indexed column, since the requirement calls for searching by customer details.
-3. The date format actually used in `Issuance_Date`, to set the per-batch default.
-4. The real value vocabulary in `AutoPay` and `Mapping`.
-5. Whether `Apps_No` is in fact unique in production data, and what a legitimate duplicate means
-   if it is not.
-6. What `Mapping` and `Others` contain semantically, which determines the field labels shown to
-   salespeople.
+### 13.1 Sheets
+
+| Sheet | Rows | Role |
+|---|---|---|
+| `Login Data` | 1,171 × 36 | **The master transaction sheet.** Headers row 1 |
+| `Manpower` | 186 × 7 | Rep roster: `SM_ID`, `SM_Name`, TL, CCM, Location. 180 distinct IDs — the source for provisioning Sales accounts |
+| `Mapping Changes Latest` | 292 × 2 | Prior reassignments, `App Number` → `SM ID` |
+| `Product Details` | 46 × 3 | Product code → name → type lookup |
+| `SM Summary` | 237 × 6 | Per-rep aggregates. **Headers on row 2**, totals on row 1 |
+| `Lead Dump` | 54,508 × 16,383 | Lead-stage data. Duplicate `Location` headers; mostly empty formatting |
+| `Jan Target`, `BFL & BAU`, `Overall Dashboard`, `Dash` | — | Presentation sheets, not imported |
+
+### 13.2 Confirmed facts
+
+1. **`Apps_No` is unique** — 1,171 distinct across 1,171 rows, numeric, 10 digits. Duplicate
+   detection is retained for cross-month accumulation, not within-file collisions.
+2. **`Client_Name` exists and is 100% populated**, answering the "search by customer details"
+   requirement. Promoted to a first-class, trigram-indexed column.
+3. **Dates are Excel serial numbers.** `Issued_Date` spans 46176–46211 → 2026-06-03 to
+   2026-07-08. `Login_Date` likewise.
+4. **`AutoPay` has no `No` value.** Only `Y` (725), `-` (339), and empty (107). The field is
+   effectively "confirmed" or "unknown", which is precisely why 38% of it needs reconciling.
+5. **`Status` has three values:** ISSUED 839, PENDING 174, REJECTED 158. `Status 2` has 14 and
+   is the granular sub-disposition (`FR-AR`, `PSTPNE6`, `DECLINED`, `C_OFFER`, …).
+6. **158 distinct reps** after uppercasing (164 before). Median 6 rows per rep, max 30.
+7. **7 `SM_ID`s in `Login Data` have no `Manpower` roster entry**, including one purely numeric
+   ID (`512454`). Account provisioning must handle orphan IDs rather than assuming the roster is
+   complete — an orphan gets an account on first appearance, flagged for Admin review.
+8. **`ANP = FP × frequency multiplier`**, exactly (×12 Monthly, ×1 Annual). Useful as a
+   validation warning: a row whose ANP/FP ratio contradicts its `Booking_Frequency` is
+   suspicious and worth surfacing, though not an error.
+
+### 13.3 Deferred
+
+`Lead Dump` (54,508 rows) is not imported in this build. It is lead-stage data with no
+`Apps_No`, so it cannot join to the master records and serves no reconciliation purpose today.
+Importing it would multiply the data volume forty-fold for no current benefit.
 
 ## 14. Build sequence
 
