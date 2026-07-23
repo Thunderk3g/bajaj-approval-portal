@@ -380,10 +380,14 @@ re-uploads the master table accumulates (§6.7), where the same application legi
 
 ### 6.7 `Mapping` means SM attribution
 
+**Confirmed by the requester, 2026-07-23:** "Mapping" means *which `SM_ID` / `SM_Name` is
+assigned to which `Apps_No`.*
+
 There is no `Mapping` column. The workbook instead carries a separate sheet, `Mapping Changes
-Latest`, holding 292 rows of exactly two columns: `App Number` → `SM ID`. A "mapping" issue is
+Latest`, holding 292 rows of exactly two columns: `App Number` → `SM ID`. A mapping issue is
 therefore **an application credited to the wrong salesperson**, and a mapping correction
-reassigns `sm_id` (and `sm_name` with it).
+reassigns `sm_id` and `sm_name` together — they are never allowed to diverge, so approval
+resolves the new `sm_name` from the `Manpower` roster rather than trusting free text.
 
 Those 292 applications have **zero overlap** with the 1,171 in `Login Data` — the app-number
 ranges differ by a full 200 million (5.91bn vs 6.16bn), meaning they are prior-month
@@ -472,10 +476,15 @@ The exception:
 Enumeration by lookup is the threat here, and the restricted projection plus rate limit is what
 makes the exception safe to grant.
 
-On approval of a mapping claim the record moves to the claimant's `SM_ID`. Both the losing and
-gaining rep are notified, since the record silently vanishing from one rep's list would
-otherwise look like data loss. The approver sees both reps' identities side by side before
-deciding.
+On approval of a mapping claim the record moves to the claimant's `SM_ID`, and `sm_name` is
+resolved from the `Manpower` roster to match. Both the losing and gaining rep are notified,
+since the record silently vanishing from one rep's list would otherwise look like data loss.
+The approver sees both reps' identities side by side before deciding.
+
+The losing rep is **notified, not consulted** — the approver decides. Adding a contest state
+would deadlock reconciliation whenever a rep ignores the prompt. If the losing rep disagrees
+they raise their own mapping claim, which follows the same path. The full history of every
+reassignment stays on the record's version chain, so a disputed sale can always be traced.
 
 ### 7.3 Applying an approval
 
