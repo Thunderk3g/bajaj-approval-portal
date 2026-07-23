@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sdrp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sdrp
+      POSTGRES_PASSWORD: sdrp_local_dev
+      POSTGRES_DB: sdrp
+    ports:
+      - "5432:5432"
+    volumes:
+      - sdrp-pgdata:/var/lib/postgresql/data
+      - ./docker/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sdrp -d sdrp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  sdrp-pgdata:
