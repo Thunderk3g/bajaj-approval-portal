@@ -39,6 +39,29 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  experimental: {
+    serverActions: {
+      /**
+       * Transport ceiling for Server Action bodies. Next defaults to 1 MB,
+       * which rejects the two flows this application exists for: the source
+       * workbook is 9.14 MB (spec section 13) and a correction may carry five
+       * 10 MB proof documents (section 4.4).
+       *
+       * Derived from the limits the application itself enforces, and it must
+       * stay just above both — never below:
+       *   - MAX_UPLOAD_BYTES        60 MB   src/lib/import/actions.ts
+       *   - MAX_PROOF_BYTES × 5     50 MB   src/lib/storage/files.ts
+       * 64 MB clears the larger of the two with room for multipart overhead.
+       *
+       * This is a ceiling, not the control. The size and magic-byte checks in
+       * those two modules are what actually accept or refuse a file, and they
+       * return a message naming the offending file and its size. A framework
+       * limit set below them would pre-empt those checks with an opaque
+       * failure the user cannot act on — which is exactly the bug this fixes.
+       */
+      bodySizeLimit: '64mb',
+    },
+  },
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];
   },
