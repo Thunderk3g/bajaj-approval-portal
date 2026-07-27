@@ -8,10 +8,18 @@ import type { NextConfig } from 'next';
  * middleware, which is a separate change. Everything else is locked down:
  * no framing, no plugins, no cross-origin form posts, no third-party origins
  * for scripts, styles, fonts or XHR.
+ *
+ * 'unsafe-eval' is added for the dev server ONLY: Next's React Refresh / HMR
+ * runtime compiles modules with eval(), which the strict policy forbids, so the
+ * client bundle throws on load. The production header never carries it — the
+ * ternary below keeps that guarantee in one place rather than trusting a build
+ * step to strip it out.
  */
+const isDev = process.env.NODE_ENV === 'development';
+
 const CSP = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
+  `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ''}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self'",
