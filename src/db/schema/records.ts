@@ -123,6 +123,49 @@ export const salesRecord = pgTable(
   ],
 );
 
+/**
+ * The rep roster — the `Manpower` sheet of spec section 13.1.
+ *
+ * Two jobs, both of which need a table rather than a derived query.
+ *
+ * Approving a mapping claim must resolve the gaining rep's `sm_name` from the
+ * roster rather than trusting free text (section 7.2): `sm_id` and `sm_name` are
+ * never allowed to diverge, and a typed name would let them. Deriving the name
+ * from existing `sales_record` rows instead would be circular — a rep with no
+ * records yet has no name to derive, which is precisely the case when a sale is
+ * being reassigned TO them.
+ *
+ * It is also the source for provisioning sales accounts. Seven `SM_ID`s in the
+ * June `Login Data` have no roster entry, including one purely numeric ID
+ * (512454), so `isOrphan` marks an ID seen in transaction data but absent from
+ * the roster. Those get an account on first appearance and are flagged for
+ * admin review rather than silently dropped.
+ */
+export const manpower = pgTable(
+  'manpower',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    smId: text('sm_id').notNull().unique(),
+    smName: text('sm_name'),
+    tlId: text('tl_id'),
+    tlName: text('tl_name'),
+    ccmId: text('ccm_id'),
+    ccmName: text('ccm_name'),
+    location: text('location'),
+    /** Seen in transaction data but missing from the roster — section 13.2 note 7. */
+    isOrphan: boolean('is_orphan').notNull().default(false),
+    sourceBatchId: uuid('source_batch_id').references(() => uploadBatch.id),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Mirrors the sales_record constraint: a roster row keyed by a lowercase
+    // SM_ID would never join to the records it is supposed to name.
+    check('manpower_sm_id_uppercase', sql`${t.smId} = upper(${t.smId})`),
+    index('manpower_orphan_idx').on(t.isOrphan),
+  ],
+);
+
 export const salesRecordVersion = pgTable(
   'sales_record_version',
   {

@@ -1,0 +1,290 @@
+import { z } from 'zod';
+import { CATEGORY_FIELDS, FIELD_BY_KEY, fieldLabel } from '@/lib/fields';
+import {
+  normalizeAutopay,
+  normalizeIdentifier,
+  normalizeMoney,
+  normalizeSmId,
+  normalizeStatus,
+  normalizeString,
+  type NormalizeResult,
+} from '@/lib/import/normalize';
+import { normalizeDate } from '@/lib/import/dates';
+
+/**
+ * Correction validation — spec section 7.1.
+ *
+ * A discriminated union, not one object with optional fields. The categories do
+ * not share a shape: `OTHERS` needs a field name and a description that no other
+ * branch requires, and `AUTOPAY` accepts a vocabulary of two values that would
+ * be meaningless on `ISSUANCE_DATE`. Expressed as optional fields on a single
+ * object, every one of those rules degrades into a runtime `if` that a later
+ * edit can drop silently; expressed as a union, the wrong shape does not parse.
+ *
+ * This is the SECOND of three enforcements of the "Others needs a description"
+ * rule. The form marks the field required (a convenience), this union rejects it
+ * (the control), and `correction_others_requires_description` in the database
+ * rejects it again (the backstop). Client-side requiredness is never the
+ * control: the action is reachable without the form.
+ */
+
+export const CORRECTION_CATEGORIES = ['AUTOPAY', 'MAPPING', 'ISSUANCE_DATE', 'OTHERS'] as const;
+export type CorrectionCategory = (typeof CORRECTION_CATEGORIES)[number];
+
+export const CATEGORY_LABELS: Record<CorrectionCategory, string> = {
+  AUTOPAY: 'AutoPay',
+  MAPPING: 'Mapping (SM attribution)',
+  ISSUANCE_DATE: 'Issuance date',
+  OTHERS: 'Other field',
+};
+
+export const DESCRIPTION_MAX = 2000;
+
+const OTHERS_DESCRIPTION_MESSAGE =
+  'An "Other field" correction needs a description explaining what is wrong.';
+
+/**
+ * The `<input type="date">` wire format, and the only one accepted here.
+ *
+ * The importer takes a per-batch `dateFormat` because a workbook can spell
+ * dates any way it likes. A correction form cannot: `03/04/2026` is either
+ * 3 April or 4 March, and a wrong guess corrupts an issuance date in a way that
+ * leaves no trace. The browser always submits ISO, so ISO is all we accept.
+ */
+const FORM_DATE_FORMAT = 'yyyy-MM-dd' as const;
+
+/** Matches the importer's plausibility floor so the two cannot disagree. */
+export const ISSUED_DATE_MIN = '1990-01-01';
+
+/**
+ * One day of headroom past today, not zero.
+ *
+ * The server compares in UTC and the reps work in IST (UTC+5:30), so for five
+ * and a half hours every evening a rep's "today" is already tomorrow in UTC.
+ * Without the headroom they would be told today's date is in the future.
+ */
+export function issuedDateMax(now: Date = new Date()): string {
+  return new Date(now.getTime() + 86_400_000).toISOString().slice(0, 10);
+}
+
+export function isPlausibleIssuedDate(iso: string, now: Date = new Date()): boolean {
+  return iso >= ISSUED_DATE_MIN && iso <= issuedDateMax(now);
+}
+
+/**
+ * `OTHERS` may name any canonical field except the record's own identity.
+ *
+ * `apps_no` is the unique key every correction, version row and audit entry
+ * points at. "Correcting" it would either collide with another record or orphan
+ * the request's own history — a re-import is the way to fix a wrong application
+ * number, not a correction.
+ */
+export const OTHERS_FORBIDDEN_FIELDS: ReadonlySet<string> = new Set(['appsNo']);
+
+export const OTHERS_FIELD_CHOICES = CATEGORY_FIELDS.OTHERS.filter(
+  (key) => !OTHERS_FORBIDDEN_FIELDS.has(key),
+);
+
+/**
+ * Routes a proposed value through the SAME normalizer the importer uses.
+ *
+ * Without this a correction becomes a back door around section 6.3: a rep types
+ * `y` for AutoPay or `c2cm21350` for an SM_ID, the approver waves it through,
+ * and the record now holds a form the importer would never have produced — one
+ * that splits the rep's book in half, or that the `sales_record_sm_id_uppercase`
+ * CHECK rejects outright at the moment of applying. Normalizing here means a
+ * correction can only ever store a value the import path would also have stored.
+ */
+export function normalizeProposedValue(fieldKey: string, raw: unknown): NormalizeResult<string> {
+  const field = FIELD_BY_KEY.get(fieldKey);
+
+  if (!field) {
+    return {
+      value: null,
+      issues: [
+        {
+          field: fieldKey,
+          code: 'FIELD_UNKNOWN',
+          severity: 'ERROR',
+          message: `"${fieldKey}" is not a field on a sales record.`,
+        },
+      ],
+    };
+  }
+
+  // SM_ID is registered as plain text but is not plain text: it is the scoping
+  // key, and the mixed-case pairs in the source (`c2cm21350` / `C2CM21350`) are
+  // the same rep. Uppercasing is what keeps a book whole.
+  if (fieldKey === 'smId') return normalizeSmId(raw);
+
+  switch (field.kind) {
+    case 'identifier':
+      return normalizeIdentifier(raw, fieldKey);
+    case 'date':
+      return normalizeDate(raw, FORM_DATE_FORMAT, field.label);
+    case 'money':
+      return normalizeMoney(raw, fieldKey);
+    case 'autopay':
+      return normalizeAutopay(raw);
+    case 'status':
+      return normalizeStatus(raw);
+    case 'text':
+      return { value: normalizeString(raw), issues: [] };
+  }
+}
+
+/* ------------------------------------------------------------------ pieces */
+
+const appsNoField = z
+  .string()
+  .trim()
+  .min(1, 'Enter the application number.')
+  .max(64, 'That is not an application number.');
+
+const optionalDescription = z
+  .string()
+  .trim()
+  .max(DESCRIPTION_MAX, `Keep the description under ${DESCRIPTION_MAX} characters.`)
+  .optional()
+  .transform((value) => (value && value.length > 0 ? value : null));
+
+/* ---------------------------------------------------------------- branches */
+
+const autopayBranch = z.object({
+  category: z.literal('AUTOPAY'),
+  appsNo: appsNoField,
+  // Parsed through the importer's vocabulary so `y`, `YES` and `Yes` all land on
+  // the stored value, and anything outside the vocabulary is refused rather than
+  // kept as free text — the whole point of the category is a binary answer.
+  proposedValue: z
+    .string()
+    .trim()
+    .transform((raw) => normalizeAutopay(raw).value ?? '')
+    .refine((value) => value === 'Yes' || value === 'No', {
+      message: 'AutoPay must be either Yes or No.',
+    }),
+  description: optionalDescription,
+});
+
+const mappingBranch = z.object({
+  category: z.literal('MAPPING'),
+  appsNo: appsNoField,
+  // The SM_ID the sale should move to. The service additionally pins this to the
+  // claimant's own SM_ID — see section 7.2: approval moves the record to the
+  // *claimant*, so a rep reassigning a sale to a third party would produce an
+  // approval that does something other than what the request said.
+  proposedValue: z
+    .string()
+    .trim()
+    .transform((raw) => normalizeSmId(raw).value ?? '')
+    .refine((value) => value.length > 0, { message: 'Enter the SM ID the sale belongs to.' }),
+  description: optionalDescription,
+});
+
+const issuanceDateBranch = z.object({
+  category: z.literal('ISSUANCE_DATE'),
+  appsNo: appsNoField,
+  proposedValue: z
+    .string()
+    .trim()
+    .transform((raw) => normalizeDate(raw, FORM_DATE_FORMAT, 'Issued date').value ?? '')
+    .refine((value) => value !== '' && isPlausibleIssuedDate(value), {
+      message: `Enter an issuance date between ${ISSUED_DATE_MIN} and today.`,
+    }),
+  description: optionalDescription,
+});
+
+const othersBranch = z.object({
+  category: z.literal('OTHERS'),
+  appsNo: appsNoField,
+  fieldName: z
+    .string()
+    .trim()
+    .min(1, 'Choose the field that needs correcting.')
+    .refine((key) => FIELD_BY_KEY.has(key) && !OTHERS_FORBIDDEN_FIELDS.has(key), {
+      message: 'That is not a field a correction can change.',
+    }),
+  proposedValue: z.string().trim().min(1, 'Enter the value the field should hold.'),
+  description: z
+    .string({ error: OTHERS_DESCRIPTION_MESSAGE })
+    .trim()
+    .min(1, OTHERS_DESCRIPTION_MESSAGE)
+    .max(DESCRIPTION_MAX, `Keep the description under ${DESCRIPTION_MAX} characters.`),
+});
+
+export const correctionSubmitSchema = z
+  .discriminatedUnion('category', [
+    autopayBranch,
+    mappingBranch,
+    issuanceDateBranch,
+    othersBranch,
+  ])
+  // The other three branches know their target field at compile time and
+  // normalize in-branch. OTHERS only learns it from a sibling property, so its
+  // value check has to happen once both are parsed.
+  .superRefine((input, ctx) => {
+    if (input.category !== 'OTHERS') return;
+
+    const { value, issues } = normalizeProposedValue(input.fieldName, input.proposedValue);
+    const blocking = issues.filter((issue) => issue.severity === 'ERROR');
+
+    if (value === null || blocking.length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['proposedValue'],
+        message: blocking[0]?.message ?? `Enter a valid ${fieldLabel(input.fieldName)}.`,
+      });
+    }
+  });
+
+export type CorrectionSubmitInput = z.infer<typeof correctionSubmitSchema>;
+export type CorrectionSubmitRawInput = z.input<typeof correctionSubmitSchema>;
+
+/**
+ * The record column a parsed submission targets.
+ *
+ * Reads the category-to-field table out of `CATEGORY_FIELDS` rather than
+ * restating it, so the registry stays the single place that decides which field
+ * a category owns.
+ */
+export function targetFieldFor(input: CorrectionSubmitInput): string {
+  if (input.category === 'OTHERS') return input.fieldName;
+
+  const [field] = CATEGORY_FIELDS[input.category];
+  if (!field) throw new Error(`No target field registered for category ${input.category}`);
+  return field;
+}
+
+/* --------------------------------------------------------- other envelopes */
+
+export const requestIdSchema = z.uuid('That is not a request id.');
+
+export const resubmitSchema = z.object({
+  requestId: requestIdSchema,
+  proposedValue: z.string(),
+  description: z.string().optional(),
+});
+
+export type ResubmitInput = z.infer<typeof resubmitSchema>;
+
+export const withdrawSchema = z.object({
+  requestId: requestIdSchema,
+  reason: z.string().trim().max(DESCRIPTION_MAX).optional(),
+});
+
+/**
+ * The section 7.2 lookup input.
+ *
+ * Deliberately narrow. Exact match only: no wildcard, no prefix, no length
+ * below the shape of a real application number. A sales user is being handed a
+ * read across every rep's book, and the only thing that keeps that safe is that
+ * it answers one question — "who owns THIS application?" — and refuses every
+ * broader one.
+ */
+export const lookupSchema = z.object({
+  appsNo: z
+    .string()
+    .trim()
+    .min(1, 'Enter the full application number.')
+    .max(64, 'That is not an application number.'),
+});

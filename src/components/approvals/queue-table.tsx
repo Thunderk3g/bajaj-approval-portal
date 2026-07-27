@@ -1,0 +1,173 @@
+import Link from 'next/link';
+import { Badge, EmptyState, StatusBadge, Table, Td, Th } from '@/components/ui';
+import { formatDateTime, orDash } from '@/lib/format';
+import type { HistoryRow, QueueRow } from '@/lib/approvals/queries';
+import { CategoryBadge } from './request-view';
+
+/**
+ * Ageing is the queue's whole point of view.
+ *
+ * A count of pending requests says nothing about whether the queue is healthy;
+ * one request sitting for eleven days is a worse failure than forty submitted
+ * this morning, and only the age column makes that visible.
+ */
+function AgeBadge({ days }: { days: number }) {
+  const tone = days >= 7 ? 'danger' : days >= 3 ? 'warning' : 'neutral';
+  return (
+    <Badge tone={tone}>
+      {days} {days === 1 ? 'day' : 'days'}
+    </Badge>
+  );
+}
+
+export function QueueTable({ rows }: { rows: QueueRow[] }) {
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        title="Nothing waiting"
+        description="No correction requests match these filters."
+      />
+    );
+  }
+
+  return (
+    <Table>
+      <thead>
+        <tr>
+          <Th>Age</Th>
+          <Th>Application</Th>
+          <Th>Category / field</Th>
+          <Th>Change</Th>
+          <Th>Submitter</Th>
+          <Th>SM_ID</Th>
+          <Th>Proof</Th>
+          <Th>Submitted</Th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.id} className="hover:bg-slate-50">
+            <Td>
+              <AgeBadge days={r.ageDays} />
+            </Td>
+            <Td>
+              <Link
+                href={`/approver/requests/${r.id}`}
+                className="font-mono font-medium text-slate-900 underline underline-offset-2 hover:text-slate-600"
+              >
+                {r.appsNo}
+              </Link>
+              <div className="mt-0.5 text-xs text-slate-500">{orDash(r.clientName)}</div>
+              {r.status === 'RETURNED' ? (
+                <div className="mt-1">
+                  <StatusBadge status="RETURNED" />
+                </div>
+              ) : null}
+            </Td>
+            <Td>
+              <CategoryBadge category={r.category} />
+              <div className="mt-0.5 text-xs text-slate-500">{r.fieldLabel}</div>
+            </Td>
+            <Td>
+              <span className="font-mono text-xs text-slate-500">{orDash(r.originalValue)}</span>
+              <span className="px-1 text-slate-400" aria-label="becomes">
+                →
+              </span>
+              <span className="font-mono text-xs font-medium text-slate-900">
+                {orDash(r.proposedValue)}
+              </span>
+            </Td>
+            <Td>
+              {orDash(r.submitterName)}
+              <div className="text-xs text-slate-500">{orDash(r.submitterEmail)}</div>
+            </Td>
+            <Td>
+              <span className="font-mono text-xs">{r.smId}</span>
+            </Td>
+            <Td>
+              {r.attachments > 0 ? (
+                <Badge tone="neutral">{r.attachments}</Badge>
+              ) : (
+                <Badge tone="warning">none</Badge>
+              )}
+            </Td>
+            <Td>
+              <span className="text-xs text-slate-600">{formatDateTime(r.submittedAt)}</span>
+              {r.resubmissionCount > 0 ? (
+                <div className="mt-0.5 text-xs text-sky-700">
+                  resubmitted ×{r.resubmissionCount}
+                </div>
+              ) : null}
+            </Td>
+          </tr>
+        ))}
+      </tbody>
+    </Table>
+  );
+}
+
+export function HistoryTable({ rows }: { rows: HistoryRow[] }) {
+  if (rows.length === 0) {
+    return <EmptyState title="No decisions match these filters." />;
+  }
+
+  return (
+    <Table>
+      <thead>
+        <tr>
+          <Th>Decided</Th>
+          <Th>Decision</Th>
+          <Th>Application</Th>
+          <Th>Category / field</Th>
+          <Th>Change</Th>
+          <Th>Approver</Th>
+          <Th>Remarks</Th>
+          <Th>Now</Th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.eventId} className="hover:bg-slate-50">
+            <Td>
+              <span className="text-xs text-slate-600">{formatDateTime(r.decidedAt)}</span>
+            </Td>
+            <Td>
+              <StatusBadge status={r.action} />
+            </Td>
+            <Td>
+              <Link
+                href={`/approver/requests/${r.requestId}`}
+                className="font-mono font-medium text-slate-900 underline underline-offset-2 hover:text-slate-600"
+              >
+                {r.appsNo}
+              </Link>
+              <div className="mt-0.5 text-xs text-slate-500">
+                {orDash(r.submitterName)} · <span className="font-mono">{r.smId}</span>
+              </div>
+            </Td>
+            <Td>
+              <CategoryBadge category={r.category} />
+              <div className="mt-0.5 text-xs text-slate-500">{r.fieldLabel}</div>
+            </Td>
+            <Td>
+              <span className="font-mono text-xs text-slate-500">{orDash(r.originalValue)}</span>
+              <span className="px-1 text-slate-400" aria-label="becomes">
+                →
+              </span>
+              <span className="font-mono text-xs text-slate-900">{orDash(r.proposedValue)}</span>
+            </Td>
+            <Td>{orDash(r.actorName)}</Td>
+            <Td className="max-w-xs">
+              <span className="text-xs text-slate-700">{orDash(r.remarks)}</span>
+            </Td>
+            <Td>
+              {/* A returned request that was resubmitted is PENDING again — the
+                  decision stays in history, but its current state has moved on. */}
+              <StatusBadge status={r.currentStatus} />
+            </Td>
+          </tr>
+        ))}
+      </tbody>
+    </Table>
+  );
+}

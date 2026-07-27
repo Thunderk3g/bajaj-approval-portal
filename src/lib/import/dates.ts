@@ -1,4 +1,4 @@
-import type { NormalizeIssue, NormalizeResult } from './normalize';
+import { isSentinel, type NormalizeIssue, type NormalizeResult } from './normalize';
 
 /**
  * Date handling for import — spec section 6.3.
@@ -77,6 +77,13 @@ function parseFormatted(text: string, format: DateFormat): string | null {
  * unissued policy legitimately has no issuance date (spec section 6.4), so
  * blankness is not by itself a defect and this function does not judge it.
  * Whether a blank matters is decided by gap detection, which knows the status.
+ *
+ * Absence includes the `-` sentinel, and routing it through `isSentinel` rather
+ * than checking for an empty string is load-bearing. The source workbook writes
+ * a literal hyphen for "no value", and 105 PENDING rows carry one in
+ * `Issued_Date`. Treating that as an unparseable date would mark every one of
+ * them INVALID and block them from commit — turning the single most common
+ * correct state in the file into a blocking error.
  */
 export function normalizeDate(
   raw: unknown,
@@ -85,7 +92,9 @@ export function normalizeDate(
 ): NormalizeResult<string> {
   const issues: NormalizeIssue[] = [];
 
-  if (raw === null || raw === undefined) return { value: null, issues };
+  // isSentinel deliberately returns false for a number, so Excel serial 0 and
+  // any other numeric input still reach the parser below.
+  if (isSentinel(raw)) return { value: null, issues };
 
   let value: string | null = null;
 

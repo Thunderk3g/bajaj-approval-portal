@@ -176,6 +176,9 @@ export const STATUS_TONE: Record<string, BadgeTone> = {
   APPROVED: 'success',
   REJECTED: 'danger',
   RETURNED: 'info',
+  // Neutral, not danger: the rep closed this themselves. Colouring a withdrawal
+  // like a rejection would read as a verdict nobody delivered.
+  WITHDRAWN: 'neutral',
   DRAFT: 'neutral',
   MAPPED: 'info',
   VALIDATED: 'info',

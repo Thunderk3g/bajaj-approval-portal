@@ -1,0 +1,1 @@
+ALTER TYPE "public"."correction_status" ADD VALUE 'WITHDRAWN';

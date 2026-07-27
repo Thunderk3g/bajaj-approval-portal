@@ -172,10 +172,22 @@ describe('ambiguous date formats (spec 6.3)', () => {
     expect(issues[0].severity).toBe('WARNING');
   });
 
-  it('treats a blank as absent, with no issue at all', () => {
-    // An unissued policy legitimately has no issuance date — section 6.4.
-    expect(normalizeDate('-').value).toBeNull();
-    expect(normalizeDate('').issues).toHaveLength(0);
+  it.each(['-', '', '   ', 'NA', 'N/A', '#N/A', 'null'])(
+    'treats %j as absent, raising no issue at all',
+    (raw) => {
+      // An unissued policy legitimately has no issuance date (section 6.4), and
+      // the workbook writes "-" rather than leaving the cell empty. Raising an
+      // ERROR here would mark all 105 blank-dated PENDING rows INVALID and block
+      // them from commit — the most common correct state in the file, refused.
+      const { value, issues } = normalizeDate(raw);
+      expect(value).toBeNull();
+      expect(issues).toHaveLength(0);
+    },
+  );
+
+  it('still parses a numeric zero rather than treating it as absent', () => {
+    // isSentinel returns false for numbers, so the serial path stays reachable.
+    expect(normalizeDate(0).issues.some((i) => i.severity === 'ERROR')).toBe(true);
   });
 });
 

@@ -3,6 +3,7 @@ import Link from 'next/link';
 import type { SessionUser } from '@/lib/auth/rbac';
 import { navForRole, ROLE_LABELS } from '@/lib/nav';
 import { SignOutButton } from '@/components/sign-out-button';
+import { NotificationBell } from '@/components/notifications/bell';
 
 export function AppShell({ user, children }: { user: SessionUser; children: ReactNode }) {
   const items = navForRole(user.role);
@@ -53,7 +54,14 @@ export function AppShell({ user, children }: { user: SessionUser; children: Reac
               ) : null}
             </p>
           </div>
-          <SignOutButton />
+          {/* The bell is mounted in the shell rather than on individual pages
+              because it has to stay reachable from every route — a notification
+              you only see on the dashboard is a notification you miss. It polls
+              on its own; nothing here re-renders on its account. */}
+          <div className="flex shrink-0 items-center gap-2">
+            <NotificationBell />
+            <SignOutButton />
+          </div>
         </header>
 
         <nav aria-label="Primary (compact)" className="border-b border-slate-200 bg-white md:hidden">

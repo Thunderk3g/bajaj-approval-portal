@@ -8,7 +8,7 @@ export async function truncateAll() {
     truncate table
       "correction_event", "correction_attachment", "correction_request",
       "sales_record_version", "sales_record",
-      "upload_batch_row", "upload_batch",
+      "upload_batch_row", "upload_batch", "manpower",
       "audit_log", "notification", "excel_export",
       "session", "account", "verification", "user"
     restart identity cascade

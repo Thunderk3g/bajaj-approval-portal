@@ -145,16 +145,6 @@ export async function findSalesUserBySmId(
   return row ?? null;
 }
 
-/** Unread count for the header bell. */
-export async function unreadCount(userId: string): Promise<number> {
-  const rows = await db
-    .select({ id: notification.id })
-    .from(notification)
-    .where(and(eq(notification.userId, userId), eq(notification.isRead, false)))
-    .limit(100);
-  return rows.length;
-}
-
 /** One place that knows a record's URL differs per role. */
 export function recordLink(appsNo: string, role: 'admin' | 'sales' | 'approver'): string {
   return role === 'sales' ? `/sales/records/${appsNo}` : `/admin/records/${appsNo}`;

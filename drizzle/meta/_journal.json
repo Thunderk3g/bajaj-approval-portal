@@ -15,6 +15,20 @@
       "when": 1784811240300,
       "tag": "0001_powerful_mandroid",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785141468407,
+      "tag": "0002_outstanding_swarm",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785144480540,
+      "tag": "0003_stormy_firedrake",
+      "breakpoints": true
     }
   ]
 }
