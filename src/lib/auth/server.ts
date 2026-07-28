@@ -31,7 +31,13 @@ export const auth = betterAuth({
     defaultCookieAttributes: {
       httpOnly: true,
       sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
+      // Driven by COOKIE_SECURE (default true) rather than by NODE_ENV, because
+      // the two questions are different: NODE_ENV asks "is this a production
+      // build", and this asks "is this origin HTTPS". On the shared VM the
+      // answer is yes to the first and no to the second, and tying them
+      // together produced a production build whose session cookie the browser
+      // would never send back. See src/lib/env.ts for why that is a known gap.
+      secure: env.COOKIE_SECURE,
     },
   },
   rateLimit: {

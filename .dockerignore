@@ -1,0 +1,20 @@
+# Keeps the build context small and, more importantly, keeps secrets and
+# customer documents out of it.
+node_modules
+.next
+.git
+.env
+.env.local
+.env.*.local
+
+# storage/ holds uploaded workbooks, proof attachments and generated exports —
+# customer documents. They belong on a mounted volume, never baked into an
+# image that gets copied between machines.
+storage
+
+docs
+tests
+coverage
+*.log
+tsconfig.tsbuildinfo
+docker-compose*.yml

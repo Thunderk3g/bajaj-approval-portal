@@ -38,7 +38,28 @@ const securityHeaders = [
   { key: 'Content-Security-Policy', value: CSP },
 ];
 
+/**
+ * The path shared-nginx routes to this app under, or '' for a root deployment.
+ *
+ * Set from the environment rather than hardcoded so the same image runs both
+ * locally at `/` and on the VM at `/reconciliation`. It has to be a build-time
+ * constant: Next bakes `basePath` into every emitted route and asset URL, so a
+ * value read at runtime would produce a bundle whose links point somewhere the
+ * server does not serve.
+ */
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
+
 const nextConfig: NextConfig = {
+  ...(basePath ? { basePath } : {}),
+  /**
+   * Emits `.next/standalone` — a self-contained server with only the modules it
+   * actually reached, rather than the whole node_modules tree.
+   *
+   * This matters specifically on the VM: images are built where the SheetJS CDN
+   * is reachable and then moved, because `cdn.sheetjs.com` is not on the
+   * outbound whitelist. A smaller artefact is a smaller thing to move.
+   */
+  output: 'standalone',
   experimental: {
     serverActions: {
       /**

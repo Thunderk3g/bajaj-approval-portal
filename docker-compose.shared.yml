@@ -1,0 +1,75 @@
+# ──────────────────────────────────────────────────────────────────────────
+# Deployment onto the Bajaj AI Platform shared stack (RHEL 9 / Podman,
+# 10.3.5.99). Lives at /opt/reconciliation-agent/ on the VM.
+#
+# Follows the platform constraints in bajaj-ai-infra/README.md exactly:
+#   * ONLY this agent's own container — no postgres, no redis, no nginx
+#   * joins the EXISTING shared-network, never recreates it
+#   * no `ports:` — shared-nginx is the only ingress and binds :80 itself
+#   * pull_policy: never, with a full image path
+#
+#   sudo podman-compose -f docker-compose.shared.yml up -d
+#   sudo podman exec shared-nginx nginx -s reload
+# ──────────────────────────────────────────────────────────────────────────
+services:
+  reconciliation-app:
+    # One container, not the usual frontend/backend pair: this is a Next.js
+    # server that owns both the UI and the Server Actions, so there is no
+    # separate backend to run. monitoring-agent already sets the precedent for
+    # an agent that does not fill both columns of the port registry.
+    image: localhost/reconciliation-app:latest
+    container_name: reconciliation-app
+    pull_policy: never
+    restart: unless-stopped
+
+    environment:
+      NODE_ENV: production
+      PORT: "3008"
+      HOSTNAME: 0.0.0.0
+
+      # shared-postgres by container name over shared-network. The database and
+      # least-privilege role are created by shared/init-db.sh; the password must
+      # match RECONCILIATION_DB_PASSWORD in shared/.env.
+      DATABASE_URL: postgresql://reconciliation_user:${RECONCILIATION_DB_PASSWORD}@shared-postgres:5432/reconciliation_db
+
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
+      # Includes the basePath. Better Auth builds its own callback and cookie
+      # paths from this, so omitting the prefix produces auth routes that
+      # nginx does not route and cookies scoped to the wrong path.
+      BETTER_AUTH_URL: http://10.3.5.99/reconciliation
+      NEXT_PUBLIC_APP_URL: http://10.3.5.99/reconciliation
+
+      # KNOWN GAP, deliberate. shared-nginx serves plain HTTP on :80, and a
+      # Secure cookie there is accepted by the browser and then never sent
+      # back — an infinite login loop that presents as a wrong password.
+      # Session cookies therefore cross the corporate LAN in clear text.
+      # Reverse this the moment TLS terminates at shared-nginx; shared/certs/
+      # already exists for it. See docs/deploy-vm.md.
+      COOKIE_SECURE: "false"
+
+    volumes:
+      # A NAMED volume, never a bind mount into the container's own filesystem.
+      # This holds uploaded workbooks, proof attachments and generated exports —
+      # the customer documents and the evidence that a record's original value
+      # was what it claims. Losing them on the next `podman-compose up` would
+      # break the base spec's guarantee that the original survives three
+      # independent ways.
+      - reconciliation-storage:/app/storage
+
+    networks:
+      - shared-network
+
+    # No `ports:`. Reachable only as reconciliation-app:3008 from shared-nginx.
+
+    logging:
+      driver: k8s-file
+      options:
+        path: /var/log/apps/reconciliation.log
+        max-size: 200m
+
+volumes:
+  reconciliation-storage:
+
+networks:
+  shared-network:
+    external: true
