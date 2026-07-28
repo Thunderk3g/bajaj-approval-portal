@@ -20,7 +20,21 @@ function AgeBadge({ days }: { days: number }) {
   );
 }
 
-export function QueueTable({ rows }: { rows: QueueRow[] }) {
+/**
+ * Shared by the approver and verifier queues.
+ *
+ * `basePath` is the only difference between them — same columns, same ageing
+ * rules, same ordering. Copying the table for the second stage would mean every
+ * future column had to be added twice, and the two would drift the first time
+ * somebody forgot.
+ */
+export function QueueTable({
+  rows,
+  basePath = '/approver',
+}: {
+  rows: QueueRow[];
+  basePath?: string;
+}) {
   if (rows.length === 0) {
     return (
       <EmptyState
@@ -52,15 +66,18 @@ export function QueueTable({ rows }: { rows: QueueRow[] }) {
             </Td>
             <Td>
               <Link
-                href={`/approver/requests/${r.id}`}
+                href={`${basePath}/requests/${r.id}`}
                 className="font-mono font-medium text-slate-900 underline underline-offset-2 hover:text-slate-600"
               >
                 {r.appsNo}
               </Link>
               <div className="mt-0.5 text-xs text-slate-500">{orDash(r.clientName)}</div>
-              {r.status === 'RETURNED' ? (
+              {/* The status chip is shown for anything that is not the queue's
+                  own working state, so a mixed "everything open" list does not
+                  look uniform when it is not. */}
+              {r.status !== 'PENDING' ? (
                 <div className="mt-1">
-                  <StatusBadge status="RETURNED" />
+                  <StatusBadge status={r.status} />
                 </div>
               ) : null}
             </Td>
@@ -106,7 +123,15 @@ export function QueueTable({ rows }: { rows: QueueRow[] }) {
   );
 }
 
-export function HistoryTable({ rows }: { rows: HistoryRow[] }) {
+export function HistoryTable({
+  rows,
+  basePath = '/approver',
+  actorLabel = 'Approver',
+}: {
+  rows: Array<HistoryRow | (Omit<HistoryRow, never> & { actorRole?: string | null })>;
+  basePath?: string;
+  actorLabel?: string;
+}) {
   if (rows.length === 0) {
     return <EmptyState title="No decisions match these filters." />;
   }
@@ -120,7 +145,7 @@ export function HistoryTable({ rows }: { rows: HistoryRow[] }) {
           <Th>Application</Th>
           <Th>Category / field</Th>
           <Th>Change</Th>
-          <Th>Approver</Th>
+          <Th>{actorLabel}</Th>
           <Th>Remarks</Th>
           <Th>Now</Th>
         </tr>
@@ -136,7 +161,7 @@ export function HistoryTable({ rows }: { rows: HistoryRow[] }) {
             </Td>
             <Td>
               <Link
-                href={`/approver/requests/${r.requestId}`}
+                href={`${basePath}/requests/${r.requestId}`}
                 className="font-mono font-medium text-slate-900 underline underline-offset-2 hover:text-slate-600"
               >
                 {r.appsNo}

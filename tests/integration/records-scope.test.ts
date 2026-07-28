@@ -13,7 +13,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { AuthzError } from '@/lib/auth/errors';
-import type { SessionUser } from '@/lib/auth/rbac';
+import type { Role, SessionUser } from '@/lib/auth/rbac';
 import { db } from '@/db/client';
 import { correctionRequest, salesRecord, salesRecordVersion, uploadBatch } from '@/db/schema';
 import { DEFAULT_PAGE_SIZE, type PageParams } from '@/lib/pagination';
@@ -37,7 +37,7 @@ function session(row: {
   id: string;
   email: string;
   name: string;
-  role: 'admin' | 'sales' | 'approver';
+  role: Role;
   smId: string | null;
   isActive: boolean;
 }): SessionUser {

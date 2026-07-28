@@ -1,7 +1,7 @@
 import { and, asc, count, desc, eq, gte, inArray, isNotNull, lte, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { db } from '@/db/client';
-import { correctionRequest, excelExport, salesRecord, uploadBatch, user } from '@/db/schema';
+import { correctionRequest, excelExport, period, salesRecord, uploadBatch, user } from '@/db/schema';
 import type { ExportCorrection, ExportRecord } from './build';
 import { coerceFilters, type ExportFilters } from './schemas';
 
@@ -61,6 +61,7 @@ export async function fetchAppliedCorrections(recordIds: string[]): Promise<Expo
 
   const submitter = alias(user, 'submitter');
   const reviewer = alias(user, 'reviewer');
+  const checker = alias(user, 'checker');
 
   const results: ExportCorrection[] = [];
 
@@ -88,10 +89,17 @@ export async function fetchAppliedCorrections(recordIds: string[]): Promise<Expo
         submitterEmail: submitter.email,
         approverName: reviewer.name,
         approverEmail: reviewer.email,
+        verifierName: checker.name,
+        verifierEmail: checker.email,
+        verifiedAt: correctionRequest.verifiedAt,
+        verifierRemarks: correctionRequest.verifierRemarks,
+        periodLabel: period.label,
       })
       .from(correctionRequest)
       .leftJoin(submitter, eq(submitter.id, correctionRequest.submittedBy))
       .leftJoin(reviewer, eq(reviewer.id, correctionRequest.reviewedBy))
+      .leftJoin(checker, eq(checker.id, correctionRequest.verifiedBy))
+      .leftJoin(period, eq(period.id, correctionRequest.periodId))
       .where(
         and(
           eq(correctionRequest.status, 'APPROVED'),
@@ -118,6 +126,24 @@ export async function fetchAppliedCorrections(recordIds: string[]): Promise<Expo
 export async function nextExportVersion(): Promise<number> {
   const [row] = await db.select({ total: count() }).from(excelExport);
   return (row?.total ?? 0) + 1;
+}
+
+/**
+ * period id → label for the exported records.
+ *
+ * Only the periods actually present are fetched, so an export of one month does
+ * not carry a lookup of every month the portal has ever had.
+ */
+export async function periodLabelsFor(records: ExportRecord[]): Promise<Map<string, string>> {
+  const ids = [...new Set(records.map((r) => r.periodId).filter((id): id is string => Boolean(id)))];
+  if (ids.length === 0) return new Map();
+
+  const rows = await db
+    .select({ id: period.id, label: period.label })
+    .from(period)
+    .where(inArray(period.id, ids));
+
+  return new Map(rows.map((r) => [r.id, r.label]));
 }
 
 /** Names the source batch for the `Export Info` sheet. */

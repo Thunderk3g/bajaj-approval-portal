@@ -2,7 +2,8 @@
 
 import { useActionState, useEffect, useRef, useState } from 'react';
 import { createUserAction } from '@/lib/users/actions';
-import { ROLES } from '@/lib/users/schema';
+import { ROLES, ROLE_DESCRIPTIONS, type UserRole } from '@/lib/users/schema';
+import { ROLE_LABELS } from '@/lib/nav';
 import { Alert, Button, Field, Input, Select } from '@/components/ui';
 
 /**
@@ -74,7 +75,16 @@ export function CreateUserForm({ defaults }: { defaults: CreateUserDefaults }) {
           <Input id="password" name="password" type="password" required autoComplete="new-password" />
         </Field>
 
-        <Field label="Role" htmlFor="role" required error={errors.role}>
+        <Field
+          label="Role"
+          htmlFor="role"
+          required
+          // Verifier and approver are indistinguishable from their names alone,
+          // and picking the wrong one produces an account that signs in to an
+          // empty queue with nothing to say why.
+          hint={ROLE_DESCRIPTIONS[role as UserRole]}
+          error={errors.role}
+        >
           <Select
             id="role"
             name="role"
@@ -83,7 +93,7 @@ export function CreateUserForm({ defaults }: { defaults: CreateUserDefaults }) {
           >
             {ROLES.map((value) => (
               <option key={value} value={value}>
-                {value}
+                {ROLE_LABELS[value]}
               </option>
             ))}
           </Select>

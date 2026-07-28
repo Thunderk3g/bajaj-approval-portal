@@ -1,0 +1,139 @@
+import { requireRole } from '@/lib/auth/rbac';
+import { Card, PageHeader, Pagination, Select, Input, Button, StatCard } from '@/components/ui';
+import { buildQuery, parsePageParams, PAGE_SIZES } from '@/lib/pagination';
+import { listVerifierQueue, verifierQueueCounts } from '@/lib/verification/queries';
+import {
+  CATEGORY_LABELS,
+  CORRECTION_CATEGORIES,
+  type SearchParams,
+} from '@/lib/approvals/schemas';
+import {
+  VERIFIER_QUEUE_SCOPES,
+  VERIFIER_SCOPE_LABELS,
+  parseVerifierQueueFilters,
+} from '@/lib/verification/schemas';
+import { QueueTable } from '@/components/approvals/queue-table';
+
+export const dynamic = 'force-dynamic';
+
+/**
+ * The verification queue — 2026-07-28 spec section 3.8.
+ *
+ * `requireRole` runs here as well as in the layout. The layout gate redirects a
+ * browser, but this page is also the target of a direct fetch, and the boundary
+ * belongs on the data access rather than on the shell around it.
+ */
+export default async function VerifierQueuePage({
+  searchParams,
+}: {
+  searchParams: Promise<SearchParams>;
+}) {
+  await requireRole('verifier');
+
+  const params = await searchParams;
+  const filters = parseVerifierQueueFilters(params);
+  const page = parsePageParams(params);
+
+  const [queue, counts] = await Promise.all([
+    listVerifierQueue(filters, page),
+    verifierQueueCounts(),
+  ]);
+
+  return (
+    <>
+      <PageHeader
+        title="Verification queue"
+        description="Oldest first. Verifying passes the request to an approver and changes nothing on the record; returning sends it back to the submitter without destroying its history."
+      />
+
+      <div className="mb-6 grid gap-3 sm:grid-cols-4">
+        <StatCard
+          label="Awaiting verification"
+          value={counts.pending}
+          tone={counts.pending > 0 ? 'warning' : 'default'}
+          href="/verifier/queue?scope=PENDING"
+        />
+        <StatCard
+          label="Oldest waiting"
+          value={`${counts.oldestDays}d`}
+          hint="Days since submission"
+          tone={counts.oldestDays >= 7 ? 'danger' : 'default'}
+        />
+        <StatCard
+          label="With approvers"
+          value={counts.verified}
+          hint="Verified — no longer yours"
+          href="/verifier/queue?scope=VERIFIED"
+        />
+        <StatCard
+          label="Returned"
+          value={counts.returned}
+          hint="Waiting on the submitter"
+          href="/verifier/queue?scope=RETURNED"
+        />
+      </div>
+
+      <Card className="mb-4">
+        <form method="get" className="grid gap-3 sm:grid-cols-4">
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-slate-700">Scope</span>
+            <Select name="scope" defaultValue={filters.scope}>
+              {VERIFIER_QUEUE_SCOPES.map((s) => (
+                <option key={s} value={s}>
+                  {VERIFIER_SCOPE_LABELS[s]}
+                </option>
+              ))}
+            </Select>
+          </label>
+
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-slate-700">Category</span>
+            <Select name="category" defaultValue={filters.category ?? ''}>
+              <option value="">All categories</option>
+              {CORRECTION_CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {CATEGORY_LABELS[c]}
+                </option>
+              ))}
+            </Select>
+          </label>
+
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-slate-700">Search</span>
+            <Input
+              name="q"
+              defaultValue={filters.q ?? ''}
+              placeholder="Apps_No, SM_ID, client or submitter"
+            />
+          </label>
+
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-slate-700">Per page</span>
+            <Select name="pageSize" defaultValue={String(page.pageSize)}>
+              {PAGE_SIZES.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </Select>
+          </label>
+
+          <div className="sm:col-span-4">
+            <Button type="submit" variant="secondary">
+              Apply filters
+            </Button>
+          </div>
+        </form>
+      </Card>
+
+      <QueueTable rows={queue.rows} basePath="/verifier" />
+
+      <Pagination
+        page={queue.page}
+        pageCount={queue.pageCount}
+        totalRows={queue.total}
+        hrefFor={(p) => `/verifier/queue${buildQuery(params, { page: p })}`}
+      />
+    </>
+  );
+}

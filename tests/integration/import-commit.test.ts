@@ -8,6 +8,7 @@ import {
   correctionRequest,
   manpower,
   notification,
+  period,
   salesRecord,
   salesRecordVersion,
   uploadBatch,
@@ -51,8 +52,15 @@ function sessionUser(row: { id: string; email: string; name: string; role: strin
  * store the file, choose the sheet, accept the suggested mapping, validate and
  * stage. Deliberately calls the same pipeline functions the Server Actions do,
  * so a divergence between preview and commit would show up here.
+ *
+ * `periodCode` is left null unless a test names one, which is the shape most of
+ * this file needs: the fallback to the calendar month of the upload is the path
+ * an admin who never touches the month picker takes, so it must stay exercised.
  */
-async function createValidatedBatch(adminId: string): Promise<{ batchId: string; report: ValidationReport }> {
+async function createValidatedBatch(
+  adminId: string,
+  periodCode: string | null = null,
+): Promise<{ batchId: string; report: ValidationReport }> {
   const bytes = fixtureBuffer('xlsb');
   const fileHash = createHash('sha256').update(bytes).digest('hex');
 
@@ -73,6 +81,7 @@ async function createValidatedBatch(adminId: string): Promise<{ batchId: string;
       headerRow: 1,
       dateFormat: 'dd/MM/yyyy',
       columnMapping: mapping,
+      periodCode,
       uploadedBy: adminId,
     })
     .returning({ id: uploadBatch.id });
@@ -427,5 +436,155 @@ describe('re-import conflict policy — spec 6.8', () => {
     const survivor = await recordFor('5910000099');
     expect(survivor).toBeDefined();
     expect(survivor.clientName).toBe('Prior month client');
+  });
+});
+
+/**
+ * The monthly cycle — 2026-07-28 spec section 4.
+ *
+ * Committing a file is what starts a month; there is no scheduler. That makes
+ * the commit transaction the only place these transitions can be observed, and
+ * the only place a mistake in them can be caught before an admin discovers that
+ * a month closed itself, or never did.
+ */
+describe('the monthly cycle — spec 4.3, 4.4', () => {
+  let admin: SessionUser;
+
+  beforeEach(async () => {
+    await truncateAll();
+    admin = sessionUser(await makeUser({ role: 'admin', name: 'Import Admin' }));
+  });
+
+  async function periodRow(code: string) {
+    const [row] = await db.select().from(period).where(eq(period.code, code));
+    return row;
+  }
+
+  async function openPeriodCodes(): Promise<string[]> {
+    const rows = await db
+      .select({ code: period.code })
+      .from(period)
+      .where(eq(period.status, 'OPEN'));
+    return rows.map((r) => r.code).sort();
+  }
+
+  it('files every record the batch carried under that batch, changed or not', async () => {
+    const june = await createValidatedBatch(admin.id, '2026-06');
+    const first = await commitBatch({ batchId: june.batchId, actor: admin });
+
+    expect(first.inserted).toBe(7);
+    expect(first.period).toEqual({ code: '2026-06', label: 'Jun 2026' });
+
+    const junePeriod = await periodRow('2026-06');
+    const fresh = await db.select({ periodId: salesRecord.periodId }).from(salesRecord);
+    expect(fresh).toHaveLength(7);
+    expect([...new Set(fresh.map((r) => r.periodId))]).toEqual([junePeriod.id]);
+
+    // The same workbook again, filed under July. Nothing is inserted, so every
+    // stamp below has to come from the re-carry path rather than from a fresh
+    // insert — a record that appears in this month's file IS this month's
+    // workload, and leaving the agreeing majority behind in June would mean
+    // June's close silently froze most of the book.
+    const july = await createValidatedBatch(admin.id, '2026-07');
+    const second = await commitBatch({ batchId: july.batchId, actor: admin });
+    expect(second.inserted).toBe(0);
+
+    const julyPeriod = await periodRow('2026-07');
+    const refiled = await db.select({ periodId: salesRecord.periodId }).from(salesRecord);
+    expect(refiled).toHaveLength(7);
+    expect([...new Set(refiled.map((r) => r.periodId))]).toEqual([julyPeriod.id]);
+
+    // This one agreed with the file in every field, so it moved months without
+    // its version chain moving: which cycle a record is being reconciled in is
+    // not a change to the record, and a reader asking what changed at version N
+    // must not be told the answer is "the month".
+    const unchanged = await recordFor(APPS.ISSUED_COMPLETE);
+    expect(unchanged.periodId).toBe(julyPeriod.id);
+    expect(unchanged.currentVersion).toBe(1);
+
+    const versions = await db
+      .select()
+      .from(salesRecordVersion)
+      .where(eq(salesRecordVersion.recordId, unchanged.id));
+    expect(versions).toHaveLength(1);
+  });
+
+  it('closes the month that was open and opens the one the new file is for', async () => {
+    const july = await createValidatedBatch(admin.id, '2026-07');
+    const first = await commitBatch({ batchId: july.batchId, actor: admin });
+    expect(first.period).toEqual({ code: '2026-07', label: 'Jul 2026' });
+    expect(first.periodsClosed).toEqual([]);
+
+    const august = await createValidatedBatch(admin.id, '2026-08');
+    const second = await commitBatch({ batchId: august.batchId, actor: admin });
+
+    expect(second.period).toEqual({ code: '2026-08', label: 'Aug 2026' });
+    // Named, not just counted: closing is a side effect of committing, and an
+    // admin who is not told which month just closed does not know that reps have
+    // lost the ability to raise new corrections against it.
+    expect(second.periodsClosed).toEqual(['Jul 2026']);
+
+    // `period_one_open` is a partial unique index, so a second open row would be
+    // a constraint violation rather than a wrong answer — but only if the close
+    // and the open happen in that order, which is what this asserts.
+    expect(await openPeriodCodes()).toEqual(['2026-08']);
+
+    const closed = await periodRow('2026-07');
+    expect(closed.status).toBe('CLOSED');
+    expect(closed.closedBy).toBe(admin.id);
+    expect(closed.closedAt).toBeInstanceOf(Date);
+  });
+
+  it('leaves a record the new file does not carry in the month it was last seen', async () => {
+    const june = await createValidatedBatch(admin.id, '2026-06');
+    await commitBatch({ batchId: june.batchId, actor: admin });
+    const junePeriod = await periodRow('2026-06');
+
+    // A prior-month application that this workbook does not mention. Its gap is
+    // June's to answer for, and sweeping it into July would make every month's
+    // workload the whole accumulated book.
+    await db.insert(salesRecord).values({
+      appsNo: '5910000099',
+      smId: 'C2CM11111',
+      clientName: 'Prior month client',
+      status: 'ISSUED',
+      periodId: junePeriod.id,
+    });
+
+    const july = await createValidatedBatch(admin.id, '2026-07');
+    const outcome = await commitBatch({ batchId: july.batchId, actor: admin });
+    expect(outcome.period.code).toBe('2026-07');
+
+    const absent = await recordFor('5910000099');
+    expect(absent.periodId).toBe(junePeriod.id);
+  });
+
+  it('refuses a back-dated import into a month that has already been closed', async () => {
+    const july = await createValidatedBatch(admin.id, '2026-07');
+    await commitBatch({ batchId: july.batchId, actor: admin });
+
+    const august = await createValidatedBatch(admin.id, '2026-08');
+    const closing = await commitBatch({ batchId: august.batchId, actor: admin });
+    expect(closing.periodsClosed).toEqual(['Jul 2026']);
+
+    // Closing was a decision an admin made and announced to the reps. Somebody
+    // re-uploading July's file must not quietly undo it — the whole month would
+    // reopen, and the reconciliation everyone signed off on would be live again.
+    const backDated = await createValidatedBatch(admin.id, '2026-07');
+    await expect(commitBatch({ batchId: backDated.batchId, actor: admin })).rejects.toThrow(
+      /Jul 2026 is closed/,
+    );
+
+    const stillClosed = await periodRow('2026-07');
+    expect(stillClosed.status).toBe('CLOSED');
+    expect(await openPeriodCodes()).toEqual(['2026-08']);
+
+    // The refusal took the whole commit with it: the batch is still awaiting a
+    // decision rather than half-applied against a month nobody meant to touch.
+    const [batchRow] = await db
+      .select()
+      .from(uploadBatch)
+      .where(eq(uploadBatch.id, backDated.batchId));
+    expect(batchRow.status).toBe('VALIDATED');
   });
 });

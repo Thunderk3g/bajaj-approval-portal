@@ -54,14 +54,29 @@ export type DecisionPayload = z.infer<typeof decisionSchema>;
 
 /* ------------------------------------------------------------------ filters */
 
-export const QUEUE_SCOPES = ['PENDING', 'RETURNED', 'OPEN'] as const;
+/**
+ * The approver's scopes — 2026-07-28 spec section 3.
+ *
+ * VERIFIED replaced PENDING as the default and as "awaiting my decision".
+ * PENDING remains selectable but now means "awaiting a VERIFIER", i.e. work that
+ * is not the approver's yet. It is kept visible rather than hidden because a
+ * PENDING pile that never shrinks is how an approver notices the verification
+ * stage has stalled upstream of them — but it is deliberately not the default,
+ * since an approver landing on a list they cannot act on would be a queue that
+ * lies about its own depth.
+ */
+export const QUEUE_SCOPES = ['VERIFIED', 'PENDING', 'RETURNED', 'OPEN'] as const;
 export type QueueScope = (typeof QUEUE_SCOPES)[number];
 
 export const QUEUE_SCOPE_LABELS: Record<QueueScope, string> = {
-  PENDING: 'Awaiting my decision',
+  VERIFIED: 'Awaiting my decision',
+  PENDING: 'Awaiting verification — not yours yet',
   RETURNED: 'Returned — awaiting the submitter',
   OPEN: 'Everything open',
 };
+
+/** Everything still in flight, for the OPEN scope. */
+export const OPEN_QUEUE_STATUSES = ['PENDING', 'VERIFIED', 'RETURNED'] as const;
 
 export const CORRECTION_CATEGORIES = ['AUTOPAY', 'MAPPING', 'ISSUANCE_DATE', 'OTHERS'] as const;
 export type CorrectionCategory = (typeof CORRECTION_CATEGORIES)[number];
@@ -101,7 +116,7 @@ export type SearchParams = Record<string, string | string[] | undefined>;
 
 export function parseQueueFilters(params: SearchParams) {
   return {
-    scope: pick(params.scope, QUEUE_SCOPES) ?? ('PENDING' as QueueScope),
+    scope: pick(params.scope, QUEUE_SCOPES) ?? ('VERIFIED' as QueueScope),
     category: pick(params.category, CORRECTION_CATEGORIES),
     q: one(params.q),
   };

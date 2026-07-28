@@ -2,6 +2,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { notification, user } from '@/db/schema';
 import type { DbTransaction } from '@/lib/audit/log';
+import type { Role } from '@/lib/auth/rbac';
 
 /**
  * Notification writes — spec section 10.
@@ -20,6 +21,14 @@ import type { DbTransaction } from '@/lib/audit/log';
 export const NOTIFICATION_TYPES = [
   'CORRECTION_SUBMITTED',
   'CORRECTION_RESUBMITTED',
+  /** Passed verification — this is what puts a request in the approver's queue. */
+  'CORRECTION_VERIFIED',
+  /**
+   * Distinct from CORRECTION_RETURNED so the rep's inbox says which stage sent
+   * it back. The fix differs: a verifier usually wants clearer proof, an
+   * approver usually disputes the value itself.
+   */
+  'CORRECTION_RETURNED_BY_VERIFIER',
   'CORRECTION_APPROVED',
   'CORRECTION_REJECTED',
   'CORRECTION_RETURNED',
@@ -59,28 +68,51 @@ export async function notifyMany(inputs: NotificationInput[], tx?: DbTransaction
 }
 
 /**
- * Fans a notification out to every active approver — spec section 10, row 1.
+ * Fans a notification out to every active holder of a reviewing role.
  *
- * Filtered on `isActive` so a deactivated approver's unread count does not grow
+ * Filtered on `isActive` so a deactivated reviewer's unread count does not grow
  * forever behind an account nobody can sign into.
+ *
+ * The return value is the recipient count and callers are expected to use it.
+ * Zero is the failure that matters here: with the two-stage flow of the
+ * 2026-07-28 spec, a submission that reaches no verifier sits in a queue nobody
+ * is subscribed to, and the rep sees a request that looks submitted and never
+ * moves. Silence is indistinguishable from success unless somebody counts.
  */
-export async function notifyActiveApprovers(
+async function notifyActiveRole(
+  role: 'approver' | 'verifier',
   input: Omit<NotificationInput, 'userId'>,
   tx?: DbTransaction,
 ): Promise<number> {
   const executor = tx ?? db;
 
-  const approvers = await executor
+  const recipients = await executor
     .select({ id: user.id })
     .from(user)
-    .where(and(eq(user.role, 'approver'), eq(user.isActive, true)));
+    .where(and(eq(user.role, role), eq(user.isActive, true)));
 
   await notifyMany(
-    approvers.map((a) => ({ ...input, userId: a.id })),
+    recipients.map((r) => ({ ...input, userId: r.id })),
     tx,
   );
 
-  return approvers.length;
+  return recipients.length;
+}
+
+/** Spec section 10, row 1 — now reached only after verification. */
+export async function notifyActiveApprovers(
+  input: Omit<NotificationInput, 'userId'>,
+  tx?: DbTransaction,
+): Promise<number> {
+  return notifyActiveRole('approver', input, tx);
+}
+
+/** The first stage of the 2026-07-28 flow: submissions land here, not with approvers. */
+export async function notifyActiveVerifiers(
+  input: Omit<NotificationInput, 'userId'>,
+  tx?: DbTransaction,
+): Promise<number> {
+  return notifyActiveRole('verifier', input, tx);
 }
 
 /**
@@ -145,7 +177,14 @@ export async function findSalesUserBySmId(
   return row ?? null;
 }
 
-/** One place that knows a record's URL differs per role. */
-export function recordLink(appsNo: string, role: 'admin' | 'sales' | 'approver'): string {
+/**
+ * One place that knows a record's URL differs per role.
+ *
+ * Only sales has its own record space. A verifier or approver reaches a record
+ * through the admin route, which their global read scope already permits — so
+ * adding /verifier/records would be a second URL onto the same query with the
+ * same authorization, i.e. a second thing to keep in step for no gain.
+ */
+export function recordLink(appsNo: string, role: Role): string {
   return role === 'sales' ? `/sales/records/${appsNo}` : `/admin/records/${appsNo}`;
 }

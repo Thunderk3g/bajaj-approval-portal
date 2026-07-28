@@ -11,9 +11,24 @@ import { z } from 'zod';
  * to type instead. The constraint is the guarantee; this is the explanation.
  */
 
-export const ROLES = ['admin', 'sales', 'approver'] as const;
+export const ROLES = ['admin', 'sales', 'approver', 'verifier'] as const;
 
 export type UserRole = (typeof ROLES)[number];
+
+/**
+ * Shown beside each option on the create-user form.
+ *
+ * A verifier and an approver look identical on a role dropdown — both review
+ * other people's corrections, neither carries an SM_ID — and picking the wrong
+ * one produces an account that silently sees an empty queue. Saying which stage
+ * each sits at is the difference between a label and an explanation.
+ */
+export const ROLE_DESCRIPTIONS: Record<UserRole, string> = {
+  admin: 'Imports workbooks, manages accounts and periods, generates exports.',
+  sales: 'Sees only their own SM_ID and raises correction requests. Requires an SM_ID.',
+  verifier: 'First review. Checks a submitted request against its proof, then passes it to an approver or returns it to the rep.',
+  approver: 'Second review. Applies the correction to the record, or rejects or returns it.',
+};
 
 /**
  * Digits alone are allowed deliberately.

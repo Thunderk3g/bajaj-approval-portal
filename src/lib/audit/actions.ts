@@ -29,6 +29,17 @@ export const AUDIT_ACTIONS = [
 
   'CORRECTION_SUBMIT',
   'CORRECTION_RESUBMIT',
+  /** The first gate — 2026-07-28 spec section 3. */
+  'CORRECTION_VERIFY',
+  /**
+   * A return issued by a VERIFIER, distinct from CORRECTION_RETURN.
+   *
+   * Both produce a RETURNED request, so the status column cannot tell them
+   * apart after the fact. Separating them here is what lets an audit answer
+   * "how much is the verification stage sending back" — the number that says
+   * whether the gate is doing work or waving things through.
+   */
+  'CORRECTION_RETURN_VERIFIER',
   'CORRECTION_APPROVE',
   'CORRECTION_REJECT',
   'CORRECTION_RETURN',
@@ -39,6 +50,10 @@ export const AUDIT_ACTIONS = [
 
   'EXPORT_GENERATE',
   'EXPORT_DOWNLOAD',
+
+  /** The monthly cycle — 2026-07-28 spec section 4.4. */
+  'PERIOD_OPEN',
+  'PERIOD_CLOSE',
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

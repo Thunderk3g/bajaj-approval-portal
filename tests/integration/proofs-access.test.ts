@@ -16,7 +16,12 @@ import { makeUser, truncateAll } from '../helpers/db';
  */
 const session = vi.hoisted(() => ({ user: null as SessionUser | null }));
 
-vi.mock('@/lib/auth/rbac', () => ({
+// Only `requireSession` is faked — GLOBAL_READ_ROLES is re-exported from the
+// real module rather than restated here. The route's access rule IS that list;
+// a copy in the mock would let the two diverge, and these tests would then be
+// asserting a policy the application does not have.
+vi.mock('@/lib/auth/rbac', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/auth/rbac')>()),
   requireSession: async () => {
     if (!session.user) throw new Error('UNAUTHENTICATED');
     return session.user;

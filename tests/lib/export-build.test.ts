@@ -8,6 +8,7 @@ import {
   SHEET_CORRECTIONS,
   SHEET_INFO,
   SHEET_MASTER,
+  correctionNote,
   exportFileName,
   extraColumnKeys,
   isoDateToExcelDate,
@@ -29,6 +30,14 @@ import { CANONICAL_FIELDS } from '@/lib/fields';
 
 const APPROVED_AT = new Date('2026-07-01T09:30:00.000Z');
 const SUBMITTED_AT = new Date('2026-06-28T04:15:00.000Z');
+// Between the two, so a test asserting the note's ordering fails if the stages
+// are ever emitted the wrong way round.
+const VERIFIED_AT = new Date('2026-06-29T11:00:00.000Z');
+
+// The Master Data `Period` column is filled from the lookup, never from the
+// record, so the id has to be one the map answers for.
+const PERIOD_ID = '55555555-5555-4555-8555-555555555555';
+const PERIOD_LABELS = new Map([[PERIOD_ID, 'Jun 2026']]);
 
 function record(overrides: Partial<ExportRecord> = {}): ExportRecord {
   return {
@@ -57,6 +66,7 @@ function record(overrides: Partial<ExportRecord> = {}): ExportRecord {
     status2: 'Issued',
     autopay: 'Yes',
     extra: { FY: '2026-27', RECEIPT_NO: '900012345', Source: 'Digital' },
+    periodId: PERIOD_ID,
     sourceBatchId: null,
     sourceRowNumber: 3,
     currentVersion: 2,
@@ -82,12 +92,20 @@ function correction(overrides: Partial<ExportCorrection> = {}): ExportCorrection
     submitterName: 'Ravi Sales',
     submitterEmail: 'ravi@example.test',
     submittedAt: SUBMITTED_AT,
+    // Both review stages — 2026-07-28 spec section 3. The default fixture goes
+    // through the full path, so a test that wants a pre-verifier correction has
+    // to say so explicitly rather than getting one by omission.
+    verifierName: 'Vikram Verifier',
+    verifierEmail: 'vikram@example.test',
+    verifiedAt: VERIFIED_AT,
+    verifierRemarks: 'NACH mandate copy matches the application.',
     approverName: 'Anita Approver',
     approverEmail: 'anita@example.test',
     status: 'APPROVED',
     approverRemarks: 'Mandate copy verified.',
     reviewedAt: APPROVED_AT,
     appliedAt: APPROVED_AT,
+    periodLabel: 'Jun 2026',
     ...overrides,
   };
 }
@@ -109,6 +127,9 @@ const RECORDS: ExportRecord[] = [
     // LA Occupation exists on this record only — a column present on some rows
     // must still get its own column in the sheet.
     extra: { FY: '2026-27', Source: '-', 'LA Occupation': 'Salaried' },
+    // Imported before the portal tracked periods. Its Period cell has to stay
+    // blank rather than inherit the label of the row above it.
+    periodId: null,
     hasCorrections: false,
     currentVersion: 1,
   }),
@@ -142,6 +163,7 @@ beforeAll(async () => {
     {
       records: RECORDS,
       corrections: CORRECTIONS,
+      periodLabels: PERIOD_LABELS,
       meta: {
         fileName: 'sales-reconciliation-20260727-1015-v1.xlsx',
         generatedAt: new Date('2026-07-27T10:15:00.000Z'),
@@ -223,6 +245,31 @@ describe('preserved extra columns (spec 5.4)', () => {
 
   it('unions keys in first-seen order rather than sorting them', () => {
     expect(extraColumnKeys(RECORDS)).toEqual(['FY', 'RECEIPT_NO', 'Source', 'LA Occupation']);
+  });
+});
+
+describe('reconciliation period (2026-07-28 spec 4)', () => {
+  it('names the period each record belongs to', () => {
+    // Resolved through periodLabels rather than written from the record, so a
+    // period renamed after the fact exports under the name the screen shows.
+    expect(cellAt(master, 2, 'Period').value).toBe('Jun 2026');
+  });
+
+  it('leaves a record that predates periods blank rather than guessing one', () => {
+    expect(cellAt(master, 3, 'Period').value).toBeFalsy();
+  });
+
+  it('sits after the preserved extra columns, ahead of the correction summary', () => {
+    // Position matters to anyone diffing this month's workbook against last
+    // month's: Period landing inside the extra block would shift every
+    // preserved column and make the two files look wholly different.
+    const headers = (master.getRow(1).values as unknown[]).slice(1) as string[];
+    expect(headers.slice(-4)).toEqual([
+      'Period',
+      'Corrected_Fields',
+      'Correction_Count',
+      'Last_Corrected_On',
+    ]);
   });
 });
 
@@ -310,6 +357,9 @@ describe('corrected cells carry the fill and the comment (spec 8)', () => {
     expect(text).toContain('Yes');
     expect(text).toContain('Anita Approver');
     expect(text).toContain('2026-07-01');
+    // Asserted on the reopened file, not on correctionNote's return: the lines
+    // are only useful if ExcelJS actually round-trips them into the comment.
+    expect(text).toContain('Vikram Verifier');
   });
 
   it('carries the original value verbatim when there was one', () => {
@@ -344,10 +394,41 @@ describe('corrected cells carry the fill and the comment (spec 8)', () => {
   });
 });
 
+describe('the correction note names both gates (2026-07-28 spec 3.5)', () => {
+  it('names the verifier before the approver, the order the request travelled', () => {
+    const note = correctionNote(correction());
+
+    expect(note).toContain('Verified by: Vikram Verifier');
+    expect(note).toContain('Verified on: 2026-06-29 11:00 UTC');
+    expect(note).toContain('Approved by: Anita Approver');
+    // Ordering, not just presence: the note is read as a narrative of who
+    // touched the value, and verification before approval is the only sequence
+    // the workflow can produce.
+    expect(note.indexOf('Verified by:')).toBeLessThan(note.indexOf('Approved by:'));
+  });
+
+  it('omits the verifier lines entirely for a correction decided before the stage existed', () => {
+    // Rows approved under the single-stage flow have no verifier. Printing
+    // "Verified by: —" would claim a review that never happened.
+    const note = correctionNote(
+      correction({
+        verifierName: null,
+        verifierEmail: null,
+        verifiedAt: null,
+        verifierRemarks: null,
+      }),
+    );
+
+    expect(note).not.toContain('Verified');
+    expect(note).toContain('Approved by: Anita Approver');
+  });
+});
+
 describe('Corrections Log sheet (spec 8)', () => {
   it('has the columns spec 8 names', () => {
     expect((corrections.getRow(1).values as unknown[]).slice(1)).toEqual([
       'Apps_No',
+      'Period',
       'Field',
       'Original_Value',
       'Approved_Value',
@@ -356,6 +437,9 @@ describe('Corrections Log sheet (spec 8)', () => {
       'Submitted_By',
       'SM_ID',
       'Submitted_On',
+      'Verifier',
+      'Verified_On',
+      'Verifier_Remarks',
       'Approver',
       'Decision',
       'Remarks',
@@ -378,6 +462,20 @@ describe('Corrections Log sheet (spec 8)', () => {
     expect(cellAt(corrections, 2, 'Approver').value).toBe('Anita Approver');
     expect(cellAt(corrections, 2, 'Decision').value).toBe('APPROVED');
     expect(cellAt(corrections, 2, 'Remarks').value).toBe('Mandate copy verified.');
+  });
+
+  it('carries the verification stage as well as the decision', () => {
+    // A log that names only the approver cannot answer whether a wrong value got
+    // through because the verifier passed it or because the approver overrode
+    // them — the first question asked of an export once one is wrong.
+    expect(cellAt(corrections, 2, 'Verifier').value).toBe('Vikram Verifier');
+    expect((cellAt(corrections, 2, 'Verified_On').value as Date).toISOString()).toBe(
+      VERIFIED_AT.toISOString(),
+    );
+    expect(cellAt(corrections, 2, 'Verifier_Remarks').value).toBe(
+      'NACH mandate copy matches the application.',
+    );
+    expect(cellAt(corrections, 2, 'Period').value).toBe('Jun 2026');
   });
 
   it('carries the issuance-date row with its proposed value', () => {

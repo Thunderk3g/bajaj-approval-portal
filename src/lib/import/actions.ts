@@ -13,6 +13,7 @@ import { writeAudit } from '@/lib/audit/log';
 import { requireRole } from '@/lib/auth/rbac';
 import { fail, ok, zodFieldErrors, type ActionResult } from '@/lib/result';
 import { allocateStoragePath, ensureStorageDirs, resolveStoredPath, UPLOADS_DIR } from '@/lib/storage/paths';
+import { isPeriodCode, periodCodeFor } from '@/lib/periods/service';
 import { DATE_FORMATS, DEFAULT_DATE_FORMAT, type DateFormat } from './dates';
 import { commitBatch } from './commit';
 import { validateMapping } from './mapping';
@@ -61,6 +62,21 @@ async function requestContext() {
     ipAddress: headerList.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
     userAgent: headerList.get('user-agent'),
   };
+}
+
+/**
+ * The reconciliation cycle this workbook is for.
+ *
+ * Falls back to the current calendar month rather than to null. A batch with no
+ * period commits records that belong to no cycle, which are then invisible to
+ * every period-filtered screen and — worse — unaffected by any close, so
+ * corrections against them could be raised forever. The overwhelmingly common
+ * case is uploading this month's file this month, so the default is also the
+ * right answer nearly every time.
+ */
+function requestedPeriodCode(formData: FormData): string {
+  const raw = (formData.get('periodCode') as string | null)?.trim();
+  return raw && isPeriodCode(raw) ? raw : periodCodeFor(new Date());
 }
 
 /* ------------------------------------------------------------------ create */
@@ -130,6 +146,13 @@ export async function createUploadBatchAction(
       fileHash,
       uploadedBy: actor.id,
       notes: (formData.get('notes') as string | null)?.trim() || null,
+      // Which monthly cycle this workbook is for — 2026-07-28 spec section 4.3.
+      //
+      // Defaulted from the form, falling back to the current calendar month.
+      // Recorded here rather than only at commit so the review screen can show
+      // it and the admin can correct a back-dated file BEFORE the commit closes
+      // last month on the strength of it.
+      periodCode: requestedPeriodCode(formData),
     })
     .returning({ id: uploadBatch.id });
 

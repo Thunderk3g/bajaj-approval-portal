@@ -1,0 +1,1 @@
+ALTER TABLE "upload_batch" ADD COLUMN "period_code" text;

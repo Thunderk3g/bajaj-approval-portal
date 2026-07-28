@@ -23,6 +23,13 @@ describe('scopedRecordCondition', () => {
     expect(scopedRecordCondition(makeSessionUser({ role: 'approver', smId: null }))).toBeUndefined();
   });
 
+  it('returns no condition for a verifier', () => {
+    // A verifier reviews other people's submissions, so scoping one to an SM_ID
+    // would leave whatever falls outside it unverifiable — there is no second
+    // verifier pool to pick up the remainder.
+    expect(scopedRecordCondition(makeSessionUser({ role: 'verifier', smId: null }))).toBeUndefined();
+  });
+
   it('returns a condition for a sales user', () => {
     expect(scopedRecordCondition(makeSessionUser())).toBeDefined();
   });

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile, rm } from 'node:fs/promises';
-import { Workbook } from 'exceljs';
+import { Workbook, type Worksheet } from 'exceljs';
 import { and, eq } from 'drizzle-orm';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { db } from '@/db/client';
@@ -9,6 +9,7 @@ import {
   correctionRequest,
   excelExport,
   notification,
+  period,
   salesRecord,
   uploadBatch,
 } from '@/db/schema';
@@ -33,8 +34,10 @@ const OWNER_B = 'C2CM21351';
 
 let admin: Awaited<ReturnType<typeof makeUser>>;
 let approver: Awaited<ReturnType<typeof makeUser>>;
+let verifier: Awaited<ReturnType<typeof makeUser>>;
 let sales: Awaited<ReturnType<typeof makeUser>>;
 let batchId: string;
+let periodId: string;
 let correctedRecordId: string;
 const written: string[] = [];
 
@@ -47,12 +50,28 @@ async function seed() {
     name: 'Anita Approver',
     email: 'anita@example.test',
   });
+  verifier = await makeUser({
+    role: 'verifier',
+    name: 'Vikram Verifier',
+    email: 'vikram@example.test',
+  });
   sales = await makeUser({
     role: 'sales',
     name: 'Ravi Sales',
     email: 'ravi@example.test',
     smId: OWNER_A,
   });
+
+  const [june] = await db
+    .insert(period)
+    .values({
+      code: '2026-06',
+      label: 'Jun 2026',
+      startsOn: '2026-06-01',
+      endsOn: '2026-06-30',
+    })
+    .returning({ id: period.id });
+  periodId = june.id;
 
   const [batch] = await db
     .insert(uploadBatch)
@@ -83,6 +102,9 @@ async function seed() {
         status: 'ISSUED',
         autopay: 'Yes',
         extra: { FY: '2026-27', Source: 'Digital' },
+        // The other two rows keep a null period, so the export has to resolve
+        // this one through the lookup rather than stamping every row alike.
+        periodId,
         sourceBatchId: batchId,
         hasCorrections: true,
         currentVersion: 2,
@@ -113,6 +135,9 @@ async function seed() {
   correctedRecordId = corrected.id;
 
   await db.insert(correctionRequest).values([
+    // The only row that reached the record: raised, verified, then approved —
+    // the full path of 2026-07-28 spec section 3, so the log has both reviewers
+    // to name.
     {
       recordId: correctedRecordId,
       appsNo: '5920000001',
@@ -124,12 +149,36 @@ async function seed() {
       description: 'NACH mandate registered.',
       submittedBy: sales.id,
       smId: OWNER_A,
+      periodId,
       status: 'APPROVED',
+      verifiedBy: verifier.id,
+      verifiedAt: new Date('2026-06-30T06:00:00.000Z'),
+      verifierRemarks: 'Mandate copy matches the application.',
       reviewedBy: approver.id,
       reviewedAt: new Date('2026-07-01T09:30:00.000Z'),
       approverRemarks: 'Mandate copy verified.',
       appliedAt: new Date('2026-07-01T09:30:00.000Z'),
       appliedVersion: 2,
+    },
+    // Verified but not yet decided. It sits in the approver's queue and has
+    // changed nothing on the record — clearing the first gate must not be
+    // enough to put a row in the log.
+    {
+      recordId: correctedRecordId,
+      appsNo: '5920000001',
+      category: 'OTHERS',
+      fieldName: 'policyNo',
+      fieldLabel: 'Policy number',
+      originalValue: '0412345678',
+      proposedValue: '0412345679',
+      description: 'Digit transposed against the policy bond.',
+      submittedBy: sales.id,
+      smId: OWNER_A,
+      periodId,
+      status: 'VERIFIED',
+      verifiedBy: verifier.id,
+      verifiedAt: new Date('2026-07-02T06:00:00.000Z'),
+      verifierRemarks: 'Bond copy attached.',
     },
     // Still pending: it has changed nothing on the record, so it must not
     // appear in the log or highlight a cell that still holds the source value.
@@ -144,9 +193,25 @@ async function seed() {
       description: 'Name per PAN card.',
       submittedBy: sales.id,
       smId: OWNER_A,
+      periodId,
       status: 'PENDING',
     },
   ]);
+}
+
+/**
+ * Reads a cell by its header text rather than by position.
+ *
+ * Column order is not part of what this suite is asserting, and a positional
+ * read makes every test here fail the next time a column is inserted — as
+ * `Period` and the verifier columns just were — for a reason that has nothing to
+ * do with the pipeline these tests exist to cover.
+ */
+function cellAt(sheet: Worksheet, rowNumber: number, header: string) {
+  const headers = sheet.getRow(1).values as unknown[];
+  const column = headers.findIndex((value) => value === header);
+  if (column < 0) throw new Error(`No column "${header}" in ${sheet.name}`);
+  return sheet.getRow(rowNumber).getCell(column);
 }
 
 async function readGenerated(storedPath: string): Promise<Workbook> {
@@ -262,17 +327,46 @@ describe('filters narrow the row set and are persisted (spec 8)', () => {
 });
 
 describe('the generated file reflects the database (spec 8)', () => {
-  it('logs only applied corrections, never a pending one', async () => {
+  it('logs only applied corrections, never a pending or merely verified one', async () => {
     const generated = await runExport(admin, NO_FILTERS);
     const [row] = await db.select().from(excelExport).where(eq(excelExport.id, generated.id));
 
     const log = (await readGenerated(row.storedPath)).getWorksheet(SHEET_CORRECTIONS)!;
 
     expect(log.actualRowCount).toBe(2); // header + the one APPROVED request
-    expect(log.getRow(2).getCell(1).value).toBe('5920000001');
-    expect(log.getRow(2).getCell(2).value).toBe('AutoPay');
-    expect(log.getRow(2).getCell(4).value).toBe('Yes');
-    expect(log.getRow(2).getCell(10).value).toBe('Anita Approver');
+    expect(cellAt(log, 2, 'Apps_No').value).toBe('5920000001');
+    expect(cellAt(log, 2, 'Field').value).toBe('AutoPay');
+    expect(cellAt(log, 2, 'Approved_Value').value).toBe('Yes');
+    expect(cellAt(log, 2, 'Approver').value).toBe('Anita Approver');
+  });
+
+  it('names the verifier who cleared the row, from the user the request points at', async () => {
+    const generated = await runExport(admin, NO_FILTERS);
+    const [row] = await db.select().from(excelExport).where(eq(excelExport.id, generated.id));
+
+    const log = (await readGenerated(row.storedPath)).getWorksheet(SHEET_CORRECTIONS)!;
+
+    // The verifier reaches the sheet through its own join, not through the
+    // reviewer one — an export that resolved both from `reviewed_by` would print
+    // the approver's name in both columns and still look plausible.
+    expect(cellAt(log, 2, 'Verifier').value).toBe('Vikram Verifier');
+    expect((cellAt(log, 2, 'Verified_On').value as Date).toISOString()).toBe(
+      '2026-06-30T06:00:00.000Z',
+    );
+    expect(cellAt(log, 2, 'Verifier_Remarks').value).toBe('Mandate copy matches the application.');
+    expect(cellAt(log, 2, 'Period').value).toBe('Jun 2026');
+  });
+
+  it('resolves the period label for the records that carry one', async () => {
+    const generated = await runExport(admin, NO_FILTERS);
+    const [row] = await db.select().from(excelExport).where(eq(excelExport.id, generated.id));
+
+    const master = (await readGenerated(row.storedPath)).getWorksheet(SHEET_MASTER)!;
+
+    // Rows are ordered by Apps_No, so 5920000001 — the only record in a period —
+    // is row 2 and the two pre-period rows follow it.
+    expect(cellAt(master, 2, 'Period').value).toBe('Jun 2026');
+    expect(cellAt(master, 3, 'Period').value).toBeFalsy();
   });
 
   it('preserves money and identifiers read straight out of Postgres', async () => {
@@ -280,11 +374,9 @@ describe('the generated file reflects the database (spec 8)', () => {
     const [row] = await db.select().from(excelExport).where(eq(excelExport.id, generated.id));
 
     const master = (await readGenerated(row.storedPath)).getWorksheet(SHEET_MASTER)!;
-    const headers = master.getRow(1).values as unknown[];
-    const fpColumn = headers.findIndex((h) => h === 'FP (first premium)');
 
-    expect(master.getRow(2).getCell(1).value).toBe('5920000001');
-    expect(master.getRow(2).getCell(fpColumn).value).toBe(4195.42);
+    expect(cellAt(master, 2, 'Application number').value).toBe('5920000001');
+    expect(cellAt(master, 2, 'FP (first premium)').value).toBe(4195.42);
   });
 
   it('unions extra columns across the exported rows', async () => {

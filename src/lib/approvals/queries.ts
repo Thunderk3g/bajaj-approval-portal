@@ -6,13 +6,19 @@ import {
   correctionEvent,
   correctionRequest,
   manpower,
+  period,
   salesRecord,
   salesRecordVersion,
   user,
 } from '@/db/schema';
 import { ageInDays } from '@/lib/format';
 import { pageCount } from '@/lib/pagination';
-import { HISTORY_ACTIONS, type HistoryFilters, type QueueFilters } from './schemas';
+import {
+  HISTORY_ACTIONS,
+  OPEN_QUEUE_STATUSES,
+  type HistoryFilters,
+  type QueueFilters,
+} from './schemas';
 
 /**
  * Approver reads — spec sections 9 and 9.1.
@@ -25,6 +31,7 @@ import { HISTORY_ACTIONS, type HistoryFilters, type QueueFilters } from './schem
 
 const submitter = alias(user, 'submitter');
 const reviewer = alias(user, 'reviewer');
+const checker = alias(user, 'checker');
 const actor = alias(user, 'actor');
 
 /** Correlated rather than a join: a join on attachments would multiply rows. */
@@ -81,7 +88,7 @@ export async function listQueue(
   page: { page: number; pageSize: number; offset: number },
 ): Promise<Page<QueueRow>> {
   const statuses =
-    filters.scope === 'OPEN' ? (['PENDING', 'RETURNED'] as const) : ([filters.scope] as const);
+    filters.scope === 'OPEN' ? OPEN_QUEUE_STATUSES : ([filters.scope] as const);
 
   const where = and(
     inArray(correctionRequest.status, [...statuses]),
@@ -139,25 +146,44 @@ export async function listQueue(
   };
 }
 
-/** Queue depth by scope, for the filter chips. */
-export async function queueCounts(): Promise<{ pending: number; returned: number; oldestDays: number }> {
+/**
+ * Queue depth by scope, for the filter chips.
+ *
+ * `awaitingDecision` counts VERIFIED — the approver's actual work — and
+ * `awaitingVerification` counts PENDING, which is upstream of them. Keeping both
+ * is what stops a cleared approver queue reading as "nothing to do" when fifty
+ * requests are stacked behind an unattended verifier.
+ *
+ * Ageing is measured from `submittedAt` in both cases, not from the moment of
+ * verification: the rep has been waiting since they submitted, and an SLA that
+ * restarted at each stage would report a three-week-old request as one day old.
+ */
+export async function queueCounts(): Promise<{
+  awaitingDecision: number;
+  awaitingVerification: number;
+  returned: number;
+  oldestDays: number;
+}> {
   const rows = await db
     .select({
       status: correctionRequest.status,
       total: sql<number>`count(*)::int`,
-      oldest: sql<Date | null>`min(${correctionRequest.submittedAt})`,
+      oldest: sql<Date | null>`min(${correctionRequest.submittedAt})`.mapWith(
+        correctionRequest.submittedAt,
+      ),
     })
     .from(correctionRequest)
-    .where(inArray(correctionRequest.status, ['PENDING', 'RETURNED']))
+    .where(inArray(correctionRequest.status, [...OPEN_QUEUE_STATUSES]))
     .groupBy(correctionRequest.status);
 
-  const pending = rows.find((r) => r.status === 'PENDING');
-  const returned = rows.find((r) => r.status === 'RETURNED');
+  const of = (status: string) => rows.find((r) => r.status === status);
+  const verified = of('VERIFIED');
 
   return {
-    pending: pending?.total ?? 0,
-    returned: returned?.total ?? 0,
-    oldestDays: pending?.oldest ? ageInDays(pending.oldest) : 0,
+    awaitingDecision: verified?.total ?? 0,
+    awaitingVerification: of('PENDING')?.total ?? 0,
+    returned: of('RETURNED')?.total ?? 0,
+    oldestDays: verified?.oldest ? ageInDays(verified.oldest) : 0,
   };
 }
 
@@ -279,11 +305,21 @@ export async function getRequestDetail(requestId: string) {
       submitterSmId: submitter.smId,
       reviewerName: reviewer.name,
       reviewerEmail: reviewer.email,
+      // The first gate, shown to the approver before they decide. Knowing a
+      // colleague already checked this against its proof — and what they said —
+      // is the whole point of the stage; without it on screen the approver is
+      // repeating the work rather than building on it.
+      verifierName: checker.name,
+      verifierEmail: checker.email,
+      periodLabel: period.label,
+      periodStatus: period.status,
     })
     .from(correctionRequest)
     .innerJoin(salesRecord, eq(salesRecord.id, correctionRequest.recordId))
     .leftJoin(submitter, eq(submitter.id, correctionRequest.submittedBy))
     .leftJoin(reviewer, eq(reviewer.id, correctionRequest.reviewedBy))
+    .leftJoin(checker, eq(checker.id, correctionRequest.verifiedBy))
+    .leftJoin(period, eq(period.id, correctionRequest.periodId))
     .where(eq(correctionRequest.id, requestId))
     .limit(1);
 

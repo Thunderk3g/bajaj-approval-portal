@@ -38,10 +38,36 @@ import type { SessionUser } from '@/lib/auth/rbac';
 
 export type ApprovalErrorCode =
   | 'NOT_FOUND'
+  /**
+   * Kept under its original name after the 2026-07-28 gate change, though the
+   * status it now demands is VERIFIED. Renaming it would touch every call site
+   * and every test for no behavioural gain; the message says which status was
+   * expected, and this code only ever means "the row is not in the state this
+   * transition starts from".
+   */
   | 'NOT_PENDING'
   | 'RECORD_MISSING'
   | 'UNKNOWN_FIELD'
   | 'INVALID_VALUE';
+
+/**
+ * The status an approver may act on — 2026-07-28 spec section 3.4.
+ *
+ * THIS CONSTANT IS THE VERIFIER GATE. It is not a UI rule and not a layout
+ * check: a Server Action is a POST endpoint reachable without rendering the page
+ * that guards it, so an approver handed a PENDING request id — from a stale tab,
+ * a copied link, or a crafted request — must be stopped here or not at all.
+ *
+ * It sits in the same predicate as the concurrency guarantee, deliberately. The
+ * `FOR UPDATE ... WHERE status = APPROVABLE_STATUS` read is what stops two
+ * approvers double-deciding AND what stops an unverified request being decided
+ * at all; one lock, one check, no window between them.
+ *
+ * Widening this back to include PENDING silently removes the second stage while
+ * leaving every screen looking identical. tests/integration/verification-flow
+ * asserts against that.
+ */
+export const APPROVABLE_STATUS = 'VERIFIED' as const;
 
 /**
  * A domain failure, thrown rather than returned.
@@ -225,15 +251,17 @@ export async function applyApprovalWithin(
   const [request] = await tx
     .select()
     .from(correctionRequest)
-    .where(and(eq(correctionRequest.id, input.requestId), eq(correctionRequest.status, 'PENDING')))
+    .where(
+      and(
+        eq(correctionRequest.id, input.requestId),
+        eq(correctionRequest.status, APPROVABLE_STATUS),
+      ),
+    )
     .limit(1)
     .for('update');
 
   if (!request) {
-    throw new ApprovalError(
-      'NOT_PENDING',
-      'This request has already been decided by someone else. Reload to see the outcome.',
-    );
+    throw new ApprovalError('NOT_PENDING', await notApprovableMessage(tx, input.requestId));
   }
 
   const fieldKey = resolveTargetField(request.category, request.fieldName);
@@ -334,7 +362,7 @@ export async function applyApprovalWithin(
     requestId: request.id,
     action: 'APPROVED',
     actorId: input.actor.id,
-    fromStatus: 'PENDING',
+    fromStatus: APPROVABLE_STATUS,
     toStatus: 'APPROVED',
     remarks,
   });
@@ -347,13 +375,18 @@ export async function applyApprovalWithin(
       action: 'CORRECTION_APPROVE',
       entityType: 'correction_request',
       entityId: request.id,
-      before: { status: 'PENDING', proposedValue: request.proposedValue },
+      before: { status: APPROVABLE_STATUS, proposedValue: request.proposedValue },
       after: { status: 'APPROVED', appliedVersion, approverRemarks: remarks },
       metadata: {
         appsNo: request.appsNo,
         category: request.category,
         fieldName: fieldKey,
         submittedBy: request.submittedBy,
+        // Who cleared the first gate. An audit reader asking how a wrong value
+        // got in needs to know whether the verifier missed it or the approver
+        // overrode them, and the request row is mutable where this is not.
+        verifiedBy: request.verifiedBy,
+        verifiedAt: request.verifiedAt,
       },
       ipAddress: input.ipAddress ?? null,
       userAgent: input.userAgent ?? null,
@@ -479,22 +512,17 @@ export async function decideWithin(
   const [request] = await tx
     .select()
     .from(correctionRequest)
-    .where(and(eq(correctionRequest.id, input.requestId), eq(correctionRequest.status, 'PENDING')))
+    .where(
+      and(
+        eq(correctionRequest.id, input.requestId),
+        eq(correctionRequest.status, APPROVABLE_STATUS),
+      ),
+    )
     .limit(1)
     .for('update');
 
   if (!request) {
-    const [exists] = await tx
-      .select({ status: correctionRequest.status })
-      .from(correctionRequest)
-      .where(eq(correctionRequest.id, input.requestId))
-      .limit(1);
-
-    if (!exists) throw new ApprovalError('NOT_FOUND', 'That correction request no longer exists.');
-    throw new ApprovalError(
-      'NOT_PENDING',
-      `This request is already ${exists.status.toLowerCase()} and cannot be decided again.`,
-    );
+    throw new ApprovalError('NOT_PENDING', await notApprovableMessage(tx, input.requestId));
   }
 
   const status = input.decision === 'REJECT' ? 'REJECTED' : 'RETURNED';
@@ -514,7 +542,7 @@ export async function decideWithin(
     requestId: request.id,
     action: status,
     actorId: input.actor.id,
-    fromStatus: 'PENDING',
+    fromStatus: APPROVABLE_STATUS,
     toStatus: status,
     remarks,
   });
@@ -525,7 +553,7 @@ export async function decideWithin(
       action: input.decision === 'REJECT' ? 'CORRECTION_REJECT' : 'CORRECTION_RETURN',
       entityType: 'correction_request',
       entityId: request.id,
-      before: { status: 'PENDING' },
+      before: { status: APPROVABLE_STATUS },
       after: { status, approverRemarks: remarks },
       metadata: {
         appsNo: request.appsNo,
@@ -564,6 +592,40 @@ export async function rejectRequest(input: DecisionInput): Promise<DecisionOutco
 
 export async function returnRequest(input: DecisionInput): Promise<DecisionOutcome> {
   return db.transaction((tx) => decideWithin(tx, { ...input, decision: 'RETURN' }));
+}
+
+/**
+ * Explains why a request the approver tried to act on was not approvable.
+ *
+ * Before the verifier gate there was one reason — somebody else decided it
+ * first — and one message served. Now there are three, and they call for three
+ * different responses:
+ *
+ *   PENDING            no verifier has seen it. The approver must WAIT, and
+ *                      telling them "already decided" would send them looking
+ *                      for a decision that was never made.
+ *   RETURNED/WITHDRAWN it went back to the rep.
+ *   APPROVED/REJECTED  a colleague got there first.
+ *
+ * Read outside the lock, after the locked read has already failed, so it costs
+ * nothing on the path that succeeds.
+ */
+async function notApprovableMessage(tx: DbTransaction, requestId: string): Promise<string> {
+  const [exists] = await tx
+    .select({ status: correctionRequest.status })
+    .from(correctionRequest)
+    .where(eq(correctionRequest.id, requestId))
+    .limit(1);
+
+  if (!exists) return 'That correction request no longer exists.';
+
+  if (exists.status === 'PENDING') {
+    return 'This request has not been verified yet. A verifier has to check it before it can be approved.';
+  }
+  if (exists.status === 'RETURNED' || exists.status === 'WITHDRAWN') {
+    return `This request is ${exists.status.toLowerCase()} and is back with the submitter.`;
+  }
+  return `This request is already ${exists.status.toLowerCase()} and cannot be decided again.`;
 }
 
 /* ---------------------------------------------------------------- preview */

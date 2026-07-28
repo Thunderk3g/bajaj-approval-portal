@@ -29,6 +29,27 @@
       "when": 1785144480540,
       "tag": "0003_stormy_firedrake",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1785216342995,
+      "tag": "0004_gigantic_khan",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785218546704,
+      "tag": "0005_solid_cobalt_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785218609192,
+      "tag": "0006_whole_riptide",
+      "breakpoints": true
     }
   ]
 }

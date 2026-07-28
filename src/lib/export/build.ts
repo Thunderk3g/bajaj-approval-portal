@@ -54,12 +54,27 @@ export type ExportCorrection = {
   submitterName: string | null;
   submitterEmail: string | null;
   submittedAt: Date;
+  /**
+   * The first gate — 2026-07-28 spec section 3.5.
+   *
+   * Carried separately from the approver, not folded into a single "reviewed
+   * by". An export is the artefact that leaves the system and gets argued over;
+   * one that names only the approver cannot answer whether a wrong value got
+   * through because the verifier missed it or because the approver overrode
+   * them, and that is the first question anyone asks.
+   */
+  verifierName: string | null;
+  verifierEmail: string | null;
+  verifiedAt: Date | null;
+  verifierRemarks: string | null;
   approverName: string | null;
   approverEmail: string | null;
   status: string;
   approverRemarks: string | null;
   reviewedAt: Date | null;
   appliedAt: Date | null;
+  /** The reconciliation cycle this claim was raised in. Null pre-dates periods. */
+  periodLabel: string | null;
 };
 
 export type ExportMeta = {
@@ -76,6 +91,15 @@ export type ExportInput = {
   records: ExportRecord[];
   corrections: ExportCorrection[];
   meta: ExportMeta;
+  /**
+   * period id → label, for the `Period` column on Master Data.
+   *
+   * A lookup rather than a join onto each record: an export can span thousands
+   * of records but only a handful of periods, so carrying the label on every row
+   * from the database would repeat the same dozen strings a thousand times over
+   * the wire.
+   */
+  periodLabels?: Map<string, string>;
 };
 
 /* ------------------------------------------------------------------ values */
@@ -215,12 +239,27 @@ function instantText(value: Date | null | undefined): string {
  * from one where the source data was simply different.
  */
 export function correctionNote(correction: ExportCorrection): string {
-  return [
+  const lines = [
     `Original value: ${correction.originalValue ?? '(blank)'}`,
     `Approved value: ${correction.proposedValue}`,
+  ];
+
+  // Both gates, in the order they happened. A reader hovering a highlighted cell
+  // is asking "who is accountable for this number" — naming one of the two
+  // people involved answers half the question.
+  if (correction.verifierName ?? correction.verifierEmail) {
+    lines.push(
+      `Verified by: ${correction.verifierName ?? correction.verifierEmail}`,
+      `Verified on: ${instantText(correction.verifiedAt)}`,
+    );
+  }
+
+  lines.push(
     `Approved by: ${correction.approverName ?? correction.approverEmail ?? 'unknown approver'}`,
     `Approved on: ${instantText(correction.appliedAt ?? correction.reviewedAt)}`,
-  ].join('\n');
+  );
+
+  return lines.join('\n');
 }
 
 /* ------------------------------------------------------------------ sheets */
@@ -294,6 +333,7 @@ function addMasterSheet(workbook: Workbook, input: ExportInput): void {
   const headers = [
     ...CANONICAL_FIELDS.map((field) => field.label),
     ...extraKeys,
+    'Period',
     'Corrected_Fields',
     'Correction_Count',
     'Last_Corrected_On',
@@ -320,6 +360,7 @@ function addMasterSheet(workbook: Workbook, input: ExportInput): void {
     const cells: PreparedCell[] = [
       ...CANONICAL_FIELDS.map((field) => prepareCanonicalCell(field.kind, values[field.key])),
       ...extraKeys.map((key) => prepareExtraCell(extra[key])),
+      { value: record.periodId ? (input.periodLabels?.get(record.periodId) ?? null) : null },
       { value: correctedFields.map((c) => c.fieldLabel).join(', ') || null },
       { value: correctedFields.length },
       lastCorrectedOn ? { value: lastCorrectedOn, numFmt: DATETIME_FORMAT } : { value: null },
@@ -341,8 +382,11 @@ function addCorrectionsSheet(workbook: Workbook, input: ExportInput): void {
     views: [{ state: 'frozen', ySplit: 1 }],
   });
 
+  // Both review stages, in the order they occur, so the sheet reads left to
+  // right as the request actually travelled: raised → verified → decided.
   const headers = [
     'Apps_No',
+    'Period',
     'Field',
     'Original_Value',
     'Approved_Value',
@@ -351,6 +395,9 @@ function addCorrectionsSheet(workbook: Workbook, input: ExportInput): void {
     'Submitted_By',
     'SM_ID',
     'Submitted_On',
+    'Verifier',
+    'Verified_On',
+    'Verifier_Remarks',
     'Approver',
     'Decision',
     'Remarks',
@@ -364,6 +411,7 @@ function addCorrectionsSheet(workbook: Workbook, input: ExportInput): void {
   for (const correction of input.corrections) {
     const cells: PreparedCell[] = [
       { value: correction.appsNo, numFmt: TEXT_FORMAT },
+      { value: correction.periodLabel },
       { value: correction.fieldLabel },
       { value: correction.originalValue },
       { value: correction.proposedValue },
@@ -372,6 +420,11 @@ function addCorrectionsSheet(workbook: Workbook, input: ExportInput): void {
       { value: correction.submitterName ?? correction.submitterEmail },
       { value: correction.smId },
       { value: correction.submittedAt, numFmt: DATETIME_FORMAT },
+      { value: correction.verifierName ?? correction.verifierEmail },
+      correction.verifiedAt
+        ? { value: correction.verifiedAt, numFmt: DATETIME_FORMAT }
+        : { value: null },
+      { value: correction.verifierRemarks },
       { value: correction.approverName ?? correction.approverEmail },
       { value: correction.status },
       { value: correction.approverRemarks },

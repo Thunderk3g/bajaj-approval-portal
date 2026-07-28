@@ -42,14 +42,17 @@ describe('decision validation (spec 7)', () => {
 
 describe('filter parsing (spec 9.1)', () => {
   it('defaults the queue to what the approver can actually act on', () => {
-    expect(parseQueueFilters({}).scope).toBe('PENDING');
+    // VERIFIED since the 2026-07-28 gate. PENDING is now upstream of the
+    // approver — landing them on a list whose every row refuses to be decided
+    // would be a queue that lies about its own depth.
+    expect(parseQueueFilters({}).scope).toBe('VERIFIED');
   });
 
   it('ignores an unrecognised filter rather than erroring the page', () => {
     // These arrive from a hand-editable query string on a read-only screen; a
     // bad bookmark should render the default view, not a stack trace.
     const filters = parseQueueFilters({ scope: 'ANYTHING', category: 'DROP TABLE' });
-    expect(filters.scope).toBe('PENDING');
+    expect(filters.scope).toBe('VERIFIED');
     expect(filters.category).toBeUndefined();
   });
 

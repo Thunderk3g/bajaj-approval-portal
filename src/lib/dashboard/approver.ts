@@ -33,8 +33,16 @@ export type DecisionAction = (typeof DECISION_ACTIONS)[number];
 
 export type ApproverDashboard = {
   queue: {
-    /** Waiting on an approver. */
+    /** VERIFIED — waiting on an approver. This is the approver's own depth. */
     pending: number;
+    /**
+     * PENDING — waiting on a VERIFIER, upstream of this dashboard.
+     *
+     * Shown because it is the leading indicator: an approver whose own queue is
+     * empty while this number climbs is not idle, they are blocked, and nothing
+     * else on the page would tell them apart.
+     */
+    awaitingVerification: number;
     /** Waiting on the rep to resubmit — not queue depth, but not closed either. */
     returned: number;
     oldestPendingAt: Date | null;
@@ -49,7 +57,10 @@ function allOf(...parts: SQL[]): SQL {
 }
 
 export async function getApproverDashboard(now: number = Date.now()): Promise<ApproverDashboard> {
-  const isPending = eq(correctionRequest.status, 'PENDING');
+  // The approver's queue is VERIFIED, not PENDING, since the 2026-07-28 gate.
+  // The local name is kept so the ageing buckets below read the same as before;
+  // what changed is which status they measure.
+  const isPending = eq(correctionRequest.status, 'VERIFIED');
 
   // Bucket boundaries are absolute instants derived from one clock reading, not
   // from SQL now(). Two reads of now() inside one query would still agree, but
@@ -82,6 +93,7 @@ export async function getApproverDashboard(now: number = Date.now()): Promise<Ap
       .select({
         total: countAll,
         pending: countFiltered(isPending),
+        awaitingVerification: countFiltered(eq(correctionRequest.status, 'PENDING')),
         returned: countFiltered(eq(correctionRequest.status, 'RETURNED')),
         // mapWith: drizzle's node-postgres driver leaves timestamps as raw
         // strings for the column codec to parse, so an unmapped aggregate would
@@ -103,6 +115,7 @@ export async function getApproverDashboard(now: number = Date.now()): Promise<Ap
   return {
     queue: {
       pending: queue[0].pending,
+      awaitingVerification: queue[0].awaitingVerification,
       returned: queue[0].returned,
       oldestPendingAt: queue[0].oldestPendingAt,
       ageing: Object.fromEntries(

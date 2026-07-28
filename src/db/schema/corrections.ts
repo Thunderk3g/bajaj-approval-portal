@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import { check, index, integer, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import { correctionCategoryEnum, correctionStatusEnum, eventActionEnum } from './enums';
 import { user } from './auth';
+import { period } from './periods';
 import { salesRecord } from './records';
 
 export const correctionRequest = pgTable(
@@ -24,6 +25,28 @@ export const correctionRequest = pgTable(
     smId: text('sm_id').notNull(),
     submittedAt: timestamp('submitted_at', { withTimezone: true }).notNull().defaultNow(),
     status: correctionStatusEnum('status').notNull().default('PENDING'),
+    /**
+     * The cycle this claim was raised in — 2026-07-28 spec section 4.3.
+     *
+     * Stamped once at submission and never changed. If the record moves to a
+     * newer period next month the request still belongs to the cycle it was
+     * raised in; otherwise closing a month would retroactively drag in work
+     * that was never part of it.
+     *
+     * Null on rows that predate periods. Null is NOT an open period — the close
+     * guard treats it as unconstrained, so a pre-period record stays correctable.
+     */
+    periodId: uuid('period_id').references(() => period.id),
+    /**
+     * The verification stage — spec section 3.5. Deliberately separate from the
+     * `reviewed*` columns below rather than reusing them: the two stages are
+     * answered by different people and both answers must survive. An audit that
+     * can only name one reviewer cannot say whether a bad correction got through
+     * because the verifier missed it or because the approver overrode them.
+     */
+    verifiedBy: text('verified_by').references(() => user.id),
+    verifiedAt: timestamp('verified_at', { withTimezone: true }),
+    verifierRemarks: text('verifier_remarks'),
     reviewedBy: text('reviewed_by').references(() => user.id),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
     approverRemarks: text('approver_remarks'),
@@ -40,6 +63,7 @@ export const correctionRequest = pgTable(
     index('correction_request_status_idx').on(t.status),
     index('correction_request_sm_id_idx').on(t.smId),
     index('correction_request_record_idx').on(t.recordId),
+    index('correction_request_period_idx').on(t.periodId),
   ],
 );
 

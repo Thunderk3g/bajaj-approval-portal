@@ -5,7 +5,8 @@ import { writeAudit, type DbTransaction } from '@/lib/audit/log';
 import type { SessionUser } from '@/lib/auth/rbac';
 import { fieldLabel } from '@/lib/fields';
 import { normalizeIdentifier } from '@/lib/import/normalize';
-import { notifyActiveApprovers } from '@/lib/notifications/service';
+import { notifyActiveVerifiers } from '@/lib/notifications/service';
+import { assertPeriodOpen, PeriodClosedError, periodForRecord } from '@/lib/periods/service';
 import { type ActionResult, fail, ok, zodFieldErrors } from '@/lib/result';
 import {
   MAX_PROOFS_PER_REQUEST,
@@ -36,8 +37,34 @@ import {
 /** The partial unique index of section 5.6, by the name Postgres reports. */
 const OPEN_REQUEST_INDEX = 'correction_one_open_per_field';
 
-/** The statuses a submitter may still act on — section 7. */
-export const OPEN_STATUSES = ['PENDING', 'RETURNED'] as const;
+/** The period trigger of the 2026-07-28 spec section 4.4, by its RAISE ... USING CONSTRAINT name. */
+const PERIOD_CLOSED_CONSTRAINT = 'correction_period_must_be_open';
+
+/**
+ * The statuses that hold a field locked against a second competing request.
+ *
+ * Mirrors the partial unique index in `drizzle/custom/0002_one_open_correction.sql`
+ * and must stay in step with it — the index is the guarantee, this is what the
+ * error messages and the UI derive from.
+ */
+export const LOCKING_STATUSES = ['PENDING', 'VERIFIED', 'RETURNED'] as const;
+
+/**
+ * The statuses a submitter may still withdraw from — 2026-07-28 spec section 3.3.
+ *
+ * DELIBERATELY NARROWER than LOCKING_STATUSES. A VERIFIED request locks the
+ * field but cannot be withdrawn: a verifier has already spent review effort on
+ * it and signed their name to it, and letting the submitter discard that
+ * silently turns a completed review into a dead end with no record of why.
+ *
+ * These were one constant before the verifier gate, when the two sets happened
+ * to coincide. Keeping them separate is what stops the next change to either one
+ * quietly altering the other.
+ */
+export const WITHDRAWABLE_STATUSES = ['PENDING', 'RETURNED'] as const;
+
+/** @deprecated Use LOCKING_STATUSES or WITHDRAWABLE_STATUSES — they are no longer the same set. */
+export const OPEN_STATUSES = WITHDRAWABLE_STATUSES;
 
 export type SubmitCorrectionInput = {
   category: string;
@@ -55,6 +82,21 @@ export type ResubmitCorrectionInput = {
   files?: ProofUpload[];
 };
 
+export type SubmitOutcome = {
+  id: string;
+  /**
+   * Active verifiers reached. Zero means the request is in a queue nobody is
+   * subscribed to — the submit still succeeded, so this is surfaced to the rep
+   * as a caveat rather than raised as a failure they cannot fix.
+   *
+   * Returned by BOTH submit and resubmit. A resubmission re-enters at PENDING
+   * into the same verifier queue, so it can go unseen for exactly the same
+   * reason; reporting it on one path and not the other would leave a rep who
+   * fixed a returned request with no warning at all.
+   */
+  notified: number;
+};
+
 /**
  * Recognises the "somebody already has this field open" collision.
  *
@@ -63,7 +105,7 @@ export type ResubmitCorrectionInput = {
  * error. Matching on the message text alone would catch any failure at all and
  * report a genuine database fault to the user as "already open".
  */
-function isOpenRequestConflict(error: unknown): boolean {
+function matchesConstraint(error: unknown, code: string, constraint: string): boolean {
   let cursor: unknown = error;
 
   while (cursor && typeof cursor === 'object') {
@@ -74,9 +116,9 @@ function isOpenRequestConflict(error: unknown): boolean {
       cause?: unknown;
     };
 
-    if (candidate.code === '23505') {
-      if (candidate.constraint === OPEN_REQUEST_INDEX) return true;
-      if (typeof candidate.message === 'string' && candidate.message.includes(OPEN_REQUEST_INDEX)) {
+    if (candidate.code === code) {
+      if (candidate.constraint === constraint) return true;
+      if (typeof candidate.message === 'string' && candidate.message.includes(constraint)) {
         return true;
       }
     }
@@ -85,6 +127,22 @@ function isOpenRequestConflict(error: unknown): boolean {
   }
 
   return false;
+}
+
+function isOpenRequestConflict(error: unknown): boolean {
+  return matchesConstraint(error, '23505', OPEN_REQUEST_INDEX);
+}
+
+/**
+ * The period-closed trigger firing.
+ *
+ * Reaching this means the period closed between `assertPeriodOpen` below and the
+ * INSERT — a real race, since closing happens during the monthly upload, which
+ * is exactly when reps are busiest. The trigger is the guarantee; the check
+ * above it is the explanation.
+ */
+function isClosedPeriodConflict(error: unknown): boolean {
+  return matchesConstraint(error, '23514', PERIOD_CLOSED_CONSTRAINT);
 }
 
 /** Snapshots the record's value for the targeted field — section 5.5. */
@@ -110,7 +168,7 @@ function actorScope(actor: SessionUser): { ok: true; smId: string } | { ok: fals
 export async function submitCorrection(
   actor: SessionUser,
   input: SubmitCorrectionInput,
-): Promise<ActionResult<{ id: string }>> {
+): Promise<ActionResult<SubmitOutcome>> {
   const scope = actorScope(actor);
   if (!scope.ok) return fail(scope.message);
 
@@ -181,6 +239,21 @@ export async function submitCorrection(
     });
   }
 
+  // The monthly close — 2026-07-28 spec section 4.4. Checked before the files
+  // are written to disk, so a refusal leaves nothing to clean up.
+  //
+  // The record's own period, not the currently open one: a record still sitting
+  // in June's cycle is June's work, and the question is whether JUNE is closed.
+  // Using the open period instead would let a rep raise July claims against
+  // records that were never in July's file.
+  const periodId = periodForRecord(record);
+  try {
+    await assertPeriodOpen(periodId);
+  } catch (error) {
+    if (error instanceof PeriodClosedError) return fail(error.message);
+    throw error;
+  }
+
   // Files are written to disk BEFORE the transaction opens. The alternative
   // leaves the transaction open across filesystem I/O, holding a row lock for as
   // long as 50 MB takes to land. An orphaned file if the insert then fails is
@@ -190,7 +263,7 @@ export async function submitCorrection(
   if (!uploads.ok) return fail(uploads.reason, { files: [uploads.reason] });
 
   try {
-    const id = await db.transaction(async (tx) => {
+    const outcome = await db.transaction(async (tx) => {
       const [created] = await tx
         .insert(correctionRequest)
         .values({
@@ -208,6 +281,7 @@ export async function submitCorrection(
           // indexed to answer.
           smId: scope.smId,
           status: 'PENDING',
+          periodId,
         })
         .returning({ id: correctionRequest.id });
 
@@ -220,6 +294,17 @@ export async function submitCorrection(
         fromStatus: null,
         toStatus: 'PENDING',
         remarks: submission.description,
+      });
+
+      const notified = await notifyVerifiers(tx, {
+        requestId: created.id,
+        resubmission: false,
+        actorName: actor.name,
+        category: submission.category,
+        label,
+        appsNo,
+        originalValue,
+        proposedValue: proposed.value as string,
       });
 
       await writeAudit(
@@ -235,28 +320,34 @@ export async function submitCorrection(
             originalValue,
             proposedValue: proposed.value,
           },
-          metadata: { attachmentCount: uploads.stored.length, recordSmId: record.smId },
+          metadata: {
+            attachmentCount: uploads.stored.length,
+            recordSmId: record.smId,
+            periodId,
+            // Zero means this request landed in a queue nobody is subscribed to.
+            // Recorded rather than swallowed: from the rep's side a request with
+            // no verifier looks exactly like one that is being worked on, and
+            // the only way anyone finds out is if this number is written down.
+            verifiersNotified: notified,
+          },
         },
         tx,
       );
 
-      await notifyApprovers(tx, {
-        requestId: created.id,
-        resubmission: false,
-        actorName: actor.name,
-        category: submission.category,
-        label,
-        appsNo,
-        originalValue,
-        proposedValue: proposed.value as string,
-      });
-
-      return created.id;
+      return { id: created.id, notified };
     });
 
-    return ok({ id });
+    return ok(outcome);
   } catch (error) {
     await deleteStoredProofs(uploads.stored.map((s) => s.relativePath));
+
+    if (isClosedPeriodConflict(error)) {
+      // The period closed between the check above and this insert — the monthly
+      // upload ran while the rep was filling in the form.
+      return fail(
+        'That reconciliation period was closed while you were submitting. The record now belongs to a closed month and cannot take new corrections.',
+      );
+    }
 
     if (isOpenRequestConflict(error)) {
       // The database is the authority on this, not a prior SELECT: two reps
@@ -276,7 +367,7 @@ export async function submitCorrection(
 export async function resubmitCorrection(
   actor: SessionUser,
   input: ResubmitCorrectionInput,
-): Promise<ActionResult<{ id: string }>> {
+): Promise<ActionResult<SubmitOutcome>> {
   const scope = actorScope(actor);
   if (!scope.ok) return fail(scope.message);
 
@@ -338,7 +429,7 @@ export async function resubmitCorrection(
   }
 
   try {
-    await db.transaction(async (tx) => {
+    const notified = await db.transaction(async (tx) => {
       await tx
         .update(correctionRequest)
         .set({
@@ -354,6 +445,17 @@ export async function resubmitCorrection(
           reviewedBy: null,
           reviewedAt: null,
           approverRemarks: null,
+          // The verification columns clear with them. They describe the CURRENT
+          // review and there is not one yet; leaving them would show the next
+          // verifier their predecessor's sign-off on a value that has since
+          // changed. The remarks survive on the RETURNED event either way.
+          //
+          // periodId is deliberately NOT touched: a resubmission continues the
+          // claim raised in that cycle, and re-stamping it would move completed
+          // work into a month it was never part of.
+          verifiedBy: null,
+          verifiedAt: null,
+          verifierRemarks: null,
         })
         .where(eq(correctionRequest.id, existing.id));
 
@@ -370,6 +472,21 @@ export async function resubmitCorrection(
         remarks: submission.description,
       });
 
+      // Back to the verifiers, not the approvers: a resubmitted request returns
+      // to PENDING and starts the two stages again from the top. A resubmission
+      // that skipped verification would let a rep bypass the gate by getting
+      // returned once on purpose.
+      const recipients = await notifyVerifiers(tx, {
+        requestId: existing.id,
+        resubmission: true,
+        actorName: actor.name,
+        category: existing.category,
+        label: existing.fieldLabel,
+        appsNo: existing.appsNo,
+        originalValue: existing.originalValue,
+        proposedValue: proposed.value as string,
+      });
+
       await writeAudit(
         {
           actor,
@@ -382,24 +499,19 @@ export async function resubmitCorrection(
             appsNo: existing.appsNo,
             resubmissionCount: existing.resubmissionCount + 1,
             attachmentsAdded: uploaded.length,
+            // Recorded on this path for the same reason as on submit: a
+            // resubmission that reached no verifier is indistinguishable, from
+            // the rep's side, from one being worked on.
+            verifiersNotified: recipients,
           },
         },
         tx,
       );
 
-      await notifyApprovers(tx, {
-        requestId: existing.id,
-        resubmission: true,
-        actorName: actor.name,
-        category: existing.category,
-        label: existing.fieldLabel,
-        appsNo: existing.appsNo,
-        originalValue: existing.originalValue,
-        proposedValue: proposed.value as string,
-      });
+      return recipients;
     });
 
-    return ok({ id: existing.id });
+    return ok({ id: existing.id, notified });
   } catch (error) {
     await deleteStoredProofs(uploaded.map((s) => s.relativePath));
 
@@ -425,8 +537,16 @@ export async function withdrawCorrection(
   const existing = await loadOwnRequest(actor, parsed.data.requestId);
   if (!existing) return fail('That request does not exist.');
 
-  if (!(OPEN_STATUSES as readonly string[]).includes(existing.status)) {
-    return fail('Only a pending or returned request can be withdrawn.');
+  if (!(WITHDRAWABLE_STATUSES as readonly string[]).includes(existing.status)) {
+    // Naming VERIFIED explicitly: "only a pending or returned request can be
+    // withdrawn" leaves a rep staring at a request that is plainly still open
+    // and a button that refuses, with no clue that the reason is a review
+    // somebody already completed.
+    return fail(
+      existing.status === 'VERIFIED'
+        ? 'This request has already passed verification and is with an approver. Ask them to reject it if it should not go ahead.'
+        : 'Only a pending or returned request can be withdrawn.',
+    );
   }
 
   const reason = parsed.data.reason?.trim() || null;
@@ -547,7 +667,20 @@ async function insertAttachments(
   }
 }
 
-async function notifyApprovers(
+/**
+ * Announces a new or resubmitted request to the VERIFIERS — 2026-07-28 spec
+ * section 3.7.
+ *
+ * This used to notify approvers. It must not any more: with the gate in place a
+ * request in PENDING is not actionable by an approver, so telling them about it
+ * would fill their inbox with links to a screen whose only button refuses.
+ *
+ * Submissions go to EVERY active verifier, not to one assignee. There is no
+ * queue ownership in this design — whoever picks it up first reviews it.
+ *
+ * Returns the recipient count so the caller can react to zero.
+ */
+async function notifyVerifiers(
   tx: DbTransaction,
   input: {
     requestId: string;
@@ -559,18 +692,15 @@ async function notifyApprovers(
     originalValue: string | null;
     proposedValue: string;
   },
-): Promise<void> {
+): Promise<number> {
   const categoryLabel = CATEGORY_LABELS[input.category as CorrectionCategory] ?? input.category;
 
-  // Section 10, row 1: submissions and resubmissions go to EVERY active
-  // approver, not to one assignee. There is no queue ownership in this design —
-  // whoever picks it up first reviews it.
-  await notifyActiveApprovers(
+  return notifyActiveVerifiers(
     {
       type: input.resubmission ? 'CORRECTION_RESUBMITTED' : 'CORRECTION_SUBMITTED',
       title: `${input.resubmission ? 'Resubmitted' : 'New'} ${categoryLabel} correction from ${input.actorName}`,
       body: `${input.label} on application ${input.appsNo}: ${input.originalValue ?? '(blank)'} → ${input.proposedValue}`,
-      link: `/approver/requests/${input.requestId}`,
+      link: `/verifier/requests/${input.requestId}`,
     },
     tx,
   );

@@ -15,6 +15,7 @@ import { CANONICAL_FIELDS, fieldLabel } from '@/lib/fields';
 import { detectGaps } from '@/lib/records/gaps';
 import { notifySalesForBatch } from '@/lib/notifications/service';
 import { resolveStoredPath } from '@/lib/storage/paths';
+import { openPeriodForCommit, periodCodeFor, stampRecordPeriod } from '@/lib/periods/service';
 import { normalizeIdentifier, normalizeSmId, normalizeString } from './normalize';
 import {
   listSheets,
@@ -163,6 +164,19 @@ export async function commitBatch(input: CommitInput): Promise<CommitOutcome> {
       throw new Error('Batch is no longer in a committable state');
     }
 
+    /* ------------------------------------------- the monthly cycle (4.3, 4.4) */
+
+    // Resolved INSIDE the transaction so a rolled-back import cannot leave last
+    // month closed and this month never opened. The batch carries a code, not an
+    // FK, precisely so the period row comes into existence here — at the moment
+    // data actually lands — rather than when a file was merely uploaded.
+    const periodCode = batch.periodCode ?? periodCodeFor(batch.uploadedAt);
+    const { opened: activePeriod, closed: closedPeriods } = await openPeriodForCommit(
+      tx,
+      periodCode,
+      input.actor,
+    );
+
     const staged = await loadStagedRows(input.batchId, { onlyCommittable: true }, tx);
     const appsNos = staged.map((r) => r.normalized.appsNo).filter((v): v is string => Boolean(v));
     const snapshots = await loadMasterSnapshots(appsNos, tx);
@@ -178,9 +192,13 @@ export async function commitBatch(input: CommitInput): Promise<CommitOutcome> {
       manpowerUpserted: 0,
       orphanSmIds: [],
       notified: 0,
+      period: { code: activePeriod.code, label: activePeriod.label },
+      periodsClosed: closedPeriods.map((p) => p.label),
     };
 
     const committedRowIds: string[] = [];
+    /** Existing records this file carried — they move into the batch's period. */
+    const periodStampNeeded: string[] = [];
     const gapCountBySmId = new Map<string, number>();
     const smIdsSeen = new Set<string>();
 
@@ -214,6 +232,7 @@ export async function commitBatch(input: CommitInput): Promise<CommitOutcome> {
           .values({
             ...insertPayload(values),
             extra,
+            periodId: activePeriod.id,
             sourceBatchId: input.batchId,
             sourceRowNumber: row.rowNumber,
             currentVersion: 1,
@@ -268,8 +287,15 @@ export async function commitBatch(input: CommitInput): Promise<CommitOutcome> {
         changedFields.push(field.key);
       }
 
+      // The period moves even when no field does. A record that appears in this
+      // month's file IS this month's workload, whether or not the file disagreed
+      // with anything already stored — and a record that agrees with the master
+      // is the common case, so skipping the stamp here would leave most of the
+      // book in last month's cycle and unaffected by this month's close.
+      periodStampNeeded.push(snapshot.id);
+
       if (changedFields.length === 0) {
-        // Nothing to write, but the row was still processed and must not be
+        // Nothing else to write, but the row was still processed and must not be
         // reported as skipped — it simply agreed with what is already stored.
         committedRowIds.push(row.id);
         countGaps({ ...snapshot.values, ...changes });
@@ -322,6 +348,13 @@ export async function commitBatch(input: CommitInput): Promise<CommitOutcome> {
 
     await markRowsCommitted(committedRowIds, tx);
 
+    // One bulk update rather than a periodId on every applyRecordUpdate call:
+    // moving a record between cycles is not a change to the record's DATA, so it
+    // must not write a version row or appear in the version diff. A reader asking
+    // "what changed at version N" should not be told the answer is "which month
+    // we are reconciling in".
+    await stampRecordPeriod(tx, periodStampNeeded, activePeriod.id);
+
     /* -------------------------------------------- Manpower roster (13.2 n.7) */
 
     const rosterNames = await upsertManpower(tx, secondary.manpowerRows, input.batchId);
@@ -364,6 +397,8 @@ export async function commitBatch(input: CommitInput): Promise<CommitOutcome> {
           sheetName: batch.sheetName,
           fileHash: batch.fileHash,
           secondarySheets: secondary.sheetNames,
+          periodCode: activePeriod.code,
+          periodsClosed: closedPeriods.map((p) => p.code),
         },
       },
       tx,

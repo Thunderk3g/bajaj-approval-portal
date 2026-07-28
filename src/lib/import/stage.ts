@@ -81,13 +81,36 @@ export async function loadMasterSnapshots(
 
     for (const row of approved) {
       const snapshot = byId.get(row.recordId);
-      if (snapshot && !snapshot.protectedFields.includes(row.fieldName)) {
-        snapshot.protectedFields.push(row.fieldName);
+      if (!snapshot) continue;
+
+      for (const field of protectedByCorrectionTo(row.fieldName)) {
+        if (!snapshot.protectedFields.includes(field)) snapshot.protectedFields.push(field);
       }
     }
   }
 
   return snapshots;
+}
+
+/**
+ * The record columns an approved correction to `fieldName` protects from a
+ * re-import.
+ *
+ * Usually just the field itself. `smId` is the exception: approving a mapping
+ * claim writes `smId` AND `smName` together, because spec 7.2 forbids the two
+ * from diverging — the name is resolved from the Manpower roster rather than
+ * being typed, precisely so they cannot.
+ *
+ * A correction request only ever NAMES `smId`, so protecting the named field
+ * alone left `smName` unguarded. Re-importing the same workbook then held the ID
+ * at the gaining rep while overwriting the name back to the losing one, and the
+ * record would claim SM_ID C2CM88888 belongs to "Ravi Kumar" — a person who is
+ * not that rep. Every downstream reader of `sm_name` (the export, the rep's own
+ * record list, mapping notifications) would then name the wrong salesperson,
+ * with nothing in the version history explaining why.
+ */
+function protectedByCorrectionTo(fieldName: string): string[] {
+  return fieldName === 'smId' ? ['smId', 'smName'] : [fieldName];
 }
 
 /**

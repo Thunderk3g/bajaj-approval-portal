@@ -26,6 +26,9 @@ export function middleware(request: NextRequest) {
   return NextResponse.next();
 }
 
+// Mirrors ROLE_PREFIXES in src/lib/auth/redirects.ts. Next requires the matcher
+// to be statically analysable, so it cannot be derived from that map at build
+// time; tests/lib/nav.test.ts asserts the two stay in step instead.
 export const config = {
-  matcher: ['/admin/:path*', '/sales/:path*', '/approver/:path*'],
+  matcher: ['/admin/:path*', '/sales/:path*', '/approver/:path*', '/verifier/:path*'],
 };

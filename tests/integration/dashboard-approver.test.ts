@@ -16,33 +16,34 @@ function daysAgo(days: number): Date {
 
 describe('approver dashboard ageing and throughput (spec 9)', () => {
   let rep: Awaited<ReturnType<typeof makeUser>>;
+  let verifier: Awaited<ReturnType<typeof makeUser>>;
   let approver: Awaited<ReturnType<typeof makeUser>>;
 
-  beforeEach(async () => {
-    await truncateAll();
-
-    rep = await makeUser({ role: 'sales', smId: SM_ID, email: 'rep@example.test' });
-    approver = await makeUser({ role: 'approver', email: 'approver@example.test' });
-
+  /**
+   * Seeds one request per age, each on its own sales record.
+   *
+   * One record per request is not tidiness: `correction_one_open_per_field`
+   * covers PENDING, VERIFIED and RETURNED, so a second live claim against a
+   * record already used here would be refused by the database rather than
+   * counted by the dashboard.
+   */
+  async function seedRequests(ages: number[], status: 'PENDING' | 'VERIFIED', appsPrefix: string) {
     const records = await db
       .insert(salesRecord)
       .values(
-        Array.from({ length: 8 }, (_, index) => ({
-          appsNo: `640000000${index}`,
+        ages.map((_, index) => ({
+          appsNo: `${appsPrefix}${index}`,
           smId: SM_ID,
           status: 'ISSUED',
           issuedDate: '2026-06-03',
-          policyNo: `950000${index}`,
+          policyNo: `${appsPrefix}${index}`,
           autopay: null,
         })),
       )
       .returning();
 
-    // Ages chosen to land two in each band plus a boundary case on each edge.
-    const pendingAges = [0, 2, 2.9, 3, 7, 7.9, 8, 30];
-
     await db.insert(correctionRequest).values(
-      pendingAges.map((age, index) => ({
+      ages.map((age, index) => ({
         recordId: records[index].id,
         appsNo: records[index].appsNo,
         category: 'AUTOPAY' as const,
@@ -51,16 +52,37 @@ describe('approver dashboard ageing and throughput (spec 9)', () => {
         proposedValue: 'Yes',
         submittedBy: rep.id,
         smId: SM_ID,
-        status: 'PENDING' as const,
+        status,
         submittedAt: daysAgo(age),
+        // Verified within the last half-day however long the request waited.
+        // Deliberately far from `submittedAt`: ageing measures how long the rep
+        // has been waiting, so a fixture where the two timestamps agreed could
+        // not tell the two clocks apart and would pass either way.
+        ...(status === 'VERIFIED'
+          ? { verifiedBy: verifier.id, verifiedAt: daysAgo(Math.min(age, 0.5)) }
+          : {}),
       })),
     );
+  }
+
+  beforeEach(async () => {
+    await truncateAll();
+
+    rep = await makeUser({ role: 'sales', smId: SM_ID, email: 'rep@example.test' });
+    verifier = await makeUser({ role: 'verifier', email: 'verifier@example.test' });
+    approver = await makeUser({ role: 'approver', email: 'approver@example.test' });
+
+    // Ages chosen to land two in each band plus a boundary case on each edge.
+    // Seeded VERIFIED, not PENDING: since the 2026-07-28 gate a request only
+    // reaches an approver once a verifier has passed it.
+    await seedRequests([0, 2, 2.9, 3, 7, 7.9, 8, 30], 'VERIFIED', '640000000');
   });
 
   it('reports queue depth and the oldest request waiting', async () => {
     const { queue } = await getApproverDashboard();
 
     expect(queue.pending).toBe(8);
+    expect(queue.awaitingVerification).toBe(0);
     expect(queue.oldestPendingAt).toBeInstanceOf(Date);
     expect(ageInDays(queue.oldestPendingAt!)).toBe(30);
   });
@@ -68,7 +90,10 @@ describe('approver dashboard ageing and throughput (spec 9)', () => {
   it('buckets ageing exactly as the pure helper does, and the bands sum to the depth', async () => {
     const { queue } = await getApproverDashboard();
 
-    const rows = await db.select().from(correctionRequest);
+    const rows = await db
+      .select()
+      .from(correctionRequest)
+      .where(eq(correctionRequest.status, 'VERIFIED'));
     const expected: Record<string, number> = { FRESH: 0, AGEING: 0, STALE: 0 };
     for (const row of rows) expected[bucketForDate(row.submittedAt)] += 1;
 
@@ -93,6 +118,27 @@ describe('approver dashboard ageing and throughput (spec 9)', () => {
     expect(queue.pending).toBe(7);
     expect(queue.returned).toBe(1);
     expect(Object.values(queue.ageing).reduce((a, b) => a + b, 0)).toBe(7);
+  });
+
+  it("counts VERIFIED as the approver's depth and PENDING as awaiting verification", async () => {
+    // Spread across all three bands and reaching further back than anything the
+    // approver holds. Queue depth an approver cannot act on is worse than no
+    // number at all — they would be measured on a backlog that is not theirs —
+    // so if PENDING ever leaks back into the depth, every band moves here, not
+    // just the total.
+    await seedRequests([1, 5, 60], 'PENDING', '641000000');
+
+    const { queue } = await getApproverDashboard();
+
+    expect(queue.pending).toBe(8);
+    expect(queue.awaitingVerification).toBe(3);
+
+    expect(queue.ageing).toEqual({ FRESH: 3, AGEING: 3, STALE: 2 });
+    expect(Object.values(queue.ageing).reduce((a, b) => a + b, 0)).toBe(queue.pending);
+
+    // The 60-day PENDING row is the oldest thing in the table by a wide margin,
+    // but it is the verifier's backlog; "oldest waiting" must stay at 30.
+    expect(ageInDays(queue.oldestPendingAt!)).toBe(30);
   });
 
   it('reads throughput from the decision timeline, split by decision and window', async () => {
@@ -127,6 +173,7 @@ describe('approver dashboard ageing and throughput (spec 9)', () => {
     const { queue, throughput } = await getApproverDashboard();
 
     expect(queue.pending).toBe(0);
+    expect(queue.awaitingVerification).toBe(0);
     expect(queue.oldestPendingAt).toBeNull();
     expect(queue.ageing).toEqual({ FRESH: 0, AGEING: 0, STALE: 0 });
     expect(throughput.WEEK.TOTAL).toBe(0);

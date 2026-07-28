@@ -1,6 +1,21 @@
 import { pgEnum } from 'drizzle-orm/pg-core';
 
-export const roleEnum = pgEnum('role', ['admin', 'sales', 'approver']);
+/**
+ * `verifier` sits between the salesperson and the approver — 2026-07-28 spec
+ * section 3. It carries no SM_ID and sees every record, exactly like `approver`;
+ * what separates them is which status each may act on, not what each can read.
+ */
+export const roleEnum = pgEnum('role', ['admin', 'sales', 'approver', 'verifier']);
+
+/**
+ * A reconciliation cycle — one calendar month.
+ *
+ * Two values and no third: a period is either accepting new correction claims or
+ * it is not. Anything finer (DRAFT, LOCKED, ARCHIVED) would need every read path
+ * to decide which of them still counts as open, and there is no question the
+ * portal asks that the pair cannot answer.
+ */
+export const periodStatusEnum = pgEnum('period_status', ['OPEN', 'CLOSED']);
 
 /**
  * WITHDRAWN extends the four statuses named in spec section 5.
@@ -20,8 +35,22 @@ export const roleEnum = pgEnum('role', ['admin', 'sales', 'approver']);
  * remember a workaround, and each one silently wrong if it forgets. A distinct
  * value costs one enum member and removes the whole class of error.
  */
+/**
+ * VERIFIED is the two-stage gate of the 2026-07-28 spec section 3.
+ *
+ * PENDING now means "awaiting a VERIFIER", not "awaiting an approver" — the
+ * approval transaction was re-gated onto VERIFIED, so a request that never
+ * passed a verifier has no path to APPROVED at all.
+ *
+ * It is a distinct status rather than a boolean flag beside PENDING because
+ * every consumer already switches on this column: the two queues, the partial
+ * unique index, the dashboards and the export's decision column. A flag would
+ * leave each of them needing to remember that PENDING means two different
+ * things depending on a second field, and be silently wrong wherever it forgot.
+ */
 export const correctionStatusEnum = pgEnum('correction_status', [
   'PENDING',
+  'VERIFIED',
   'APPROVED',
   'REJECTED',
   'RETURNED',
@@ -51,9 +80,19 @@ export const changeTypeEnum = pgEnum('change_type', [
   'ADMIN_EDIT',
 ]);
 
+/**
+ * VERIFIED joins the timeline actions.
+ *
+ * A verifier's return is recorded as RETURNED, the same action an approver's
+ * return uses, because the request lands in the same place and the salesperson
+ * does the same thing next. Which stage it came back from is answered by the
+ * actor's role on the event row, so the timeline reads correctly without a
+ * fifth action whose only job is to name the sender.
+ */
 export const eventActionEnum = pgEnum('event_action', [
   'SUBMITTED',
   'RESUBMITTED',
+  'VERIFIED',
   'APPROVED',
   'REJECTED',
   'RETURNED',

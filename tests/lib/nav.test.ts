@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import type { Role } from '@/lib/auth/rbac';
 import { navForRole } from '@/lib/nav';
-import { dashboardPathForRole, roleForPath } from '@/lib/auth/redirects';
+import { ROLE_PREFIXES, dashboardPathForRole, roleForPath } from '@/lib/auth/redirects';
 
-const ROLES: Role[] = ['admin', 'sales', 'approver'];
+// Derived from the role map rather than hand-listed. A hand-written list goes
+// stale the moment a role is added — every loop below keeps passing while
+// silently never exercising the new role's menu.
+const ROLES = Object.keys(ROLE_PREFIXES) as Role[];
 
 describe('navForRole', () => {
   it('gives every role a non-empty menu', () => {
@@ -40,25 +43,31 @@ describe('navForRole', () => {
   });
 
   it('exposes the expected sections for each role', () => {
-    expect(navForRole('admin').map((i) => i.href)).toEqual([
-      '/admin',
-      '/admin/uploads',
-      '/admin/records',
-      '/admin/corrections',
-      '/admin/exports',
-      '/admin/users',
-      '/admin/audit',
-    ]);
-    expect(navForRole('sales').map((i) => i.href)).toEqual([
-      '/sales',
-      '/sales/records',
-      '/sales/requests',
-    ]);
-    expect(navForRole('approver').map((i) => i.href)).toEqual([
-      '/approver',
-      '/approver/queue',
-      '/approver/history',
-    ]);
+    // Spelled out, unlike the structural checks above: this is where a section
+    // quietly dropped, renamed or reordered becomes a failing diff.
+    const expected: Record<Role, string[]> = {
+      admin: [
+        '/admin',
+        '/admin/uploads',
+        '/admin/records',
+        '/admin/corrections',
+        '/admin/exports',
+        '/admin/periods',
+        '/admin/users',
+        '/admin/audit',
+      ],
+      sales: ['/sales', '/sales/records', '/sales/requests'],
+      approver: ['/approver', '/approver/queue', '/approver/history'],
+      verifier: ['/verifier', '/verifier/queue', '/verifier/history'],
+    };
+
+    // Record<Role, …> catches a missing role at compile time, which this suite
+    // never runs; asserting it here catches the same gap where it does run.
+    expect(Object.keys(expected).sort()).toEqual([...ROLES].sort());
+
+    for (const role of ROLES) {
+      expect(navForRole(role).map((i) => i.href), `${role} menu`).toEqual(expected[role]);
+    }
   });
 
   it('does not let a caller mutate the shared menu definition', () => {

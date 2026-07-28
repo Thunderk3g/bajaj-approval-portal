@@ -17,6 +17,7 @@ const NAV: Record<Role, readonly NavItem[]> = {
     { href: '/admin/records', label: 'Records' },
     { href: '/admin/corrections', label: 'Corrections' },
     { href: '/admin/exports', label: 'Exports' },
+    { href: '/admin/periods', label: 'Periods' },
     { href: '/admin/users', label: 'Users' },
     { href: '/admin/audit', label: 'Audit log' },
   ],
@@ -27,8 +28,13 @@ const NAV: Record<Role, readonly NavItem[]> = {
   ],
   approver: [
     { href: '/approver', label: 'Dashboard' },
-    { href: '/approver/queue', label: 'Pending queue' },
+    { href: '/approver/queue', label: 'Approval queue' },
     { href: '/approver/history', label: 'History' },
+  ],
+  verifier: [
+    { href: '/verifier', label: 'Dashboard' },
+    { href: '/verifier/queue', label: 'Verification queue' },
+    { href: '/verifier/history', label: 'History' },
   ],
 };
 
@@ -40,4 +46,5 @@ export const ROLE_LABELS: Record<Role, string> = {
   admin: 'Administrator',
   sales: 'Sales',
   approver: 'Approver',
+  verifier: 'Verifier',
 };

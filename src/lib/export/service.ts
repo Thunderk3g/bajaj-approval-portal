@@ -12,6 +12,7 @@ import {
   fetchAppliedCorrections,
   fetchExportRecords,
   nextExportVersion,
+  periodLabelsFor,
 } from './queries';
 import { describeFilters, type ExportFilters } from './schemas';
 
@@ -42,6 +43,7 @@ export async function runExport(
 
   const records = await fetchExportRecords(filters);
   const corrections = await fetchAppliedCorrections(records.map((r) => r.id));
+  const periodLabels = await periodLabelsFor(records);
 
   const version = await nextExportVersion();
   const fileName = exportFileName(now, version);
@@ -49,6 +51,7 @@ export async function runExport(
   const buffer = await exportWorkbookBuffer({
     records,
     corrections,
+    periodLabels,
     meta: {
       fileName,
       generatedAt: now,

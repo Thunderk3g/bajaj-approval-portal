@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { user } from '@/db/schema';
+import type { Role } from '@/lib/auth/rbac';
 
 export async function truncateAll() {
   await db.execute(sql`
@@ -9,6 +10,7 @@ export async function truncateAll() {
       "correction_event", "correction_attachment", "correction_request",
       "sales_record_version", "sales_record",
       "upload_batch_row", "upload_batch", "manpower",
+      "period",
       "audit_log", "notification", "excel_export",
       "session", "account", "verification", "user"
     restart identity cascade
@@ -52,10 +54,13 @@ export async function expectDbError(promise: Promise<unknown>, pattern: RegExp):
   return combined;
 }
 
+// Derived from Role rather than re-listed: a fourth role added to the union and
+// not here would silently leave every test unable to construct one, which reads
+// as "the feature has no tests" instead of as a compile error.
 type UserOverrides = Partial<{
   name: string;
   email: string;
-  role: 'admin' | 'sales' | 'approver';
+  role: Role;
   smId: string | null;
   isActive: boolean;
 }>;

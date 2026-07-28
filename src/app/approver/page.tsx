@@ -78,16 +78,23 @@ export default async function ApproverDashboardPage() {
           href={QUEUE}
         />
         <StatCard
-          label="Oldest pending"
+          label="Oldest waiting"
           value={oldestDays === null ? '—' : `${n(oldestDays)}d`}
+          // Measured from submission, not from verification: the rep has been
+          // waiting since they filed, and an SLA that restarted at each stage
+          // would report a three-week-old request as one day old.
           hint={queue.oldestPendingAt ? formatDateTime(queue.oldestPendingAt) : 'Queue is empty'}
           tone={oldestDays !== null && oldestDays >= 8 ? 'danger' : 'default'}
           href={QUEUE}
         />
+        {/* Upstream of this dashboard. An approver whose own queue is empty
+            while this climbs is blocked, not idle, and no other figure on the
+            page distinguishes the two. */}
         <StatCard
-          label="Returned to reps"
-          value={n(queue.returned)}
-          hint="Waiting on the salesperson, not on you"
+          label="Awaiting verification"
+          value={n(queue.awaitingVerification)}
+          hint="With a verifier — not yours yet"
+          href="/approver/queue?scope=PENDING"
         />
         <StatCard
           label="Decided this week"

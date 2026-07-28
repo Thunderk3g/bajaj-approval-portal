@@ -11,6 +11,7 @@ export const ROLE_PREFIXES: Record<Role, string> = {
   admin: '/admin',
   sales: '/sales',
   approver: '/approver',
+  verifier: '/verifier',
 };
 
 /** Landing page for a role immediately after sign-in. */

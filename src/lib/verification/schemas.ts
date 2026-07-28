@@ -1,0 +1,113 @@
+import { z } from 'zod';
+import { CORRECTION_CATEGORIES, type SearchParams } from '@/lib/approvals/schemas';
+
+/**
+ * Verifier decision input — 2026-07-28 spec section 3.
+ *
+ * Two decisions, not three. There is no terminal reject at this stage: a
+ * verifier's "no" returns the request to the salesperson with remarks, which is
+ * the answer they can act on. Only an approver can kill a request outright.
+ *
+ * A terminal verifier reject would create a second way for a request to die
+ * without an approver ever seeing it — invisible in approver history and in the
+ * export's decision column, with no appeal short of raising a brand-new request
+ * that has lost its evidence and its conversation.
+ */
+
+export const VERIFIER_DECISIONS = ['VERIFY', 'RETURN'] as const;
+export type VerifierDecision = (typeof VERIFIER_DECISIONS)[number];
+
+const MAX_REMARKS = 2000;
+
+/**
+ * Remarks are optional on verify and required on return, so this is a
+ * discriminated union rather than one object with a conditional check — the same
+ * shape, and the same reasoning, as the approver's `decisionSchema`. A return
+ * with no reason is a request for "something" the rep cannot supply.
+ */
+export const verifierDecisionSchema = z.discriminatedUnion('decision', [
+  z.object({
+    requestId: z.uuid('That request identifier is not valid.'),
+    decision: z.literal('VERIFY'),
+    remarks: z
+      .string()
+      .trim()
+      .max(MAX_REMARKS, `Remarks are limited to ${MAX_REMARKS} characters.`)
+      .optional()
+      .transform((v) => (v ? v : null)),
+  }),
+  z.object({
+    requestId: z.uuid('That request identifier is not valid.'),
+    decision: z.literal('RETURN'),
+    remarks: z
+      .string()
+      .trim()
+      .min(1, 'Remarks are required so the submitter knows what to change.')
+      .max(MAX_REMARKS, `Remarks are limited to ${MAX_REMARKS} characters.`),
+  }),
+]);
+
+export type VerifierDecisionPayload = z.infer<typeof verifierDecisionSchema>;
+
+/* ------------------------------------------------------------------ filters */
+
+/**
+ * PENDING is the verifier's own queue; VERIFIED is what they have passed on and
+ * is shown so a verifier can see whether the approver stage is draining.
+ * RETURNED is waiting on the rep.
+ */
+export const VERIFIER_QUEUE_SCOPES = ['PENDING', 'VERIFIED', 'RETURNED', 'OPEN'] as const;
+export type VerifierQueueScope = (typeof VERIFIER_QUEUE_SCOPES)[number];
+
+export const VERIFIER_SCOPE_LABELS: Record<VerifierQueueScope, string> = {
+  PENDING: 'Awaiting my verification',
+  VERIFIED: 'Verified — awaiting an approver',
+  RETURNED: 'Returned — awaiting the submitter',
+  OPEN: 'Everything open',
+};
+
+/** The statuses that make up "open" for the verifier's queue. */
+export const VERIFIER_OPEN_STATUSES = ['PENDING', 'VERIFIED', 'RETURNED'] as const;
+
+export const VERIFIER_HISTORY_ACTIONS = ['VERIFIED', 'RETURNED'] as const;
+export type VerifierHistoryAction = (typeof VERIFIER_HISTORY_ACTIONS)[number];
+
+function one(value: string | string[] | undefined): string | undefined {
+  const v = Array.isArray(value) ? value[0] : value;
+  return v && v.trim() !== '' ? v.trim() : undefined;
+}
+
+function pick<T extends string>(
+  value: string | string[] | undefined,
+  allowed: readonly T[],
+): T | undefined {
+  const v = one(value)?.toUpperCase();
+  return v && (allowed as readonly string[]).includes(v) ? (v as T) : undefined;
+}
+
+export function parseVerifierQueueFilters(params: SearchParams) {
+  return {
+    scope: pick(params.scope, VERIFIER_QUEUE_SCOPES) ?? ('PENDING' as VerifierQueueScope),
+    category: pick(params.category, CORRECTION_CATEGORIES),
+    q: one(params.q),
+  };
+}
+
+export type VerifierQueueFilters = ReturnType<typeof parseVerifierQueueFilters>;
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+export function parseVerifierHistoryFilters(params: SearchParams) {
+  const from = one(params.from);
+  const to = one(params.to);
+  return {
+    action: pick(params.action, VERIFIER_HISTORY_ACTIONS),
+    category: pick(params.category, CORRECTION_CATEGORIES),
+    mine: one(params.mine) === '1',
+    q: one(params.q),
+    from: from && ISO_DATE.test(from) ? from : undefined,
+    to: to && ISO_DATE.test(to) ? to : undefined,
+  };
+}
+
+export type VerifierHistoryFilters = ReturnType<typeof parseVerifierHistoryFilters>;

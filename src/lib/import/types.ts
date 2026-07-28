@@ -186,4 +186,14 @@ export type CommitOutcome = {
   manpowerUpserted: number;
   orphanSmIds: string[];
   notified: number;
+  /** The cycle these records now belong to — 2026-07-28 spec section 4.3. */
+  period: { code: string; label: string };
+  /**
+   * Periods this commit closed, by label. Almost always zero or one.
+   *
+   * Reported because closing is a side effect of committing and an admin who is
+   * not told about it will not know that reps have just lost the ability to
+   * raise new corrections against last month.
+   */
+  periodsClosed: string[];
 };

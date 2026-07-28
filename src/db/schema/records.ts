@@ -15,6 +15,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { batchStatusEnum, changeTypeEnum, rowStatusEnum } from './enums';
 import { user } from './auth';
+import { period } from './periods';
 
 export type ColumnMapping = Record<string, string>;
 
@@ -43,6 +44,22 @@ export const uploadBatch = pgTable(
     status: batchStatusEnum('status').notNull().default('DRAFT'),
     validationReport: jsonb('validation_report'),
     notes: text('notes'),
+    /**
+     * Which monthly cycle this file is for — 2026-07-28 spec section 4.3.
+     *
+     * A `YYYY-MM` CODE, deliberately NOT a foreign key to `period`.
+     *
+     * An FK would require the period row to exist at upload time, which means
+     * uploading a workbook would open a month. A batch then aborted — wrong
+     * file, bad mapping, too many errors — would have opened a reconciliation
+     * cycle and closed the previous one on the strength of a file nobody
+     * committed, and reps would have silently lost the ability to correct last
+     * month because somebody picked the wrong file.
+     *
+     * The code records the admin's INTENT; `commitBatch` resolves it to a real
+     * period inside the commit transaction, when the data actually lands.
+     */
+    periodCode: text('period_code'),
     uploadedBy: text('uploaded_by')
       .notNull()
       .references(() => user.id),
@@ -107,6 +124,15 @@ export const salesRecord = pgTable(
     status2: text('status_2'),
     autopay: text('autopay'),
     extra: jsonb('extra').$type<Record<string, unknown>>().notNull().default({}),
+    /**
+     * The most recent cycle whose file carried this record — spec section 4.3.
+     *
+     * A record re-imported in the August file becomes August's workload. A
+     * record ABSENT from that file keeps its old period, which is exactly the
+     * "not in latest batch" state of base-spec section 6.8, now expressed as
+     * data rather than as an absence you have to go looking for.
+     */
+    periodId: uuid('period_id').references(() => period.id),
     sourceBatchId: uuid('source_batch_id').references(() => uploadBatch.id),
     sourceRowNumber: integer('source_row_number'),
     currentVersion: integer('current_version').notNull().default(1),
@@ -120,6 +146,7 @@ export const salesRecord = pgTable(
     index('sales_record_status_idx').on(t.status),
     index('sales_record_issued_date_idx').on(t.issuedDate),
     index('sales_record_policy_no_idx').on(t.policyNo),
+    index('sales_record_period_idx').on(t.periodId),
   ],
 );
 

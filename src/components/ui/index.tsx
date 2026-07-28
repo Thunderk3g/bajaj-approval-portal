@@ -173,6 +173,10 @@ export function Badge({ tone = 'neutral', children }: { tone?: BadgeTone; childr
 /** One vocabulary for correction status colour, shared by every screen. */
 export const STATUS_TONE: Record<string, BadgeTone> = {
   PENDING: 'warning',
+  // Info, not success: verification is progress, not an outcome. Colouring it
+  // green would read to a rep as "your correction went through" while the
+  // record still holds the old value and an approver has yet to look at it.
+  VERIFIED: 'info',
   APPROVED: 'success',
   REJECTED: 'danger',
   RETURNED: 'info',

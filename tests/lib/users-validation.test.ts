@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { createUserSchema, updateUserSchema, SM_ID_PATTERN } from '@/lib/users/schema';
+import {
+  createUserSchema,
+  updateUserSchema,
+  ROLES,
+  ROLE_DESCRIPTIONS,
+  SM_ID_PATTERN,
+} from '@/lib/users/schema';
 import { zodFieldErrors } from '@/lib/result';
 
 const BASE = {
@@ -47,6 +53,31 @@ describe('account provisioning validation (spec 4.2)', () => {
     expect(result.success).toBe(false);
     if (result.success) return;
     expect(zodFieldErrors(result.error).smId?.[0]).toMatch(/Only a Sales account/);
+  });
+
+  it('refuses an SM_ID on a verifier account', () => {
+    // A verifier reads every record, so an SM_ID on one is not a narrower
+    // account — it is a scope marker that nothing honours, left for the next
+    // reader to misinterpret as one that does.
+    const result = createUserSchema.safeParse({ ...BASE, role: 'verifier' });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(zodFieldErrors(result.error).smId?.[0]).toMatch(/Only a Sales account/);
+  });
+
+  it('accepts a verifier with no SM_ID', () => {
+    const result = createUserSchema.safeParse({ ...BASE, role: 'verifier', smId: undefined });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.smId).toBeNull();
+  });
+
+  it('describes every role offered on the create-user form', () => {
+    // A role absent from ROLE_DESCRIPTIONS still appears in the dropdown, just
+    // with an empty hint — and verifier and approver are the pair an admin is
+    // least able to tell apart unaided.
+    for (const role of ROLES) {
+      expect(ROLE_DESCRIPTIONS[role]?.trim() ?? '', `${role} has no description`).not.toBe('');
+    }
   });
 
   it.each(['ab', 'C2CM 21350', 'c2cm-21350', 'C'.repeat(33)])(

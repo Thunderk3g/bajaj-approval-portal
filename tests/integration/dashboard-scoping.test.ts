@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { correctionRequest, salesRecord } from '@/db/schema';
 import { AuthzError } from '@/lib/auth/errors';
@@ -171,11 +171,67 @@ describe('sales dashboard scoping (spec 4.1)', () => {
     const a = await getSalesDashboard(sessionFor(repA));
     const b = await getSalesDashboard(sessionFor(repB));
 
-    expect(a.requests).toEqual({ total: 2, pending: 1, approved: 0, rejected: 0, returned: 1 });
-    expect(b.requests).toEqual({ total: 3, pending: 1, approved: 1, rejected: 1, returned: 0 });
+    // Every status the enum can hold is counted, so the parts sum to `total`.
+    // That invariant is the point: before the verifier gate a request that
+    // cleared verification fell out of every bucket, and a rep adding up their
+    // own dashboard would find one claim missing with no way to tell which.
+    expect(a.requests).toEqual({
+      total: 2,
+      awaitingVerification: 1,
+      awaitingApproval: 0,
+      open: 1,
+      approved: 0,
+      rejected: 0,
+      returned: 1,
+      withdrawn: 0,
+    });
+    expect(b.requests).toEqual({
+      total: 3,
+      awaitingVerification: 1,
+      awaitingApproval: 0,
+      open: 1,
+      approved: 1,
+      rejected: 1,
+      returned: 0,
+      withdrawn: 0,
+    });
+
+    for (const dashboard of [a, b]) {
+      const { total, open, approved, rejected, returned, withdrawn } = dashboard.requests;
+      expect(open + approved + rejected + returned + withdrawn).toBe(total);
+    }
 
     const all = await db.select().from(correctionRequest);
     expect(all.length).toBe(5);
+  });
+
+  it('keeps a verified request visible to the rep who raised it', async () => {
+    // The regression that motivated the split: counting only PENDING made a
+    // request disappear from the rep's dashboard at exactly the moment it
+    // reached an approver, which reads as the claim being lost.
+    const verifier = await makeUser({ role: 'verifier', smId: null, email: 'v@example.test' });
+
+    const [mine] = await db
+      .select()
+      .from(correctionRequest)
+      .where(
+        and(
+          eq(correctionRequest.submittedBy, repA.id),
+          eq(correctionRequest.status, 'PENDING'),
+        ),
+      )
+      .limit(1);
+
+    await db
+      .update(correctionRequest)
+      .set({ status: 'VERIFIED', verifiedBy: verifier.id, verifiedAt: new Date() })
+      .where(eq(correctionRequest.id, mine.id));
+
+    const a = await getSalesDashboard(sessionFor(repA));
+    expect(a.requests.awaitingVerification).toBe(0);
+    expect(a.requests.awaitingApproval).toBe(1);
+    expect(a.requests.open).toBe(1);
+    expect(a.requests.total).toBe(2);
   });
 
   it('shows a rep with no records an empty dashboard rather than everyone else’s', async () => {

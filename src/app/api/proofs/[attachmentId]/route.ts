@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { correctionAttachment, correctionRequest } from '@/db/schema';
 import { writeAudit } from '@/lib/audit/log';
-import { requireSession, type SessionUser } from '@/lib/auth/rbac';
+import { GLOBAL_READ_ROLES, requireSession, type SessionUser } from '@/lib/auth/rbac';
 import { PREVIEWABLE_MIME_TYPES, contentDisposition, readStoredProof } from '@/lib/storage/files';
 
 /**
@@ -46,11 +46,16 @@ function notFound(): Response {
 }
 
 function canView(user: SessionUser, submittedBy: string): boolean {
-  // Section 4.4: Admin, or Approver, or the Sales user who submitted the parent
-  // request. A sales user's own SM_ID is not the test — a mapping claim is
-  // raised against a record belonging to somebody else, so scoping by SM_ID
+  // Section 4.4: Admin, or a reviewing role, or the Sales user who submitted the
+  // parent request. A sales user's own SM_ID is not the test — a mapping claim
+  // is raised against a record belonging to somebody else, so scoping by SM_ID
   // would lock the submitter out of the proof they uploaded themselves.
-  if (user.role === 'admin' || user.role === 'approver') return true;
+  //
+  // GLOBAL_READ_ROLES includes `verifier` as of the 2026-07-28 spec. That is not
+  // a widening for convenience: verification IS the act of reading the proof
+  // against the claim, so a verifier locked out of attachments could only ever
+  // rubber-stamp, which is worse than no gate at all.
+  if (GLOBAL_READ_ROLES.includes(user.role)) return true;
   return user.id === submittedBy;
 }
 

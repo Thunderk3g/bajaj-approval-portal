@@ -79,9 +79,13 @@ describe('submitting a correction (spec 7)', () => {
   beforeEach(truncateAll);
   afterEach(clearStoredProofs);
 
-  it('creates a PENDING request, a SUBMITTED event, an audit row and approver notifications', async () => {
+  it('creates a PENDING request, a SUBMITTED event, an audit row and verifier notifications', async () => {
     const rep = sessionFor(await makeUser({ role: 'sales', smId: OWNER_SM_ID }));
-    await makeUser({ role: 'approver', smId: null });
+    await makeUser({ role: 'verifier', smId: null });
+    await makeUser({ role: 'verifier', smId: null });
+    // An approver exists and must NOT be notified: since the 2026-07-28 gate a
+    // PENDING request is not actionable by them, so a notification would link to
+    // a screen whose only button refuses.
     await makeUser({ role: 'approver', smId: null });
     const record = await makeRecord();
 
@@ -123,10 +127,42 @@ describe('submitting a correction (spec 7)', () => {
     expect(audits).toHaveLength(1);
     expect(audits[0].entityId).toBe(row.id);
 
-    // Section 10, row 1: every active approver hears about it.
+    // Every active VERIFIER hears about it — and only them. Two rows, not
+    // three, is the assertion that the approver was left out.
     const notes = await db.select().from(notification);
     expect(notes).toHaveLength(2);
     expect(notes[0].type).toBe('CORRECTION_SUBMITTED');
+    expect(notes.every((n) => n.link?.startsWith('/verifier/'))).toBe(true);
+    expect(result.data.notified).toBe(2);
+  });
+
+  it('reports zero recipients when no verifier account exists', async () => {
+    const rep = sessionFor(await makeUser({ role: 'sales', smId: OWNER_SM_ID }));
+    await makeUser({ role: 'approver', smId: null });
+    const record = await makeRecord();
+
+    const result = await submitCorrection(rep, {
+      category: 'AUTOPAY',
+      appsNo: record.appsNo,
+      proposedValue: 'Yes',
+      files: [proof()],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // The submit still succeeds — refusing would punish the rep for a
+    // provisioning gap they cannot fix. But the count is surfaced and recorded,
+    // because otherwise a request nobody can see is indistinguishable from one
+    // being worked on.
+    expect(result.data.notified).toBe(0);
+    expect(await db.select().from(notification)).toHaveLength(0);
+
+    const [audit] = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.action, 'CORRECTION_SUBMIT'));
+    expect((audit.metadata as Record<string, unknown>).verifiersNotified).toBe(0);
   });
 
   it('stores the attachment with its hash and audits the upload', async () => {
@@ -374,7 +410,7 @@ describe('the resubmission cycle (spec 7)', () => {
 
   async function submitThenReturn() {
     const rep = sessionFor(await makeUser({ role: 'sales', smId: OWNER_SM_ID }));
-    const approver = await makeUser({ role: 'approver', smId: null });
+    const verifier = await makeUser({ role: 'verifier', smId: null });
     const record = await makeRecord();
 
     const submitted = await submitCorrection(rep, {
@@ -386,21 +422,26 @@ describe('the resubmission cycle (spec 7)', () => {
     });
     if (!submitted.ok) throw new Error(submitted.error);
 
-    // Stands in for the approver side, which lives in another module.
+    // Stands in for the reviewing side, which lives in another module. A
+    // VERIFIER and not an approver: since the 2026-07-28 gate the only path out
+    // of PENDING is the verifier's, and an approver acts on VERIFIED alone. A
+    // fixture that stamped the approver columns here would build a row the
+    // production code cannot produce, and would leave what a resubmission does
+    // with the verification columns untested.
     await db
       .update(correctionRequest)
       .set({
         status: 'RETURNED',
-        reviewedBy: approver.id,
-        reviewedAt: new Date(),
-        approverRemarks: 'The screenshot is unreadable.',
+        verifiedBy: verifier.id,
+        verifiedAt: new Date(),
+        verifierRemarks: 'The screenshot is unreadable.',
       })
       .where(eq(correctionRequest.id, submitted.data.id));
 
     await db.insert(correctionEvent).values({
       requestId: submitted.data.id,
       action: 'RETURNED',
-      actorId: approver.id,
+      actorId: verifier.id,
       fromStatus: 'PENDING',
       toStatus: 'RETURNED',
       remarks: 'The screenshot is unreadable.',
@@ -431,6 +472,12 @@ describe('the resubmission cycle (spec 7)', () => {
     expect(rows[0].lastResubmittedAt).toBeInstanceOf(Date);
     // Cleared because the row's review columns describe the current review, and
     // there is not one yet. The remark itself survives on the RETURNED event.
+    // All six go together — leaving the verification columns behind would show
+    // the next verifier their predecessor's sign-off on a value that has since
+    // changed.
+    expect(rows[0].verifierRemarks).toBeNull();
+    expect(rows[0].verifiedBy).toBeNull();
+    expect(rows[0].verifiedAt).toBeNull();
     expect(rows[0].approverRemarks).toBeNull();
     expect(rows[0].reviewedBy).toBeNull();
 
@@ -451,6 +498,16 @@ describe('the resubmission cycle (spec 7)', () => {
       .from(auditLog)
       .where(eq(auditLog.action, 'CORRECTION_RESUBMIT'));
     expect(audits).toHaveLength(1);
+
+    // A resubmission re-enters at PENDING, so it goes back to the VERIFIERS and
+    // not forward to the approvers. Without this, getting returned once on
+    // purpose would be a way to skip the gate.
+    const notes = await db
+      .select()
+      .from(notification)
+      .where(eq(notification.type, 'CORRECTION_RESUBMITTED'));
+    expect(notes).toHaveLength(1);
+    expect(notes[0].link).toBe(`/verifier/requests/${requestId}`);
   });
 
   it('re-runs the category rules on the way back in', async () => {

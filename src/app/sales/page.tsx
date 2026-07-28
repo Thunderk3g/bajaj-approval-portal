@@ -84,10 +84,17 @@ export default async function SalesDashboardPage() {
           tone={records.withGap > 0 ? 'warning' : 'success'}
           href={gapHref('ANY')}
         />
+        {/* Both waiting stages in one figure. Showing only one of them would
+            make the number drop when a request PROGRESSED from the verifier to
+            the approver, which reads as a claim going missing. */}
         <StatCard
-          label="Awaiting approval"
-          value={n(requests.pending)}
-          hint="With the approver"
+          label="Awaiting a decision"
+          value={n(requests.open)}
+          hint={
+            requests.awaitingApproval > 0
+              ? `${n(requests.awaitingApproval)} with an approver, ${n(requests.awaitingVerification)} with a verifier`
+              : 'With a verifier'
+          }
           href={statusHref('PENDING')}
         />
         <StatCard
@@ -164,12 +171,17 @@ export default async function SalesDashboardPage() {
                 </tr>
               </thead>
               <tbody>
+                {/* Every status the enum can hold, so these rows sum to the
+                    total. A rep who adds them up and finds one short has no way
+                    to tell which of their claims disappeared. */}
                 {(
                   [
-                    ['PENDING', 'Pending', requests.pending],
+                    ['PENDING', 'With a verifier', requests.awaitingVerification],
+                    ['VERIFIED', 'With an approver', requests.awaitingApproval],
                     ['RETURNED', 'Returned to me', requests.returned],
                     ['APPROVED', 'Approved', requests.approved],
                     ['REJECTED', 'Rejected', requests.rejected],
+                    ['WITHDRAWN', 'Withdrawn by me', requests.withdrawn],
                   ] as const
                 ).map(([status, label, count]) => (
                   <tr key={status}>

@@ -7,13 +7,16 @@ import {
   safeNextPath,
 } from '@/lib/auth/redirects';
 
-const ROLES: Role[] = ['admin', 'sales', 'approver'];
+// Derived from the map under test, not hand-listed: a role added to
+// ROLE_PREFIXES and missed here would skip every round-trip check below.
+const ROLES = Object.keys(ROLE_PREFIXES) as Role[];
 
 describe('dashboardPathForRole', () => {
   it('sends each role to its own prefix', () => {
     expect(dashboardPathForRole('admin')).toBe('/admin');
     expect(dashboardPathForRole('sales')).toBe('/sales');
     expect(dashboardPathForRole('approver')).toBe('/approver');
+    expect(dashboardPathForRole('verifier')).toBe('/verifier');
   });
 
   it('returns a path that maps back to the same role', () => {
@@ -35,6 +38,7 @@ describe('roleForPath', () => {
     expect(roleForPath('/admin/uploads/42/rows')).toBe('admin');
     expect(roleForPath('/sales/records')).toBe('sales');
     expect(roleForPath('/approver/queue')).toBe('approver');
+    expect(roleForPath('/verifier/queue')).toBe('verifier');
   });
 
   it('does not treat a longer word as a role prefix', () => {
@@ -43,6 +47,7 @@ describe('roleForPath', () => {
     expect(roleForPath('/administration')).toBeNull();
     expect(roleForPath('/salesforce')).toBeNull();
     expect(roleForPath('/approvers')).toBeNull();
+    expect(roleForPath('/verifierthing')).toBeNull();
     expect(roleForPath('/admin-tools')).toBeNull();
     expect(roleForPath('/sales-report/2024')).toBeNull();
   });

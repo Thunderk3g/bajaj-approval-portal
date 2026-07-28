@@ -17,6 +17,7 @@ import {
   rejectRequest,
   returnRequest,
 } from '@/lib/approvals/apply';
+import { verifyRequest } from '@/lib/verification/apply';
 import { makeUser, truncateAll } from '../helpers/db';
 
 /**
@@ -32,10 +33,16 @@ const OWNER = 'ICCSP90766';
 const CLAIMANT = 'C2CM21350';
 
 type Actor = { id: string; email: string; role: 'approver' };
+type VerifierActor = { id: string; email: string; role: 'verifier' };
 
 async function makeApprover(): Promise<Actor> {
   const row = await makeUser({ role: 'approver', smId: null });
   return { id: row.id, email: row.email, role: 'approver' };
+}
+
+async function makeVerifier(): Promise<VerifierActor> {
+  const row = await makeUser({ role: 'verifier', smId: null });
+  return { id: row.id, email: row.email, role: 'verifier' };
 }
 
 /**
@@ -68,12 +75,27 @@ async function makeRecord(overrides: Partial<typeof salesRecord.$inferInsert> = 
   return row;
 }
 
+/**
+ * A request in the state an APPROVER receives it: already verified.
+ *
+ * Since the 2026-07-28 gate, PENDING means "awaiting a verifier" and the
+ * approval transaction refuses it outright. Seeding these tests as PENDING
+ * would test nothing but the gate, over and over, while the transaction they
+ * exist to cover never ran. The default therefore walks the request through
+ * verification first — status, columns and timeline event, exactly as
+ * `verifyWithin` leaves it.
+ *
+ * Pass `status: 'PENDING'` (and no verifier) to construct the unverified case
+ * deliberately; the gate itself is asserted in `the verifier gate` below.
+ */
 async function makeRequest(
   recordId: string,
   appsNo: string,
   submittedBy: string,
   overrides: Partial<typeof correctionRequest.$inferInsert> = {},
 ) {
+  const verifier = overrides.verifiedBy === undefined ? await makeVerifier() : null;
+
   const [row] = await db
     .insert(correctionRequest)
     .values({
@@ -86,6 +108,9 @@ async function makeRequest(
       proposedValue: 'Yes',
       submittedBy,
       smId: OWNER,
+      status: 'VERIFIED',
+      verifiedBy: verifier?.id,
+      verifiedAt: new Date(),
       ...overrides,
     })
     .returning();
@@ -96,6 +121,16 @@ async function makeRequest(
     actorId: submittedBy,
     toStatus: 'PENDING',
   });
+
+  if (row.status === 'VERIFIED') {
+    await db.insert(correctionEvent).values({
+      requestId: row.id,
+      action: 'VERIFIED',
+      actorId: row.verifiedBy,
+      fromStatus: 'PENDING',
+      toStatus: 'VERIFIED',
+    });
+  }
 
   return row;
 }
@@ -171,7 +206,9 @@ describe('applying an approval (spec 7.3)', () => {
       .select()
       .from(correctionEvent)
       .where(eq(correctionEvent.requestId, request.id));
-    expect(events.map((e) => e.action).sort()).toEqual(['APPROVED', 'SUBMITTED']);
+    // Three now, not two: the request passed a verifier on its way here, and
+    // that stage leaves its own event so the timeline shows both reviews.
+    expect(events.map((e) => e.action).sort()).toEqual(['APPROVED', 'SUBMITTED', 'VERIFIED']);
 
     const audits = await db.select().from(auditLog);
     expect(audits.map((a) => a.action).sort()).toEqual(['CORRECTION_APPROVE', 'RECORD_UPDATE']);
@@ -209,7 +246,9 @@ describe('applying an approval (spec 7.3)', () => {
 
     // Only the import's own v1 — the approval added nothing.
     expect(await versionsFor(record.id)).toHaveLength(1);
-    expect((await reloadRequest(request.id)).status).toBe('PENDING');
+    // Still VERIFIED and still decidable: a rejected coercion is not a decision,
+    // so the request must stay in the approver's queue for them to return it.
+    expect((await reloadRequest(request.id)).status).toBe('VERIFIED');
   });
 });
 
@@ -304,8 +343,12 @@ describe('rollback (spec 7.3, "any failure rolls the whole thing back")', () => 
     expect(untouched.currentVersion).toBe(1);
     expect(untouched.hasCorrections).toBe(false);
 
+    // Rolled back to the state the approver found it in — verified and waiting,
+    // not all the way back to unverified. The verification was a separate,
+    // already-committed transaction and this failure has nothing to do with it.
     const stillOpen = await reloadRequest(request.id);
-    expect(stillOpen.status).toBe('PENDING');
+    expect(stillOpen.status).toBe('VERIFIED');
+    expect(stillOpen.verifiedBy).not.toBeNull();
     expect(stillOpen.reviewedBy).toBeNull();
     expect(stillOpen.appliedVersion).toBeNull();
 
@@ -313,7 +356,7 @@ describe('rollback (spec 7.3, "any failure rolls the whole thing back")', () => 
       .select()
       .from(correctionEvent)
       .where(eq(correctionEvent.requestId, request.id));
-    expect(events.map((e) => e.action)).toEqual(['SUBMITTED']);
+    expect(events.map((e) => e.action)).toEqual(['SUBMITTED', 'VERIFIED']);
   });
 });
 
@@ -361,7 +404,94 @@ describe('terminal states (spec 7)', () => {
       rejectRequest({ requestId: request.id, actor: approver, remarks: '   ' }),
     ).rejects.toMatchObject({ code: 'INVALID_VALUE' });
 
+    expect((await reloadRequest(request.id)).status).toBe('VERIFIED');
+  });
+});
+
+/**
+ * The gate itself — 2026-07-28 spec section 3.4.
+ *
+ * These are the tests that fail loudly if a later refactor drops the VERIFIED
+ * predicate and quietly reopens the direct path from submission to approval.
+ * Nothing on any screen would look different if that happened.
+ */
+describe('the verifier gate (2026-07-28 spec 3.4)', () => {
+  beforeEach(truncateAll);
+
+  async function unverified() {
+    const rep = await makeUser({ role: 'sales', smId: OWNER });
+    const approver = await makeApprover();
+    const record = await makeRecord();
+    const request = await makeRequest(record.id, record.appsNo, rep.id, {
+      status: 'PENDING',
+      verifiedBy: null,
+      verifiedAt: null,
+    });
+    return { rep, approver, record, request };
+  }
+
+  it('refuses to approve a request no verifier has passed', async () => {
+    const { approver, record, request } = await unverified();
+
+    await expect(applyApproval({ requestId: request.id, actor: approver })).rejects.toMatchObject({
+      code: 'NOT_PENDING',
+    });
+
+    // The record is the thing that must not have moved. A gate that threw after
+    // writing would be worse than no gate: the change would be applied and the
+    // request would still read as awaiting verification.
+    const after = await reload(record.id);
+    expect(after.autopay).toBeNull();
+    expect(after.currentVersion).toBe(1);
+    expect(await versionsFor(record.id)).toHaveLength(1);
     expect((await reloadRequest(request.id)).status).toBe('PENDING');
+  });
+
+  it('refuses to reject or return a request no verifier has passed', async () => {
+    const { approver, request } = await unverified();
+
+    await expect(
+      rejectRequest({ requestId: request.id, actor: approver, remarks: 'No.' }),
+    ).rejects.toMatchObject({ code: 'NOT_PENDING' });
+
+    await expect(
+      returnRequest({ requestId: request.id, actor: approver, remarks: 'More proof.' }),
+    ).rejects.toMatchObject({ code: 'NOT_PENDING' });
+
+    expect((await reloadRequest(request.id)).status).toBe('PENDING');
+  });
+
+  it('says the request is unverified rather than that it was already decided', async () => {
+    const { approver, request } = await unverified();
+
+    // The distinction is the whole value of the message: "already decided" sends
+    // an approver looking for a decision nobody made, when what they must do is
+    // wait for a verifier.
+    await expect(applyApproval({ requestId: request.id, actor: approver })).rejects.toThrow(
+      /not been verified/i,
+    );
+  });
+
+  it('approves the same request once a verifier has passed it', async () => {
+    const { approver, record, request } = await unverified();
+    const verifier = await makeVerifier();
+
+    await db
+      .update(correctionRequest)
+      .set({ status: 'VERIFIED', verifiedBy: verifier.id, verifiedAt: new Date() })
+      .where(eq(correctionRequest.id, request.id));
+
+    const outcome = await applyApproval({ requestId: request.id, actor: approver });
+
+    expect(outcome.newValue).toBe('Yes');
+    expect((await reload(record.id)).autopay).toBe('Yes');
+
+    // Both gates are named on the row afterwards, by different people. This is
+    // what the export and the audit read to say who is accountable for a value.
+    const applied = await reloadRequest(request.id);
+    expect(applied.verifiedBy).toBe(verifier.id);
+    expect(applied.reviewedBy).toBe(approver.id);
+    expect(applied.verifiedBy).not.toBe(applied.reviewedBy);
   });
 });
 
@@ -391,6 +521,9 @@ describe('return, resubmit, approve (spec 7)', () => {
     expect(returnNotes.map((n) => n.type)).toEqual(['CORRECTION_RETURNED']);
 
     // Stands in for the sales-side resubmit action, which owns this transition.
+    // It goes back to PENDING, not to VERIFIED: a resubmission re-enters the
+    // flow at the top, or a rep could bypass the gate by getting returned once
+    // on purpose.
     await db
       .update(correctionRequest)
       .set({
@@ -398,6 +531,9 @@ describe('return, resubmit, approve (spec 7)', () => {
         resubmissionCount: 1,
         lastResubmittedAt: new Date(),
         proposedValue: 'Yes',
+        verifiedBy: null,
+        verifiedAt: null,
+        verifierRemarks: null,
       })
       .where(eq(correctionRequest.id, request.id));
     await db.insert(correctionEvent).values({
@@ -408,6 +544,15 @@ describe('return, resubmit, approve (spec 7)', () => {
       toStatus: 'PENDING',
       remarks: 'Mandate PDF attached.',
     });
+
+    // And it must be verified AGAIN before the approver can act. Asserting the
+    // refusal here is what proves the second lap is not skipped.
+    await expect(
+      applyApproval({ requestId: request.id, actor: approver, remarks: 'Now legible.' }),
+    ).rejects.toMatchObject({ code: 'NOT_PENDING' });
+
+    const verifier = await makeVerifier();
+    await verifyRequest({ requestId: request.id, actor: verifier, remarks: 'PDF is legible.' });
 
     await applyApproval({ requestId: request.id, actor: approver, remarks: 'Now legible.' });
 
@@ -424,10 +569,16 @@ describe('return, resubmit, approve (spec 7)', () => {
       .from(correctionEvent)
       .where(eq(correctionEvent.requestId, request.id))
       .orderBy(correctionEvent.createdAt);
+    // The whole conversation on one row: verified, returned by the approver,
+    // resubmitted, verified AGAIN, then approved. Both laps through the gate are
+    // visible, which is the point of keeping one request rather than forking a
+    // second one that has lost the history.
     expect(timeline.map((e) => e.action)).toEqual([
       'SUBMITTED',
+      'VERIFIED',
       'RETURNED',
       'RESUBMITTED',
+      'VERIFIED',
       'APPROVED',
     ]);
 

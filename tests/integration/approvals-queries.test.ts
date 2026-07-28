@@ -5,6 +5,7 @@ import { correctionAttachment, correctionEvent, correctionRequest, manpower, sal
 import { getRequestDetail, listHistory, listQueue, queueCounts } from '@/lib/approvals/queries';
 import { applyApproval, previewTarget, returnRequest } from '@/lib/approvals/apply';
 import { parseHistoryFilters, parseQueueFilters } from '@/lib/approvals/schemas';
+import { verifyRequest } from '@/lib/verification/apply';
 import { makeUser, truncateAll } from '../helpers/db';
 
 /**
@@ -20,6 +21,8 @@ async function seed() {
   const rep = await makeUser({ role: 'sales', smId: OWNER, name: 'Priya Sales' });
   const approverRow = await makeUser({ role: 'approver', smId: null, name: 'Anand Approver' });
   const approver = { id: approverRow.id, email: approverRow.email, role: 'approver' as const };
+  const verifierRow = await makeUser({ role: 'verifier', smId: null, name: 'Vidya Verifier' });
+  const verifier = { id: verifierRow.id, email: verifierRow.email, role: 'verifier' as const };
 
   const [record] = await db
     .insert(salesRecord)
@@ -37,17 +40,29 @@ async function seed() {
       proposedValue: 'Yes',
       submittedBy: rep.id,
       smId: OWNER,
-      // Backdated so the ageing column has something to report.
+      // Seeded in the state the APPROVER's queue reads — verified. Since the
+      // 2026-07-28 gate, PENDING means "with a verifier" and never appears in
+      // the approver's default scope, so a PENDING fixture would make every
+      // assertion below trivially zero.
+      status: 'VERIFIED',
+      verifiedBy: verifierRow.id,
+      verifiedAt: new Date(Date.now() - 8 * 86_400_000),
+      // Backdated so the ageing column has something to report. Ageing runs from
+      // submission, not verification: the rep has been waiting since they filed.
       submittedAt: new Date(Date.now() - 9 * 86_400_000),
     })
     .returning();
 
-  await db.insert(correctionEvent).values({
-    requestId: request.id,
-    action: 'SUBMITTED',
-    actorId: rep.id,
-    toStatus: 'PENDING',
-  });
+  await db.insert(correctionEvent).values([
+    { requestId: request.id, action: 'SUBMITTED', actorId: rep.id, toStatus: 'PENDING' },
+    {
+      requestId: request.id,
+      action: 'VERIFIED',
+      actorId: verifierRow.id,
+      fromStatus: 'PENDING',
+      toStatus: 'VERIFIED',
+    },
+  ]);
 
   await db.insert(correctionAttachment).values({
     requestId: request.id,
@@ -59,7 +74,7 @@ async function seed() {
     uploadedBy: rep.id,
   });
 
-  return { rep, approver, record, request };
+  return { rep, approver, verifier, record, request };
 }
 
 describe('the pending queue (spec 9)', () => {
@@ -88,7 +103,7 @@ describe('the pending queue (spec 9)', () => {
     expect((await listQueue(parseQueueFilters({ scope: 'OPEN' }), page)).total).toBe(1);
 
     const counts = await queueCounts();
-    expect(counts).toMatchObject({ pending: 0, returned: 1 });
+    expect(counts).toMatchObject({ awaitingDecision: 0, awaitingVerification: 0, returned: 1 });
   });
 
   it('filters by category and searches across application, rep and client', async () => {
@@ -106,10 +121,13 @@ describe('decision history (spec 5.8)', () => {
   beforeEach(truncateAll);
 
   it('keeps a return that was later resubmitted and approved', async () => {
-    const { rep, approver, request } = await seed();
+    const { rep, approver, verifier, request } = await seed();
 
     await returnRequest({ requestId: request.id, actor: approver, remarks: 'Unreadable proof.' });
 
+    // The resubmission re-enters at PENDING and has to clear verification again
+    // before the approver can act — stood in for here, since the sales action
+    // and the verification service each own their own transition.
     await db
       .update(correctionRequest)
       .set({ status: 'PENDING', resubmissionCount: 1, lastResubmittedAt: new Date() })
@@ -122,6 +140,7 @@ describe('decision history (spec 5.8)', () => {
       toStatus: 'PENDING',
     });
 
+    await verifyRequest({ requestId: request.id, actor: verifier });
     await applyApproval({ requestId: request.id, actor: approver });
 
     const history = await listHistory(parseHistoryFilters({}), page, approver.id);
@@ -149,7 +168,10 @@ describe('the decision screen payload (spec 7.2, 9)', () => {
     expect(detail!.record.id).toBe(record.id);
     expect(detail!.submitterName).toBe('Priya Sales');
     expect(detail!.attachments).toHaveLength(1);
-    expect(detail!.events.map((e) => e.action)).toEqual(['SUBMITTED']);
+    // The approver sees both stages on one payload: the rep's submission and
+    // the verification that put it in front of them.
+    expect(detail!.events.map((e) => e.action)).toEqual(['SUBMITTED', 'VERIFIED']);
+    expect(detail!.verifierName).toBe('Vidya Verifier');
     expect(detail!.mapping).toBeNull();
 
     const preview = previewTarget(detail!.request, detail!.record);

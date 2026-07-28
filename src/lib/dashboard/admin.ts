@@ -115,10 +115,15 @@ export async function getAdminDashboard(): Promise<AdminDashboard> {
       db
         .select({
           total: countAll,
+          // Split across the two review stages — 2026-07-28 spec section 3.
+          // Counting only PENDING would make every verified request invisible
+          // here, and the parts would stop summing to the total.
           pending: countFiltered(eq(correctionRequest.status, 'PENDING')),
+          verified: countFiltered(eq(correctionRequest.status, 'VERIFIED')),
           returned: countFiltered(eq(correctionRequest.status, 'RETURNED')),
           approved: countFiltered(eq(correctionRequest.status, 'APPROVED')),
           rejected: countFiltered(eq(correctionRequest.status, 'REJECTED')),
+          withdrawn: countFiltered(eq(correctionRequest.status, 'WITHDRAWN')),
         })
         .from(correctionRequest),
 

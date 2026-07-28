@@ -27,11 +27,22 @@ export type SalesDashboard = {
   };
   requests: {
     total: number;
-    pending: number;
+    /** With a verifier — the first gate (2026-07-28 spec section 3). */
+    awaitingVerification: number;
+    /** Verified and with an approver — the second gate. */
+    awaitingApproval: number;
+    /**
+     * Both waiting states together. This is what the rep actually cares about
+     * ("how many of my claims are still in flight"); the split above answers the
+     * follow-up question of who is holding them.
+     */
+    open: number;
     approved: number;
     rejected: number;
-    /** Waiting on the rep, not on the approver — section 7. */
+    /** Waiting on the rep, not on a reviewer — section 7. */
     returned: number;
+    /** Closed by the rep themselves, so it is neither open nor decided. */
+    withdrawn: number;
   };
 };
 
@@ -65,10 +76,22 @@ export async function getSalesDashboard(user: SessionUser): Promise<SalesDashboa
     db
       .select({
         total: countAll,
-        pending: countFiltered(eq(correctionRequest.status, 'PENDING')),
+        /**
+         * Split across the two review stages — 2026-07-28 spec section 3.
+         *
+         * Before the verifier gate there was one waiting state. Counting only
+         * PENDING now would drop a request out of every bucket the moment it
+         * cleared verification: the rep's status breakdown would stop summing to
+         * `total`, and the "awaiting a decision" figure would go DOWN at exactly
+         * the moment the request finally reached an approver. From the rep's
+         * side that is indistinguishable from their claim being lost.
+         */
+        awaitingVerification: countFiltered(eq(correctionRequest.status, 'PENDING')),
+        awaitingApproval: countFiltered(eq(correctionRequest.status, 'VERIFIED')),
         approved: countFiltered(eq(correctionRequest.status, 'APPROVED')),
         rejected: countFiltered(eq(correctionRequest.status, 'REJECTED')),
         returned: countFiltered(eq(correctionRequest.status, 'RETURNED')),
+        withdrawn: countFiltered(eq(correctionRequest.status, 'WITHDRAWN')),
       })
       .from(correctionRequest)
       .where(eq(correctionRequest.submittedBy, user.id)),
@@ -91,10 +114,16 @@ export async function getSalesDashboard(user: SessionUser): Promise<SalesDashboa
     },
     requests: {
       total: q.total,
-      pending: q.pending,
+      awaitingVerification: q.awaitingVerification,
+      awaitingApproval: q.awaitingApproval,
+      open: q.awaitingVerification + q.awaitingApproval,
       approved: q.approved,
       rejected: q.rejected,
       returned: q.returned,
+      withdrawn: q.withdrawn,
+      // Every status the enum can hold is now counted, so the breakdown sums to
+      // `total`. That is an invariant worth keeping: a rep who adds up the rows
+      // and finds one missing has no way to tell which claim vanished.
     },
   };
 }

@@ -38,22 +38,32 @@ export default async function QueuePage({
   return (
     <>
       <PageHeader
-        title="Pending queue"
-        description="Oldest first. Approving applies the change to the record and writes a new version; returning sends the request back to the submitter without destroying its history."
+        title="Approval queue"
+        description="Verified requests only, oldest first. Approving applies the change to the record and writes a new version; returning sends the request back to the submitter without destroying its history."
       />
 
-      <div className="mb-6 grid gap-3 sm:grid-cols-3">
+      <div className="mb-6 grid gap-3 sm:grid-cols-4">
         <StatCard
           label="Awaiting decision"
-          value={counts.pending}
-          tone={counts.pending > 0 ? 'warning' : 'default'}
-          href="/approver/queue?scope=PENDING"
+          value={counts.awaitingDecision}
+          hint="Verified and yours to decide"
+          tone={counts.awaitingDecision > 0 ? 'warning' : 'default'}
+          href="/approver/queue?scope=VERIFIED"
         />
         <StatCard
-          label="Oldest pending"
+          label="Oldest waiting"
           value={`${counts.oldestDays}d`}
-          hint="Days since submission"
+          hint="Days since the rep submitted it"
           tone={counts.oldestDays >= 7 ? 'danger' : 'default'}
+        />
+        {/* Upstream of this queue. An approver whose own list is empty while
+            this number climbs is blocked, not idle, and nothing else on the
+            page distinguishes the two. */}
+        <StatCard
+          label="Awaiting verification"
+          value={counts.awaitingVerification}
+          hint="With a verifier — not yours yet"
+          href="/approver/queue?scope=PENDING"
         />
         <StatCard
           label="Returned"
