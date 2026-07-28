@@ -1,0 +1,15 @@
+# Pinned, matching the platform convention in compliance-agent/backend.
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+psycopg[binary]==3.2.1
+
+# The reason this service exists. calamine opens an .xlsb container lazily —
+# 0.00s to list sheets and 0.33s to read Login Data, against ~37s per pass for
+# SheetJS in Node. See docs/superpowers/specs/2026-07-28-ingestion-service-design.md
+python-calamine==0.2.3
+
+# Lead Dump cannot go through calamine: its DECLARED range is 54,508 x 16,383,
+# and to_python() on that asks for ~28 GB. pyxlsb yields row by row, so the
+# sheet is read at its real 15-column width without ever materialising the
+# declared range.
+pyxlsb==1.0.10
