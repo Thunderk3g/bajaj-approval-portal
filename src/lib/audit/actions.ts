@@ -21,6 +21,23 @@ export const AUDIT_ACTIONS = [
   'UPLOAD_VALIDATE',
   'UPLOAD_COMMIT',
   'UPLOAD_ABORT',
+  /**
+   * A `Lead Dump` import was started for this upload.
+   *
+   * Separate from UPLOAD_COMMIT because it is a separate decision with a
+   * separate outcome: leads are a read-only view scoped by SM code, and an admin
+   * may import them for a batch whose transaction rows are still being reviewed.
+   */
+  'UPLOAD_LEADS_IMPORT',
+  /**
+   * The upload row, its staged rows and its stored file are gone.
+   *
+   * Distinct from UPLOAD_ABORT, which keeps all three. This entry is the ONLY
+   * remaining evidence that the file was ever uploaded, which is why the action
+   * writes it before deleting anything and copies the file name and hash into
+   * `before` — after the fact there is nothing left to join to.
+   */
+  'UPLOAD_DELETE',
   'UPLOAD_ORIGINAL_DOWNLOAD',
 
   'RECORD_UPDATE',

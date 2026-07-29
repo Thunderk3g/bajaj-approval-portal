@@ -4,8 +4,38 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { setBatchSheetAction } from '@/lib/import/actions';
 import { DATE_FORMATS, type DateFormat } from '@/lib/import/dates';
-import type { SheetInfo } from '@/lib/import/types';
 import { Alert, Button, Field, Input, Select } from '@/components/ui';
+
+/**
+ * Names only, no row or column counts.
+ *
+ * The ingestion service refuses to report them and it is right to: the only
+ * number available without reading a sheet is its DECLARED range, and `Lead
+ * Dump` declares 54,508 x 16,383 because one row carries formatting out to
+ * column 16,383. Showing a declared range as a row count is how a 9 MB file gets
+ * described as 893 million cells on the screen the admin uses to choose.
+ */
+
+/**
+ * The one sheet this picker must not offer.
+ *
+ * It is not a transaction sheet — it carries leads, has no `Apps_No`, and has
+ * its own import on the card below this one. Offering it here was a real
+ * failure, not a tidiness problem: choosing it queued a parse that the service
+ * refuses outright, because reading it through the sheet reader materialises a
+ * 54,508 x 16,383 declared range and asks for roughly 28 GB. The admin got a
+ * FAILED job quoting that number and no way to tell that the sheet was simply
+ * the wrong choice.
+ *
+ * Matched case-insensitively against the trimmed name, the same comparison
+ * `resolve_sheet` makes in the service — which already skipped this sheet when
+ * choosing one automatically. Only the explicit choice was unguarded.
+ */
+const LEAD_SHEET = 'lead dump';
+
+export function isTransactionSheet(name: string): boolean {
+  return name.trim().toLowerCase() !== LEAD_SHEET;
+}
 
 export function SheetPicker({
   batchId,
@@ -15,7 +45,7 @@ export function SheetPicker({
   dateFormat,
 }: {
   batchId: string;
-  sheets: SheetInfo[];
+  sheets: string[];
   sheetName: string;
   headerRow: number;
   dateFormat: DateFormat;
@@ -25,6 +55,9 @@ export function SheetPicker({
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
   const [values, setValues] = useState({ sheetName, headerRow: String(headerRow), dateFormat });
+
+  const selectable = sheets.filter(isTransactionSheet);
+  const excluded = sheets.length - selectable.length;
 
   function submit() {
     setError(null);
@@ -55,10 +88,9 @@ export function SheetPicker({
             disabled={pending}
             onChange={(e) => setValues((v) => ({ ...v, sheetName: e.target.value }))}
           >
-            {sheets.map((sheet) => (
-              <option key={sheet.name} value={sheet.name}>
-                {sheet.name} — {sheet.rowCount.toLocaleString('en-IN')} rows ×{' '}
-                {sheet.columnCount.toLocaleString('en-IN')} cols
+            {selectable.map((name) => (
+              <option key={name} value={name}>
+                {name}
               </option>
             ))}
           </Select>
@@ -107,10 +139,14 @@ export function SheetPicker({
 
       <div className="flex items-center gap-3">
         <Button type="button" onClick={submit} disabled={pending}>
-          {pending ? 'Reading sheet…' : 'Use this sheet'}
+          {pending ? 'Queueing…' : 'Use this sheet'}
         </Button>
         <p className="text-xs text-slate-500">
-          Changing the sheet clears any column mapping made against the previous one.
+          Changing the sheet clears any column mapping made against the previous one and re-reads
+          the workbook.
+          {excluded > 0
+            ? ' Lead Dump is not listed: it carries leads rather than transactions and is imported separately below.'
+            : null}
         </p>
       </div>
     </div>

@@ -21,12 +21,29 @@ export const metadata: Metadata = {
   title: 'My requests · Sales Data Review Portal',
 };
 
+/**
+ * Every status a rep's own request can be in, phrased from the rep's side.
+ *
+ * The labels say where the request IS, not what its enum is called: a rep does
+ * not need to know the stage is named VERIFIED, they need to know it is now with
+ * an approver. `src/app/sales/page.tsx` uses the same phrasing on its dashboard
+ * tiles, and those tiles link here.
+ *
+ * VERIFIED and WITHDRAWN were missing, and the consequence was worse than an
+ * absent pill. An unrecognised `status` falls through to `undefined` below,
+ * which means "All" — so the two dashboard tiles linking to `?status=VERIFIED`
+ * and `?status=WITHDRAWN` silently landed the rep on an unfiltered list with the
+ * "All" pill highlighted. The filter did not fail; it quietly answered a
+ * different question.
+ */
 const STATUS_FILTERS = [
   { value: '', label: 'All' },
-  { value: 'PENDING', label: 'Pending' },
+  { value: 'PENDING', label: 'With a verifier' },
+  { value: 'VERIFIED', label: 'With an approver' },
   { value: 'RETURNED', label: 'Returned' },
   { value: 'APPROVED', label: 'Approved' },
   { value: 'REJECTED', label: 'Closed' },
+  { value: 'WITHDRAWN', label: 'Withdrawn' },
 ] as const;
 
 type SearchParams = Record<string, string | string[] | undefined>;

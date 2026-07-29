@@ -126,7 +126,10 @@ export default async function VerifierQueuePage({
         </form>
       </Card>
 
-      <QueueTable rows={queue.rows} basePath="/verifier" />
+      {/* homeStatus, because this table defaults to the approver's. The
+          verifier works on PENDING; without this every row in their own queue
+          would wear a redundant PENDING chip. */}
+      <QueueTable rows={queue.rows} basePath="/verifier" homeStatus="PENDING" />
 
       <Pagination
         page={queue.page}

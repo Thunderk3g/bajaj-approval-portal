@@ -254,9 +254,19 @@ export function ProofList({ attachments }: { attachments: RequestDetail['attachm
   );
 }
 
+/**
+ * Must cover every value of `eventActionEnum`; anything missing falls back to
+ * `neutral`.
+ *
+ * VERIFIED was missing, and this is the timeline an approver reads to answer
+ * "has a verifier already checked this" before deciding. A colourless entry is
+ * exactly the one you skim past, on the one screen where skimming past it is the
+ * mistake the two-stage gate exists to prevent.
+ */
 const EVENT_TONE: Record<string, 'neutral' | 'info' | 'warning' | 'danger' | 'success'> = {
   SUBMITTED: 'neutral',
   RESUBMITTED: 'info',
+  VERIFIED: 'info',
   APPROVED: 'success',
   REJECTED: 'danger',
   RETURNED: 'warning',

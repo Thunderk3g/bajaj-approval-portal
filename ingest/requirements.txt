@@ -13,3 +13,20 @@ python-calamine==0.2.3
 # sheet is read at its real 15-column width without ever materialising the
 # declared range.
 pyxlsb==1.0.10
+
+# Connection pooling for psycopg 3 — ships separately from the driver.
+psycopg-pool==3.2.2
+
+# The only WRITER here: app/split.py cuts the collective workbook into one file
+# per sheet. write_only mode keeps a single row in memory and spools the sheet
+# XML to a temp file, which is what lets Lead Dump's 54,507 rows be written at
+# all. Pure Python — it and its one dependency, et_xmlfile, both publish
+# py3-none-any wheels, so --only-binary=:all: resolves them with no compiler.
+# xlsxwriter's constant_memory mode would do the same job; openpyxl wins because
+# it also READS an .xlsx, which is how the tests check that a value came back as
+# text rather than as a formula.
+openpyxl==3.1.5
+
+# Proof inspection: page counts, scan detection, and pulling an Apps_No or UMRN
+# out of a mandate so a verifier can search rather than squint.
+pypdf==4.3.1

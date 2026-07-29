@@ -1,6 +1,6 @@
 import { and, asc, count, desc, eq, ilike, notExists, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db/client';
-import { manpower, salesRecord, user } from '@/db/schema';
+import { manpower, roleEnum, salesRecord, user } from '@/db/schema';
 import type { UserRole } from './schema';
 
 /** Reads for /admin/users — spec sections 4.2 and 13.2 note 7. */
@@ -23,8 +23,20 @@ export type UserListOptions = {
   offset: number;
 };
 
+/**
+ * Derived from the enum, not enumerated by hand.
+ *
+ * The hand-written version listed admin, sales and approver, and was written
+ * before `verifier` existed. Because an unrecognised role falls through to "no
+ * filter" rather than to an error, `/admin/users?role=verifier` quietly listed
+ * every user instead of the verifiers — the filter did not fail, it answered a
+ * different question. Deriving it means the next role added to the enum cannot
+ * reintroduce that.
+ */
+const ROLES = new Set<string>(roleEnum.enumValues);
+
 function isRole(value: string): value is UserRole {
-  return value === 'admin' || value === 'sales' || value === 'approver';
+  return ROLES.has(value);
 }
 
 export async function listUsers(

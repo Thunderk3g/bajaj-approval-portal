@@ -23,6 +23,15 @@ WORKDIR /app
 # Only the manifests, so this layer is re-used whenever source changes but
 # dependencies do not — which is most rebuilds.
 COPY package.json package-lock.json ./
+
+# vendor/ holds the SheetJS tarball, which package.json depends on by path
+# rather than by URL. It has to be present BEFORE `npm ci`, and copying it with
+# the manifests keeps it inside the same cached layer — it changes only when the
+# dependency does. See vendor/README.md for why it is committed at all; the
+# short version is that neither the VM nor a developer machine behind the
+# corporate TLS interception can fetch cdn.sheetjs.com from inside a container.
+COPY vendor ./vendor
+
 RUN npm ci
 
 # ── build ─────────────────────────────────────────────────────────────────
@@ -48,6 +57,28 @@ ENV DATABASE_URL="postgresql://build:build@localhost:5432/build" \
 
 RUN npm run build
 
+# ── migrate ───────────────────────────────────────────────────────────────
+# A one-shot image that applies the schema and exits. Used by the LOCAL
+# docker-compose.yml so `docker compose up` produces a working database; the
+# VM does not use it (see the note in the runtime stage below).
+#
+# It reuses the `build` stage rather than adding a slimmer one because the
+# migration needs the things a runtime image deliberately drops: drizzle-kit
+# and tsx are devDependencies, and `drizzle/`, `scripts/` and
+# `drizzle.config.ts` are source. A stage that copied "just enough" would be a
+# fourth opinion about what the schema tooling needs.
+#
+# Placed BEFORE `runtime` on purpose: the last stage is what a bare
+# `docker build .` produces, and that must stay the app.
+#
+# Both scripts call dotenv on `.env.local`, which .dockerignore keeps out of
+# the image — so the file is absent, dotenv no-ops, and DATABASE_URL comes
+# from the container environment. That is the intended path here; it is also
+# why the build-time placeholder DATABASE_URL above must be overridden by
+# whatever runs this, and compose's `environment:` does exactly that.
+FROM build AS migrate
+CMD ["sh", "-c", "npm run db:migrate && npm run db:custom"]
+
 # ── runtime ───────────────────────────────────────────────────────────────
 FROM docker.io/library/node:20-slim AS runtime
 WORKDIR /app
@@ -72,6 +103,11 @@ COPY --from=build --chown=nextjs:nodejs /app/public ./public
 # applied deliberately, by an admin running `npm run db:migrate` against
 # shared-postgres — an app that migrates on boot would let a rolled-back
 # container restart rewrite the schema under a running one.
+#
+# The `migrate` stage above exists so LOCAL compose can still bring a database
+# up in one command. It is a separate image that runs once and exits, which is
+# not the same thing as this one migrating itself on boot: on the VM nothing
+# runs it, so the guarantee above is unchanged.
 
 USER nextjs
 EXPOSE 3008

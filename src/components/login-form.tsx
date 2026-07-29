@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useState, useTransition, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
+import { Spinner } from '@/components/ui';
 import { signIn } from '@/lib/auth/client';
 
 /**
@@ -20,36 +21,44 @@ export function LoginForm({ next }: { next?: string | null }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
 
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+  // useTransition rather than a useState flag, matching DecisionForm.
+  //
+  // A successful sign-in lands on a force-dynamic dashboard that queries
+  // Postgres, so most of the wait is the navigation, not the credential check. A
+  // flag would have to be left switched on forever to cover that — the previous
+  // version never reset it on the success path — whereas a transition stays
+  // pending for exactly as long as the destination takes and clears itself on
+  // failure.
+  const [pending, startTransition] = useTransition();
+
+  function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (pending) return;
 
-    setPending(true);
     setError(null);
 
-    try {
-      const result = await signIn.email({
-        email: email.trim().toLowerCase(),
-        password,
-      });
+    startTransition(async () => {
+      try {
+        const result = await signIn.email({
+          email: email.trim().toLowerCase(),
+          password,
+        });
 
-      if (result.error) {
-        // 429 is a throttle, not a credential verdict, so it reveals nothing
-        // about whether the account exists. Every other failure collapses into
-        // the same generic message.
-        setError(result.error.status === 429 ? THROTTLED_ERROR : CREDENTIAL_ERROR);
-        setPending(false);
-        return;
+        if (result.error) {
+          // 429 is a throttle, not a credential verdict, so it reveals nothing
+          // about whether the account exists. Every other failure collapses into
+          // the same generic message.
+          setError(result.error.status === 429 ? THROTTLED_ERROR : CREDENTIAL_ERROR);
+          return;
+        }
+
+        router.push(next ?? '/');
+        router.refresh();
+      } catch {
+        setError(UNAVAILABLE_ERROR);
       }
-
-      router.push(next ?? '/');
-      router.refresh();
-    } catch {
-      setError(UNAVAILABLE_ERROR);
-      setPending(false);
-    }
+    });
   }
 
   return (
@@ -100,10 +109,21 @@ export function LoginForm({ next }: { next?: string | null }) {
       <button
         type="submit"
         disabled={pending}
-        className="w-full rounded bg-slate-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:bg-slate-400"
+        aria-busy={pending}
+        className="inline-flex w-full items-center justify-center gap-2 rounded bg-slate-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:bg-slate-400"
       >
+        {pending ? <Spinner /> : null}
         {pending ? 'Signing in…' : 'Sign in'}
       </button>
+
+      {/* Outside the button: a live region nested inside it would be folded into
+          the button's accessible name and read back twice. The sign-in wait runs
+          past the credential check into a dashboard query, which is long enough
+          that a non-sighted user is otherwise left guessing whether the form
+          submitted at all. */}
+      <span role="status" className="sr-only">
+        {pending ? 'Signing in' : ''}
+      </span>
 
       <p className="text-xs text-slate-500">
         Accounts are created by an administrator. There is no self sign-up.

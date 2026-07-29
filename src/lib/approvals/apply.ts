@@ -64,8 +64,18 @@ export type ApprovalErrorCode =
  * at all; one lock, one check, no window between them.
  *
  * Widening this back to include PENDING silently removes the second stage while
- * leaving every screen looking identical. tests/integration/verification-flow
- * asserts against that.
+ * leaving every screen looking identical.
+ *
+ * Two tests hold it, and they hold DIFFERENT halves — this comment used to claim
+ * only the first, which is how the second half broke unnoticed:
+ *
+ *   * tests/integration/verification-flow.test.ts — the DOMAIN gate. It was
+ *     correct throughout.
+ *   * tests/integration/approver-page-gate.test.ts — the PAGE gate, that the
+ *     decision form renders for exactly this status and no other. Its absence
+ *     is precisely why an approver could be shown "cannot be decided again" on
+ *     a request they were supposed to decide, with a green test suite: the data
+ *     layer was never wrong, only the screen, and nothing looked at the screen.
  */
 export const APPROVABLE_STATUS = 'VERIFIED' as const;
 
@@ -87,6 +97,31 @@ export class ApprovalError extends Error {
 }
 
 export type DecisionActor = Pick<SessionUser, 'id' | 'email' | 'role'>;
+
+/**
+ * The role permitted to decide. Asserted HERE, not only in `actions.ts`.
+ *
+ * `actions.ts` calls `requireRole('approver')` and today that is the only way in,
+ * so this is defence in depth rather than a fix for a reachable hole. It is
+ * worth the four lines for the same reason APPROVABLE_STATUS lives in the lock
+ * predicate: `applyApproval` and `decide` are exported, and the next caller —
+ * a route handler, a cron, a backfill script, a test harness — inherits no
+ * middleware and no Server Action boundary. An audited write that applies a
+ * correction to a customer record should not depend on every future caller
+ * remembering to gate first.
+ *
+ * Admin is deliberately NOT allowed. Section 3 of the 2026-07-28 spec makes
+ * verification and approval separate people; an admin who could approve would
+ * be able to import a workbook and then approve corrections to it alone.
+ */
+function assertApprover(actor: DecisionActor): void {
+  if (actor.role !== 'approver') {
+    throw new ApprovalError(
+      'NOT_PENDING',
+      `Only an approver can decide a correction request; ${actor.email} is ${actor.role}.`,
+    );
+  }
+}
 
 export type DecisionInput = {
   requestId: string;
@@ -217,6 +252,8 @@ export async function applyApprovalWithin(
   tx: DbTransaction,
   input: DecisionInput,
 ): Promise<ApprovalOutcome> {
+  assertApprover(input.actor);
+
   const warnings: string[] = [];
   const remarks = input.remarks?.trim() || null;
 
@@ -294,9 +331,26 @@ export async function applyApprovalWithin(
       .limit(1);
 
     resolvedSmName = roster?.smName ?? null;
-    if (!roster) {
+
+    // Keyed on the NAME being missing, not on the ROW being missing, and the
+    // difference is the whole warning.
+    //
+    // `flagOrphans` in the import commit inserts a `manpower` row with a NULL
+    // `sm_name` for every SM_ID seen in transaction data but absent from the
+    // roster sheet. That row makes `roster` truthy — so the old `if (!roster)`
+    // check passed silently while `resolvedSmName` was still null and the patch
+    // below cleared `sm_name` anyway. The single case the warning exists for is
+    // exactly the case that suppressed it: an approval blanking a rep's name
+    // with nothing said, on a screen whose entire job is to say what changed.
+    //
+    // The two states are still distinguishable and worth distinguishing: no row
+    // at all means the roster has never heard of this code, whereas a row with
+    // no name means the importer created a placeholder for it.
+    if (!resolvedSmName) {
       warnings.push(
-        `${newValue} is not in the Manpower roster, so the rep name was cleared rather than guessed. Ask an admin to add the roster entry.`,
+        roster
+          ? `${newValue} has a roster entry with no name — it was created automatically from transaction data, not from a Manpower sheet — so the rep name was cleared rather than guessed. Ask an admin to import an up-to-date roster.`
+          : `${newValue} is not in the Manpower roster, so the rep name was cleared rather than guessed. Ask an admin to add the roster entry.`,
       );
     }
 
@@ -501,6 +555,8 @@ export async function decideWithin(
   tx: DbTransaction,
   input: DecisionInput & { decision: 'REJECT' | 'RETURN' },
 ): Promise<DecisionOutcome> {
+  assertApprover(input.actor);
+
   const remarks = input.remarks?.trim() || null;
   if (!remarks) {
     throw new ApprovalError(

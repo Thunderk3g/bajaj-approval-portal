@@ -339,6 +339,212 @@ export function LinkButton({
   return <Link className={buttonClass(variant, className)} {...rest} />;
 }
 
+/* ----------------------------------------------------------------- loading */
+
+/**
+ * Skeletons rather than a spinner, because the wait here is a page wait.
+ *
+ * Every route in this portal is force-dynamic and queries Postgres before it
+ * renders, so a click costs anywhere from half a second to several. Without
+ * something on screen the browser holds the *previous* page, which reads as a
+ * dead click and gets clicked again.
+ *
+ * The pulse is gated behind `motion-safe:`. An animation nobody can turn off is
+ * a vestibular trigger, and under `prefers-reduced-motion: reduce` these blocks
+ * settle to the flat slate tint — still legibly a placeholder, just still.
+ *
+ * These are server components like everything else in this file: a CSS
+ * animation needs no client boundary, and marking them 'use client' would drag
+ * every loading.tsx into the browser bundle.
+ */
+export function Skeleton({
+  width,
+  height = '1rem',
+  className,
+}: {
+  width?: string | number;
+  height?: string | number;
+  className?: string;
+}) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cx('block rounded bg-slate-200 motion-safe:animate-pulse', className)}
+      style={{ width, height }}
+    />
+  );
+}
+
+/**
+ * The root of every loading.tsx.
+ *
+ * A screen reader must hear one sentence, not forty empty boxes: the label is
+ * the only thing exposed and the placeholder tree is hidden outright.
+ * `aria-busy` is what distinguishes "this region is mid-update" from "this
+ * region finished and is empty" — without it the honest reading of a skeleton
+ * page is that the query returned nothing.
+ */
+export function LoadingScreen({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div role="status" aria-busy="true">
+      <span className="sr-only">{label}</span>
+      <div aria-hidden="true">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * Fixed cycle rather than randomised widths.
+ *
+ * A loading.tsx is server-rendered and then hydrated; Math.random() would build
+ * two different trees and throw a hydration mismatch on exactly the slow
+ * navigations this exists to cover.
+ */
+const SKELETON_WIDTHS = ['72%', '45%', '88%', '58%', '36%', '66%'];
+
+/** Mirrors {@link PageHeader}, down to its `mb-6`, so nothing shifts on swap. */
+export function SkeletonPageHeader({ actions = 0 }: { actions?: number }) {
+  return (
+    <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+      <div className="min-w-0">
+        <Skeleton width="16rem" height="1.5rem" className="max-w-full" />
+        <Skeleton width="28rem" height="0.875rem" className="mt-2 max-w-full" />
+      </div>
+      {actions > 0 ? (
+        <div className="flex shrink-0 items-center gap-2">
+          {Array.from({ length: actions }, (_, i) => (
+            <Skeleton key={i} width="7rem" height="2.375rem" />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Mirrors {@link StatCard}: label, value, hint, in a card of the same box. */
+export function SkeletonStatCards({
+  count = 4,
+  className,
+}: {
+  count?: number;
+  className?: string;
+}) {
+  return (
+    <div className={cx('grid gap-4 sm:grid-cols-2 xl:grid-cols-4', className)}>
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i} className="rounded-lg border border-slate-200 bg-white p-4">
+          <Skeleton width="45%" height="0.75rem" />
+          <Skeleton width="30%" height="1.75rem" className="mt-1.5" />
+          <Skeleton width="60%" height="0.75rem" className="mt-1.5" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Built from the real {@link Table}/{@link Th}/{@link Td} so the swap is a fill, not a relayout. */
+export function SkeletonTable({ rows = 8, columns = 5 }: { rows?: number; columns?: number }) {
+  const cols = Array.from({ length: columns }, (_, i) => i);
+
+  return (
+    <Table>
+      <thead>
+        <tr>
+          {cols.map((col) => (
+            <Th key={col}>
+              <Skeleton width="70%" height="0.75rem" />
+            </Th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {Array.from({ length: rows }, (_, row) => (
+          <tr key={row}>
+            {cols.map((col) => (
+              <Td key={col}>
+                <Skeleton
+                  width={SKELETON_WIDTHS[(row + col) % SKELETON_WIDTHS.length]}
+                  height="0.875rem"
+                />
+              </Td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </Table>
+  );
+}
+
+/** Mirrors a `<dl>` of {@link DetailRow} — the shape of every detail pane. */
+export function SkeletonDetailRows({ rows = 6 }: { rows?: number }) {
+  return (
+    <div>
+      {Array.from({ length: rows }, (_, i) => (
+        <div
+          key={i}
+          className="flex flex-wrap gap-x-4 gap-y-0.5 border-b border-slate-100 py-2 last:border-b-0"
+        >
+          <div className="w-48 shrink-0">
+            <Skeleton width="70%" height="0.75rem" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <Skeleton width={SKELETON_WIDTHS[i % SKELETON_WIDTHS.length]} height="0.875rem" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Mirrors {@link Field} wrapped around a control of {@link Input} height. */
+export function SkeletonFields({ count = 4 }: { count?: number }) {
+  return (
+    <div className="space-y-5">
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i} className="space-y-1.5">
+          <Skeleton width="8rem" height="0.875rem" />
+          <Skeleton height="2.375rem" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * In-place busy glyph for a control that has already committed to an action.
+ *
+ * Decorative on purpose: the button's own label changes and a live region
+ * carries the announcement, so exposing the graphic too would say the same
+ * thing twice. `motion-safe:` leaves a static ring for anyone who asked the OS
+ * for less movement — the label is what carries the meaning either way.
+ */
+export function Spinner({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 16 16"
+      className={cx('size-3.5 shrink-0 motion-safe:animate-spin', className)}
+    >
+      <circle
+        cx="8"
+        cy="8"
+        r="6.5"
+        fill="none"
+        stroke="currentColor"
+        strokeOpacity="0.3"
+        strokeWidth="2.5"
+      />
+      <path
+        d="M8 1.5a6.5 6.5 0 0 1 6.5 6.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 /* -------------------------------------------------------------- pagination */
 
 export function Pagination({

@@ -7,12 +7,19 @@
  * `.catch(null)` swallows the failure, which keeps the "ignore what you cannot
  * read" rule in one place instead of scattered across a dozen `try` blocks.
  *
- * Deliberately free of any database import: this is pure string handling, so it
- * is unit-testable without a connection and cannot accidentally become the
+ * Deliberately free of any database CLIENT import: this is pure string handling,
+ * so it is unit-testable without a connection and cannot accidentally become the
  * place a query gets built.
+ *
+ * `@/db/schema/enums` is the one exception and does not weaken that. It declares
+ * pgEnum values and imports nothing but `pgEnum` itself — no pool, no client, no
+ * table definitions — so it costs no connection. Importing it from the narrow
+ * path rather than the `@/db/schema` barrel is what keeps that true: the barrel
+ * pulls in every table in the application.
  */
 
 import { z } from 'zod';
+import { correctionStatusEnum } from '@/db/schema/enums';
 import { GAP_TYPES } from '@/lib/records/gaps';
 import type { Role } from '@/lib/auth/rbac';
 
@@ -52,7 +59,21 @@ export const DEFAULT_DIR: SortDir = 'desc';
 export const GAP_FILTERS = ['ANY', ...GAP_TYPES] as const;
 export type GapFilter = (typeof GAP_FILTERS)[number];
 
-export const CORRECTION_STATUSES = ['PENDING', 'APPROVED', 'REJECTED', 'RETURNED'] as const;
+/**
+ * Every status a correction can hold, derived from the enum rather than listed.
+ *
+ * It WAS a hand-written list of four, and it silently stopped being complete the
+ * moment the verifier stage added VERIFIED and WITHDRAWN. Because the Zod schema
+ * below validates against this same array with `.catch(null)`, the effect was
+ * not a missing dropdown option but a filter that could not be reached at all:
+ * even a hand-typed `?correctionStatus=VERIFIED` was dropped, so "records whose
+ * correction is sitting with an approver" was unaskable.
+ *
+ * Deriving it is the fix, not adding the two missing values. `admin/corrections`
+ * already does exactly this, and a list that has to be updated by hand when the
+ * enum changes will fall behind the enum again.
+ */
+export const CORRECTION_STATUSES = correctionStatusEnum.enumValues;
 export type CorrectionStatus = (typeof CORRECTION_STATUSES)[number];
 
 export type RecordFilters = {

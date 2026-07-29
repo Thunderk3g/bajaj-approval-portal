@@ -9,9 +9,21 @@ import { Badge, EmptyState, cx } from '@/components/ui';
  * into the browser bundle for the sake of a border colour.
  */
 
+/**
+ * Both maps must cover every value of `eventActionEnum`.
+ *
+ * An action that is missing falls back to its raw enum name and to grey, which
+ * is what VERIFIED did until the verifier stage's own event became invisible on
+ * the rep's timeline — the one entry telling them their request had cleared the
+ * first gate rendered as the shoutier "VERIFIED" in the same colour as a
+ * withdrawal.
+ */
 const EVENT_LABELS: Record<string, string> = {
   SUBMITTED: 'Submitted',
   RESUBMITTED: 'Resubmitted',
+  // Phrased from the rep's side: what matters to them is not that a verifier
+  // acted but that the request has moved on to the approver.
+  VERIFIED: 'Verified — now with an approver',
   APPROVED: 'Approved',
   REJECTED: 'Rejected',
   RETURNED: 'Returned for changes',
@@ -21,6 +33,10 @@ const EVENT_LABELS: Record<string, string> = {
 const EVENT_TONES: Record<string, string> = {
   SUBMITTED: 'bg-sky-500',
   RESUBMITTED: 'bg-sky-500',
+  // Not emerald: a verification is progress, not the outcome. Reusing the
+  // approval colour would make a request that has merely cleared the first gate
+  // read, at a glance down the timeline, as done.
+  VERIFIED: 'bg-indigo-500',
   APPROVED: 'bg-emerald-500',
   REJECTED: 'bg-red-500',
   RETURNED: 'bg-amber-500',

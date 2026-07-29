@@ -14,6 +14,7 @@ import {
   Td,
   Th,
 } from '@/components/ui';
+import { DeleteUploadButton } from './_components/delete-upload-button';
 
 export const metadata: Metadata = {
   title: 'Uploads · Sales Data Review Portal',
@@ -73,6 +74,9 @@ export default async function UploadsPage() {
               <Th className="text-right">Errors</Th>
               <Th className="text-right">Duplicates</Th>
               <Th>Uploaded</Th>
+              <Th>
+                <span className="sr-only">Actions</span>
+              </Th>
             </tr>
           </thead>
           <tbody>
@@ -101,6 +105,19 @@ export default async function UploadsPage() {
                 <Td className="whitespace-nowrap text-slate-600">
                   {formatDateTime(batch.uploadedAt)}
                   <span className="block text-xs text-slate-400">{batch.uploadedByName ?? '—'}</span>
+                </Td>
+                {/* A committed batch renders no control at all rather than a
+                    disabled one: its rows are the provenance of live records, so
+                    the answer is never "not yet" — it is "not through here". The
+                    component returns null for `committed`, and the prop is what
+                    tells it which this row is. */}
+                <Td>
+                  <DeleteUploadButton
+                    batchId={batch.id}
+                    fileName={batch.originalFileName}
+                    committed={batch.status === 'COMMITTED'}
+                    compact
+                  />
                 </Td>
               </tr>
             ))}

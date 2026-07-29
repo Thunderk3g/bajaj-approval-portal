@@ -1,3 +1,33 @@
+# ──────────────────────────────────────────────────────────────────────────
+# The whole application, locally, in one command:
+#
+#   docker compose up -d --build      # first run, or after a code change
+#   docker compose up -d              # afterwards
+#
+# Portal:  http://localhost:3000
+# Parser:  http://localhost:8006/health
+#
+# Four services and one of them exits on purpose:
+#
+#   postgres  the database
+#   migrate   runs the Drizzle migrations, then STOPS. Everything else waits
+#             for it, so a fresh `up` produces a working schema rather than a
+#             parser that crash-loops against an empty database.
+#   ingest    the Python workbook parser (reconciliation-ingest)
+#   app       the Next.js portal
+#
+# This file is LOCAL ONLY. The VM deployment is docker-compose.shared.yml,
+# which is podman-only — it joins an external network, publishes no ports, and
+# logs through the k8s-file driver that Docker Desktop rejects. It also does
+# NOT run `migrate`: on the VM the schema is applied by hand, deliberately,
+# because an app that migrates on boot lets a rolled-back container rewrite
+# the schema under a running one.
+#
+# For UI work, run the portal on the host instead — `docker compose up -d
+# postgres ingest migrate` then `npm run dev`. A containerised Next dev server
+# watching a Windows bind mount rebuilds seconds after you save, when it
+# notices at all.
+# ──────────────────────────────────────────────────────────────────────────
 services:
   postgres:
     image: postgres:16-alpine
@@ -17,6 +47,139 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Runs `db:migrate` + `db:custom` and exits. Not a server.
+  #
+  # Safe to re-run, which is what makes it a startup step rather than a
+  # one-off: drizzle-kit skips migrations already in its journal, and every
+  # file in drizzle/custom/ is written idempotently (CREATE INDEX IF NOT
+  # EXISTS, DROP TRIGGER IF EXISTS before CREATE, CREATE OR REPLACE FUNCTION).
+  # ────────────────────────────────────────────────────────────────────────
+  migrate:
+    build:
+      context: .
+      target: migrate
+    image: localhost/reconciliation-migrate:latest
+    container_name: sdrp-migrate
+    # Never restart: this is a task, and a completed task that restarts is a
+    # migration loop.
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://sdrp:sdrp_local_dev@postgres:5432/sdrp
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ────────────────────────────────────────────────────────────────────────
+  # The workbook parser. Same image the VM runs as reconciliation-ingest.
+  # ────────────────────────────────────────────────────────────────────────
+  ingest:
+    build:
+      context: ./ingest
+    image: localhost/reconciliation-ingest:latest
+    container_name: sdrp-ingest
+    restart: unless-stopped
+
+    environment:
+      # `postgres`, not `localhost` — this resolves on the compose network.
+      # .env.local says localhost and is right for a host-side `npm run dev`;
+      # the two differ on purpose.
+      DATABASE_URL: postgresql://sdrp:sdrp_local_dev@postgres:5432/sdrp
+      STORAGE_ROOT: /app/storage
+      # Must match the portal's INGEST_TOKEN. This is the default in
+      # src/lib/env.ts, so an .env.local that sets neither variable already
+      # agrees — and it is exactly 32 characters, the minimum the service
+      # starts on.
+      INGEST_TOKEN: local-dev-ingest-token-change-me
+
+    # Published, unlike on the VM, so a host-side `npm run dev` can reach it.
+    # 8006, not 8005: 8005 sits in a Windows TCP port-exclusion range and
+    # fails to bind with a bare permission error. See ingest/Dockerfile.
+    ports:
+      - "8006:8006"
+
+    volumes:
+      # THE integration. The portal writes uploads under ./storage and hands
+      # the parser only the relative path; the 9 MB file never crosses the
+      # network. Point this somewhere else and every parse fails with "No
+      # stored file at ..." while both containers look perfectly healthy.
+      - ./storage:/app/storage
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # Not decoration. This service validates on startup that every column it
+      # writes exists and refuses to serve otherwise, so against an un-migrated
+      # database it crash-loops on "table 'ingest_job' is missing entirely".
+      migrate:
+        condition: service_completed_successfully
+
+  # ────────────────────────────────────────────────────────────────────────
+  # The portal.
+  # ────────────────────────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      target: runtime
+      args:
+        # Empty locally: nginx's /reconciliation prefix only exists on the VM.
+        # Build-time, because Next bakes basePath into every route and asset
+        # URL — setting it at run time gives you links pointing nowhere.
+        NEXT_PUBLIC_BASE_PATH: ""
+    image: localhost/reconciliation-app:latest
+    container_name: sdrp-app
+    restart: unless-stopped
+
+    # The same secrets a host-side `npm run dev` uses, so a session survives
+    # switching between the two. Everything environment-shaped is overridden
+    # below; this file is here for BETTER_AUTH_SECRET, which must not be
+    # committed and must not differ between the two ways of running the app.
+    # Copy .env.example to .env.local if you do not have one — the repo cannot
+    # start without it either way.
+    env_file:
+      - .env.local
+
+    environment:
+      NODE_ENV: production
+      PORT: "3008"
+      HOSTNAME: 0.0.0.0
+      # Overrides .env.local's localhost, which is right on the host and wrong
+      # in a container.
+      DATABASE_URL: postgresql://sdrp:sdrp_local_dev@postgres:5432/sdrp
+      # 3000 because that is the published port below, and Better Auth builds
+      # its callback and cookie paths from this value.
+      BETTER_AUTH_URL: http://localhost:3000
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      # http://localhost is a secure context in every current browser, so a
+      # Secure cookie would in fact work — but not over http://<lan-ip>:3000,
+      # which is how anyone else on the network reaches this. Off locally, and
+      # off for the same reason on the VM; see docs/deploy-vm.md.
+      COOKIE_SECURE: "false"
+      INGEST_URL: http://ingest:8006
+      INGEST_TOKEN: local-dev-ingest-token-change-me
+
+    # 3000 outside, 3008 inside. The image fixes 3008 (the VM's port-registry
+    # slot); 3000 is what the app's own BETTER_AUTH_URL and every bookmark
+    # already say.
+    ports:
+      - "3000:3008"
+
+    volumes:
+      # The same host directory the parser mounts. This is what lets the two
+      # exchange a path instead of a file.
+      - ./storage:/app/storage
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      # Healthy, not merely started: an upload whose parse job cannot be
+      # queued is refused outright, so a portal that comes up before the
+      # parser can accept no workbooks.
+      ingest:
+        condition: service_healthy
 
 volumes:
   sdrp-pgdata:

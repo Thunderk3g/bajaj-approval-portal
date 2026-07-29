@@ -3,7 +3,7 @@ import { requireRole } from '@/lib/auth/rbac';
 import { Alert, Card, DetailRow, PageHeader, StatusBadge } from '@/components/ui';
 import { formatDateTime, orDash } from '@/lib/format';
 import { getRequestDetail } from '@/lib/approvals/queries';
-import { previewTarget } from '@/lib/approvals/apply';
+import { APPROVABLE_STATUS, previewTarget } from '@/lib/approvals/apply';
 import { DecisionForm } from '@/components/approvals/decision-form';
 import {
   BackLink,
@@ -39,7 +39,25 @@ export default async function RequestDecisionPage({
 
   const { request, record, mapping } = detail;
   const preview = previewTarget(request, record);
-  const isOpen = request.status === 'PENDING';
+
+  // APPROVABLE_STATUS, not a literal, and specifically not 'PENDING'.
+  //
+  // This read used to be `status === 'PENDING'`, which was correct until the
+  // verifier stage landed and stopped being correct in the same commit. After it,
+  // a request an approver may act on is VERIFIED — `decideWithin` locks on
+  // `WHERE status = APPROVABLE_STATUS` — so the one state where approval is legal
+  // was the one state that rendered "this request cannot be decided again". The
+  // approver had no approve button precisely when the request was ready.
+  //
+  // Importing the constant rather than swapping one literal for another is the
+  // actual fix: the gate now has a single definition, and a future change to it
+  // moves this screen with it instead of leaving the two to disagree in silence.
+  const isOpen = request.status === APPROVABLE_STATUS;
+
+  // PENDING is no longer "decided" — it is waiting for the verifier, which is a
+  // different sentence from the one the decided branch prints. Without this the
+  // approver is told a request they will later act on "cannot be decided again".
+  const awaitingVerification = request.status === 'PENDING';
 
   const caution =
     mapping && !mapping.claimInRoster
@@ -90,6 +108,11 @@ export default async function RequestDecisionPage({
         <Card title="Decision">
           {isOpen ? (
             <DecisionForm requestId={request.id} caution={caution} />
+          ) : awaitingVerification ? (
+            <Alert tone="info" title="Not yet with you">
+              A verifier has to check this request against its proof before it can be approved. It
+              will appear in your queue once they do. Nothing is required from you until then.
+            </Alert>
           ) : (
             <div className="space-y-3">
               <Alert tone={request.status === 'APPROVED' ? 'success' : 'info'}>

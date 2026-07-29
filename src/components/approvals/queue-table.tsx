@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { Badge, EmptyState, StatusBadge, Table, Td, Th } from '@/components/ui';
 import { formatDateTime, orDash } from '@/lib/format';
+import { APPROVABLE_STATUS } from '@/lib/approvals/apply';
 import type { HistoryRow, QueueRow } from '@/lib/approvals/queries';
 import { CategoryBadge } from './request-view';
 
@@ -23,17 +24,25 @@ function AgeBadge({ days }: { days: number }) {
 /**
  * Shared by the approver and verifier queues.
  *
- * `basePath` is the only difference between them — same columns, same ageing
- * rules, same ordering. Copying the table for the second stage would mean every
- * future column had to be added twice, and the two would drift the first time
- * somebody forgot.
+ * `basePath` is the only STRUCTURAL difference between them — same columns, same
+ * ageing rules, same ordering. Copying the table for the second stage would mean
+ * every future column had to be added twice, and the two would drift the first
+ * time somebody forgot.
+ *
+ * `homeStatus` is the second difference, and it is not structural but semantic:
+ * the two queues work on different statuses. It defaults to the approver's,
+ * matching `basePath`, so the pair cannot be half-configured by a caller that
+ * sets one and forgets the other.
  */
 export function QueueTable({
   rows,
   basePath = '/approver',
+  homeStatus = APPROVABLE_STATUS,
 }: {
   rows: QueueRow[];
   basePath?: string;
+  /** The status this queue exists to work on — chips are suppressed for it. */
+  homeStatus?: string;
 }) {
   if (rows.length === 0) {
     return (
@@ -74,8 +83,17 @@ export function QueueTable({
               <div className="mt-0.5 text-xs text-slate-500">{orDash(r.clientName)}</div>
               {/* The status chip is shown for anything that is not the queue's
                   own working state, so a mixed "everything open" list does not
-                  look uniform when it is not. */}
-              {r.status !== 'PENDING' ? (
+                  look uniform when it is not.
+
+                  `homeStatus` is a prop rather than the literal 'PENDING' it
+                  used to be, because this table serves two queues whose working
+                  states differ: the verifier acts on PENDING, the approver on
+                  VERIFIED. Hardcoding PENDING inverted the signal for the
+                  approver — every row in their default queue wore a redundant
+                  VERIFIED chip, while in "everything open" the PENDING rows that
+                  are NOT their job blended in unmarked and the VERIFIED rows
+                  that ARE were flagged as the unusual ones. */}
+              {r.status !== homeStatus ? (
                 <div className="mt-1">
                   <StatusBadge status={r.status} />
                 </div>

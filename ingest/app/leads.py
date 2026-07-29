@@ -14,7 +14,7 @@ SM_CODE: a rep sees their own, and that is all it is for.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import date
 from typing import Any
 
@@ -120,6 +120,7 @@ class Lead:
     ccm_name: str | None = None
     ccm_code: str | None = None
     location: str | None = None
+    location_alt: str | None = None
     register_date: date | None = None
     source: str | None = None
     product_type: str | None = None
@@ -127,6 +128,12 @@ class Lead:
     prod_id: str | None = None
     saving_flag: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+
+
+#: Field names Lead actually carries. COLUMN_MAP is allowed to name a target
+#: with no column behind it; this is what stops such a target being dropped
+#: silently instead of landing in extra.
+_LEAD_FIELDS = {f.name for f in fields(Lead)}
 
 
 @dataclass
@@ -141,6 +148,13 @@ class LeadOutcome:
     unassigned: int = 0
     #: SM_CODEs present in the data but absent from the Manpower roster.
     orphan_sm_codes: set[str] = field(default_factory=set)
+    #: Rows whose LEAD_NO had already appeared earlier in the same sheet.
+    #:
+    #: The sheet genuinely repeats lead numbers, and the last occurrence wins —
+    #: file order is chronological, so a later row is the more recent statement
+    #: about that lead. Counted rather than assumed away because the count is the
+    #: difference between "54,507 rows produced 54,372 leads" being explained and
+    #: looking like 135 rows went missing.
     duplicates: int = 0
 
 
@@ -156,7 +170,12 @@ def row_to_lead(row: dict[str, Any]) -> Lead | None:
 
     for header, value in row.items():
         target = COLUMN_MAP.get(header)
-        if target is None:
+        # A target COLUMN_MAP names but Lead has no field for would otherwise
+        # vanish: it is not unmapped, so it never reaches extra, and it is not a
+        # Lead field, so nothing ever reads it back out. `Source For Jun Target`
+        # was lost exactly this way. Falling through to extra keeps the column
+        # retained, which is what the spec asks of every non-attribution field.
+        if target is None or target not in _LEAD_FIELDS:
             text = normalize_text(value)
             if text is not None:
                 extra[header] = text
@@ -175,6 +194,7 @@ def row_to_lead(row: dict[str, Any]) -> Lead | None:
         ccm_name=normalize_text(mapped.get("ccm_name")),
         ccm_code=normalize_identifier(mapped.get("ccm_code")),
         location=normalize_text(mapped.get("location")),
+        location_alt=normalize_text(mapped.get("location_alt")),
         register_date=excel_serial_to_date(mapped.get("register_date")),
         source=normalize_text(mapped.get("source")),
         product_type=normalize_text(mapped.get("product_type")),

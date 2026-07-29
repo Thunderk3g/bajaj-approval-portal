@@ -8,7 +8,7 @@ export async function truncateAll() {
   await db.execute(sql`
     truncate table
       "correction_event", "correction_attachment", "correction_request",
-      "sales_record_version", "sales_record",
+      "sales_record_version", "sales_record", "lead",
       "upload_batch_row", "upload_batch", "manpower",
       "period",
       "audit_log", "notification", "excel_export",

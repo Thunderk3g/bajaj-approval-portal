@@ -58,10 +58,14 @@ export type AdminDashboard = {
   };
   corrections: {
     total: number;
+    /** With a verifier. NOT the whole in-flight count — see `verified`. */
     pending: number;
+    /** Verified and waiting on an approver. */
+    verified: number;
     returned: number;
     approved: number;
     rejected: number;
+    withdrawn: number;
   };
   /**
    * Duplicate `Apps_No` rows sitting in staging.
@@ -173,10 +177,17 @@ export async function getAdminDashboard(): Promise<AdminDashboard> {
     },
     corrections: {
       total: c.total,
+      // All six, so the parts sum to `total`. The query already computed
+      // `verified` and `withdrawn` and this object then dropped them on the
+      // floor, which is why the admin's "Corrections pending" card read 0 while
+      // a request sat with an approver: `pending` is PENDING alone, and nothing
+      // on that dashboard counted the stage after it.
       pending: c.pending,
+      verified: c.verified,
       returned: c.returned,
       approved: c.approved,
       rejected: c.rejected,
+      withdrawn: c.withdrawn,
     },
     duplicateRows: duplicates[0].count,
     activity,

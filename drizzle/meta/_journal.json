@@ -50,6 +50,13 @@
       "when": 1785218609192,
       "tag": "0006_whole_riptide",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1785242657344,
+      "tag": "0007_curly_squirrel_girl",
+      "breakpoints": true
     }
   ]
 }

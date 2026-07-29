@@ -1,0 +1,53 @@
+# ──────────────────────────────────────────────────────────────────────────
+# Build context for reconciliation-ingest.
+#
+# This file is read only when the CONTEXT is ingest/ — i.e. the documented
+# `podman build -f ingest/Dockerfile ingest/`. Building from the repo root
+# instead uses the repo's own .dockerignore, which excludes the same things
+# for the same reasons; both directions are covered, neither covers the other.
+# ──────────────────────────────────────────────────────────────────────────
+
+# storage/ — the one entry that is not about image size.
+#
+# If this directory exists here it is a developer's local STORAGE_ROOT
+# (`STORAGE_ROOT=./storage uvicorn app.main:app`), which means it holds real
+# uploaded workbooks and real customer proof documents. Those belong on the
+# mounted reconciliation-storage volume and nowhere else: an image is saved to
+# a tarball and copied between machines, and anything baked into a layer
+# travels with it — still there after the file is "deleted", because a later
+# layer deleting a file does not remove it from the earlier one.
+storage
+**/storage
+
+# Test fixtures are cut from the real workbook, so they are customer data too,
+# and the runtime image has no pytest to run them with.
+tests
+**/tests
+
+# Bytecode compiled against whatever Python the developer has locally — the
+# image builds its own. Stale .pyc files in a context are also how a module
+# that was deleted from app/ keeps being importable inside the container.
+__pycache__
+**/__pycache__
+*.py[cod]
+.pytest_cache
+**/.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# A local virtualenv holds linux-or-windows binaries for the wrong platform and
+# is far larger than everything else here combined.
+.venv
+venv
+
+# Secrets. INGEST_TOKEN is the only thing protecting this service on
+# shared-network; a copy of it inside the image is a copy on every machine the
+# image is ever loaded onto.
+.env
+.env.*
+
+*.log
+.git
+.gitignore
+Dockerfile
+.dockerignore

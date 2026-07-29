@@ -23,6 +23,42 @@ const schema = z.object({
     .enum(['true', 'false'])
     .optional()
     .transform((v) => v !== 'false'),
+  /**
+   * Where `reconciliation-ingest` answers — 2026-07-28 ingestion spec section 4.
+   *
+   * Defaulted rather than required because `next build` and the unit suite never
+   * call the service, and making this mandatory would turn a working build into
+   * a failing one for a variable neither of them reads. That is not a licence to
+   * leave it unset in a deployment: an upload whose parse job cannot be started
+   * is refused outright (section 7), so a wrong value here surfaces as a refusal
+   * naming the service rather than as a workbook quietly accepted and unparsed.
+   *
+   * On the shared network the service binds no host port and is reached as
+   * `http://reconciliation-ingest:8006`; the default below is the local uvicorn.
+   *
+   * 8006 rather than the 8005 the port registry would have handed out next:
+   * 8005 sits in a Windows reserved port-exclusion range on the developer
+   * machines here, so uvicorn fails to bind with a permissions error that reads
+   * like a firewall problem. The service standardises on 8006 everywhere so the
+   * container and the local run cannot disagree.
+   */
+  INGEST_URL: z.string().min(1).default('http://127.0.0.1:8006'),
+  /**
+   * The shared secret sent as `X-Ingest-Token` — spec section 8.
+   *
+   * Deliberately NOT `NEXT_PUBLIC_`: Next inlines every `NEXT_PUBLIC_` value
+   * into the client bundle, and this token is the only thing standing between
+   * shared-network and a service that reads the storage volume. It must reach
+   * the browser through nothing, which is why the job poll goes through a Route
+   * Handler instead of the browser calling the service directly.
+   *
+   * The default is a placeholder the service rejects. That is intentional: a
+   * rejected token returns 404 (section 8 — the service does not confirm its own
+   * existence to an unauthenticated caller), which the client turns into the
+   * same refusal as the service being down. Silently succeeding with a wrong
+   * secret would be the worse failure.
+   */
+  INGEST_TOKEN: z.string().min(1).default('local-dev-ingest-token-change-me'),
 });
 
 const parsed = schema.safeParse(process.env);

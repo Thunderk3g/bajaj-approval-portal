@@ -228,6 +228,75 @@ def read_sheet(
 # ── pyxlsb path: Lead Dump only ────────────────────────────────────────────
 
 
+def _iter_raw_rows(sheet, width: int | None) -> Iterator[tuple[int, list[Any]]]:
+    """Yields `(zero-based row index, values)` straight from pyxlsb's records.
+
+    This bypasses `Worksheet.rows()` deliberately, and the reason is the whole
+    performance story of this reader.
+
+    `rows()` allocates one `Cell` per column of the DECLARED width for every
+    row it yields — `[Cell(...) for i in range(dimension.c + dimension.w)]` —
+    and `sparse=True` does not change that. Sparse only skips rows that are
+    absent between records; it never narrows a row. On `Lead Dump`, whose
+    declared width is 16,384 against a real table of 15 columns, that is 893
+    million Cell constructions for 54,507 rows, measured at 41 rows/second with
+    no database attached at all. The same read here allocates `width` values per
+    row instead.
+
+    `width` is None for the first row only, where the real width is not yet
+    known; that single row is read at the declared width, which costs one list.
+
+    USES PRIVATE pyxlsb INTERNALS (`_reader`, `_data_offset`, `_stringtable`).
+    That is a real cost and the mitigation is explicit: pyxlsb is pinned in
+    requirements.txt, and `test_raw_reader_matches_public_api` asserts this
+    function returns exactly what `rows()` does, so an upgrade that moves the
+    internals fails a test rather than silently producing wrong leads.
+    """
+    import os
+
+    from pyxlsb import biff12
+
+    reader = sheet._reader
+    reader.seek(sheet._data_offset, os.SEEK_SET)
+
+    declared = sheet.dimension.c + sheet.dimension.w
+    row_num = -1
+    row: list[Any] | None = None
+
+    def sized() -> list[Any]:
+        return [None] * (declared if width is None else width)
+
+    for item in reader:
+        kind = item[0]
+
+        if kind == biff12.ROW and item[1].r != row_num:
+            if row is not None:
+                yield row_num, row
+            row_num = item[1].r
+            row = sized()
+
+        elif biff12.BLANK <= kind <= biff12.FORMULA_BOOLERR:
+            if row is None:
+                continue
+            column = item[1].c
+            # Past the real table: spreadsheet debris from the one rogue row.
+            # Dropping it here is what keeps the allocation bounded.
+            if column >= len(row):
+                continue
+            value = item[1].v
+            if kind == biff12.STRING and sheet._stringtable is not None:
+                value = sheet._stringtable[value]
+            row[column] = value
+
+        elif kind == biff12.SHEETDATA_END:
+            if row is not None:
+                yield row_num, row
+            return
+
+    if row is not None:
+        yield row_num, row
+
+
 def stream_leads(
     path: Path,
     sheet_name: str = "Lead Dump",
@@ -248,25 +317,45 @@ def stream_leads(
             width = 0
             emitted = 0
 
-            for index, row in enumerate(sheet.rows(), start=1):
-                cells = trim_trailing_blanks([c.v for c in row])
-
-                if index < header_row:
+            # Two passes over the records, not one. The first reads ONLY the
+            # header, at the declared width, to learn how wide the real table
+            # is; the second reads the body allocating exactly that width.
+            #
+            # Re-opening costs one seek. Doing it in a single pass would mean
+            # every row before the header was known had to be full width, and on
+            # this sheet the header is row 1 — so the "saving" would be nothing
+            # while the code carried a mode switch through the hot loop.
+            for index0, cells_raw in _iter_raw_rows(sheet, None):
+                if index0 + 1 < header_row:
                     continue
 
-                if columns is None:
-                    # The header IS the rogue row: it trims to 16,383 cells,
-                    # because two stray labels sit at columns 16,381-2 while the
-                    # real table is 15 wide. Trailing-blank trimming cannot help
-                    # — those cells genuinely hold text.
-                    #
-                    # So the width is taken from the contiguous run of populated
-                    # headers and the strays beyond the first gap are dropped.
-                    # Keeping them would mean every row dict carrying thousands
-                    # of "(column N)" keys straight into the extra jsonb.
-                    columns = build_columns(cells)
-                    width = _contiguous_width(cells)
-                    columns = columns[:width]
+                # The header IS the rogue row: it trims to 16,383 cells, because
+                # two stray labels sit at columns 16,381-2 while the real table
+                # is 15 wide. Trailing-blank trimming cannot help — those cells
+                # genuinely hold text — so the width comes from the contiguous
+                # run of populated headers and the strays are dropped.
+                #
+                # The narrowing MUST happen BEFORE naming, not after. Those two
+                # strays read "Product type" and "Source" — the same labels as
+                # the real columns at indices 8 and 9. Naming all 16,383 cells
+                # makes each look duplicated, so both real columns come back
+                # suffixed as "Product type (1)" and "Source (1)", COLUMN_MAP
+                # misses them, and every one of the 54,507 leads lands with a
+                # null source and product_type while the values sit unreachable
+                # in the extra jsonb.
+                header_cells = trim_trailing_blanks(cells_raw)
+                width = _contiguous_width(header_cells)
+                columns = build_columns(header_cells[:width])
+                break
+
+            if columns is None:
+                return
+
+            for index0, cells_raw in _iter_raw_rows(sheet, width):
+                index = index0 + 1
+                cells = trim_trailing_blanks(cells_raw)
+
+                if index <= header_row:
                     continue
 
                 if not cells:

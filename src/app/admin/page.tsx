@@ -90,11 +90,20 @@ export default async function AdminDashboardPage() {
           tone={records.withGap > 0 ? 'warning' : 'default'}
           href={gapHref('ANY')}
         />
+        {/* Both review stages, not just the first.
+
+            This card counted `corrections.pending` alone, which is PENDING —
+            requests still with a VERIFIER. A request that had been verified and
+            was sitting with an approver counted nowhere on this dashboard, so
+            the admin's headline read "0 pending" while corrections were in
+            flight. The hint splits the number rather than hiding the split,
+            because "3 in flight" and "3 stuck at the same stage" call for
+            different action. */}
         <StatCard
-          label="Corrections pending"
-          value={n(corrections.pending)}
-          hint={`${n(corrections.returned)} returned to reps`}
-          tone={corrections.pending > 0 ? 'warning' : 'default'}
+          label="Corrections in flight"
+          value={n(corrections.pending + corrections.verified)}
+          hint={`${n(corrections.pending)} with a verifier · ${n(corrections.verified)} with an approver · ${n(corrections.returned)} returned to reps`}
+          tone={corrections.pending + corrections.verified > 0 ? 'warning' : 'default'}
           href="/admin/corrections?status=PENDING"
         />
         <StatCard

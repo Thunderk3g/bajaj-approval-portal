@@ -15,7 +15,8 @@
     "db:custom": "tsx scripts/apply-custom-sql.ts",
     "db:custom:test": "tsx scripts/apply-custom-sql.ts --test",
     "db:migrate:test": "tsx scripts/migrate-test.ts",
-    "setup:admin": "tsx scripts/setup-admin.ts"
+    "setup:admin": "tsx scripts/setup-admin.ts",
+    "setup:sales": "tsx scripts/provision-sales-users.ts"
   },
   "dependencies": {
     "better-auth": "^1.6.24",
@@ -25,7 +26,7 @@
     "pg": "^8.22.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "xlsx": "file:vendor/xlsx-0.20.3.tgz",
     "zod": "^4.4.3"
   },
   "devDependencies": {

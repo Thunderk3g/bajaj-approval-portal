@@ -15,6 +15,7 @@ const NAV: Record<Role, readonly NavItem[]> = {
     { href: '/admin', label: 'Dashboard' },
     { href: '/admin/uploads', label: 'Uploads' },
     { href: '/admin/records', label: 'Records' },
+    { href: '/admin/leads', label: 'Leads' },
     { href: '/admin/corrections', label: 'Corrections' },
     { href: '/admin/exports', label: 'Exports' },
     { href: '/admin/periods', label: 'Periods' },
@@ -24,6 +25,7 @@ const NAV: Record<Role, readonly NavItem[]> = {
   sales: [
     { href: '/sales', label: 'Dashboard' },
     { href: '/sales/records', label: 'My records' },
+    { href: '/sales/leads', label: 'My leads' },
     { href: '/sales/requests', label: 'My requests' },
   ],
   approver: [
