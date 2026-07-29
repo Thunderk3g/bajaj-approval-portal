@@ -38,21 +38,30 @@ services:
       DATABASE_URL: postgresql://reconciliation_user:${RECONCILIATION_DB_PASSWORD}@shared-postgres:5432/reconciliation_db
 
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
-      # Includes the basePath. Better Auth builds its own callback and cookie
-      # paths from this, so omitting the prefix produces auth routes that
-      # nginx does not route and cookies scoped to the wrong path.
+      # MUST be the app's basePath PLUS /api/auth — the full path the auth
+      # routes are mounted at, not just the prefix the app is served under.
       #
-      # This must name the host USERS TYPE, not the VM's IP: its origin is the
-      # one Better Auth trusts by default, and a sign-in POST from anywhere else
-      # is refused as INVALID_ORIGIN — which the login form shows as "Incorrect
-      # email or password."
-      BETTER_AUTH_URL: http://bajajlife-marketing-ai.bajajlifeinsurance.com/reconciliation
+      # Better Auth mounts its router at `new URL(baseURL).pathname` exactly
+      # (node_modules/better-auth/dist/api/index.mjs), and strips that prefix
+      # before matching endpoints like /sign-in/email. Set to
+      # `.../reconciliation` alone it strips only that, then looks for
+      # `/api/auth/sign-in/email` among endpoints that are named `/sign-in/email`
+      # — and every auth request 404s while the rest of the app works normally.
+      #
+      # Its `basePath` option cannot fix this: getBaseURL() ignores basePath
+      # whenever baseURL already carries a path of its own (utils/url.mjs).
+      #
+      # The host must also be the one USERS TYPE. Its origin is trusted by
+      # default, and a sign-in from an untrusted origin is refused as
+      # INVALID_ORIGIN, which the login form shows as a wrong password.
+      BETTER_AUTH_URL: http://bajajlife-marketing-ai.bajajlifeinsurance.com/reconciliation/api/auth
 
-      # The other origins this same deployment answers on. The BETTER_AUTH_URL
-      # origin above is trusted automatically and is not repeated. Scheme and
-      # host only, no path, comma-separated. Restarting the container is enough
-      # to add one — see TRUSTED_ORIGINS in src/lib/env.ts.
-      TRUSTED_ORIGINS: http://10.3.5.99
+      # Every origin this deployment answers on. Scheme and host only, no path,
+      # comma-separated. The BETTER_AUTH_URL origin is trusted automatically;
+      # it is listed anyway so this does not depend on how Better Auth derives
+      # it. Restarting the container is enough to add one — see TRUSTED_ORIGINS
+      # in src/lib/env.ts.
+      TRUSTED_ORIGINS: http://10.3.5.99,http://bajajlife-marketing-ai.bajajlifeinsurance.com
 
       # NEXT_PUBLIC_APP_URL is deliberately absent. It did nothing here: Next
       # inlines NEXT_PUBLIC_ values at BUILD time, so setting it at run time
