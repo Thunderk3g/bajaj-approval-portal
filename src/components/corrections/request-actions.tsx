@@ -20,6 +20,8 @@ import { Alert, Button, Card, Field, Input, Select, Textarea } from '@/component
 type ResubmitProps = {
   requestId: string;
   category: string;
+  /** MAPPING only — decides whether the destination stays editable. Null elsewhere. */
+  direction: string | null;
   fieldLabel: string;
   currentValue: string;
   currentDescription: string;
@@ -32,6 +34,7 @@ type ResubmitProps = {
 export function ResubmitForm({
   requestId,
   category,
+  direction,
   fieldLabel,
   currentValue,
   currentDescription,
@@ -90,11 +93,21 @@ export function ResubmitForm({
               defaultValue={currentValue}
             />
           ) : (
+            /*
+              A mapping value is read-only for a CLAIM_IN and editable for a
+              TRANSFER_OUT — 2026-07-29 spec section 2.
+
+              A claim's destination is the submitter's own SM_ID, pinned by the
+              server, so an editable box would only invite a value that gets
+              refused. A transfer's destination is another rep, and "you named
+              the wrong rep" is one of the likeliest reasons a verifier returns
+              one — so it is exactly the field that has to be changeable here.
+            */
             <Input
               id="proposedValue"
               name="proposedValue"
               defaultValue={currentValue}
-              readOnly={category === 'MAPPING'}
+              readOnly={direction === 'CLAIM_IN'}
               className={category === 'MAPPING' ? 'font-mono' : undefined}
             />
           )}

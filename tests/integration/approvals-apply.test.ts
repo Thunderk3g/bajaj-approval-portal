@@ -112,6 +112,12 @@ async function makeRequest(
       verifiedBy: verifier?.id,
       verifiedAt: new Date(),
       ...overrides,
+      // Derived from the category rather than defaulted alongside it: the CHECK
+      // `correction_direction_iff_mapping` requires a direction on exactly the
+      // MAPPING rows, so an override that switches the category has to carry the
+      // direction with it. Every fixture here is a claim — the pull direction.
+      direction:
+        overrides.direction ?? ((overrides.category ?? 'AUTOPAY') === 'MAPPING' ? 'CLAIM_IN' : null),
     })
     .returning();
 

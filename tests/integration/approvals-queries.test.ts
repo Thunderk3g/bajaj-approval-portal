@@ -189,6 +189,7 @@ describe('the decision screen payload (spec 7.2, 9)', () => {
         recordId: record.id,
         appsNo: record.appsNo,
         category: 'MAPPING',
+        direction: 'CLAIM_IN',
         fieldName: 'smId',
         fieldLabel: 'SM ID',
         originalValue: OWNER,

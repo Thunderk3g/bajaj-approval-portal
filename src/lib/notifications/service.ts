@@ -33,6 +33,17 @@ export const NOTIFICATION_TYPES = [
   'CORRECTION_REJECTED',
   'CORRECTION_RETURNED',
   'MAPPING_GAINED',
+  /**
+   * Raised at SUBMISSION to the rep on the other side — 2026-07-29 spec section 6.
+   *
+   * `MAPPING_LOST`/`MAPPING_GAINED` above announce a reassignment that has
+   * already been applied. These two announce one that has been PROPOSED, which
+   * is the only point at which the counterparty can still act on it. Distinct
+   * types because the reading differs: one is a sale you hold being asked for,
+   * the other is a sale arriving in your book.
+   */
+  'MAPPING_CLAIM_RAISED',
+  'MAPPING_TRANSFER_PROPOSED',
   'MAPPING_LOST',
   'BATCH_COMMITTED',
   'EXPORT_READY',

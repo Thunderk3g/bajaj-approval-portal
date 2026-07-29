@@ -339,6 +339,7 @@ describe('scoping on submission (spec 4.1, 7.2)', () => {
 
     const result = await submitCorrection(claimant, {
       category: 'MAPPING',
+      direction: 'CLAIM_IN',
       appsNo: record.appsNo,
       proposedValue: OTHER_SM_ID,
       description: 'I sourced this policy.',
@@ -366,6 +367,7 @@ describe('scoping on submission (spec 4.1, 7.2)', () => {
 
     const result = await submitCorrection(claimant, {
       category: 'MAPPING',
+      direction: 'CLAIM_IN',
       appsNo: record.appsNo,
       proposedValue: 'C2CM99999',
       files: [proof()],
@@ -381,6 +383,7 @@ describe('scoping on submission (spec 4.1, 7.2)', () => {
 
     const result = await submitCorrection(rep, {
       category: 'MAPPING',
+      direction: 'CLAIM_IN',
       appsNo: record.appsNo,
       proposedValue: OWNER_SM_ID,
       files: [proof()],

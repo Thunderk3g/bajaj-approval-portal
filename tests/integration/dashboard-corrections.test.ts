@@ -91,6 +91,7 @@ describe('admin corrections filters (spec 9)', () => {
         recordId: byAppsNo.get('6160000004')!.id,
         appsNo: '6160000004',
         category: 'MAPPING',
+        direction: 'CLAIM_IN',
         fieldName: 'smId',
         fieldLabel: 'SM ID',
         proposedValue: REP_B,

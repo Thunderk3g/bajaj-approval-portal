@@ -3,6 +3,8 @@ import {
   CATEGORY_LABELS,
   CORRECTION_CATEGORIES,
   ISSUED_DATE_MIN,
+  MAPPING_DIRECTIONS,
+  type MappingDirection,
   OTHERS_FIELD_CHOICES,
   issuedDateMax,
 } from '@/lib/corrections/schemas';
@@ -23,7 +25,7 @@ export const metadata: Metadata = {
 const CATEGORY_HINTS: Record<string, string> = {
   AUTOPAY: 'Confirm whether the AutoPay mandate is registered for this application.',
   MAPPING:
-    'Claim a sale that was credited to another rep. You can look up any application number to check it, and the approver decides.',
+    'Move a sale between reps — either one credited to someone else that should be yours, or one in your book that belongs to someone else. Choose the direction below.',
   ISSUANCE_DATE: 'Correct the date the policy was issued.',
   OTHERS: 'Anything else — name the field and say what is wrong.',
 };
@@ -48,6 +50,14 @@ export default async function NewRequestPage({
     ? requestedCategory
     : 'AUTOPAY';
 
+  // Validated against the same list the form offers, exactly as the category is.
+  // A deep link is a URL a rep can edit, so an unrecognised value falls back to
+  // the claim rather than reaching the form as a direction that does not exist.
+  const requestedDirection = first(params.direction).toUpperCase();
+  const initialDirection = (MAPPING_DIRECTIONS as readonly string[]).includes(requestedDirection)
+    ? (requestedDirection as MappingDirection)
+    : 'CLAIM_IN';
+
   return (
     <section>
       <PageHeader
@@ -67,6 +77,7 @@ export default async function NewRequestPage({
         smId={actor.smId ?? ''}
         initialAppsNo={first(params.appsNo)}
         initialCategory={initialCategory}
+        initialDirection={initialDirection}
         categories={CORRECTION_CATEGORIES.map((value) => ({
           value,
           label: CATEGORY_LABELS[value],

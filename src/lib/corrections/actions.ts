@@ -59,6 +59,7 @@ export async function submitCorrectionAction(
 
   const result = await submitCorrection(actor, {
     category: text(form, 'category'),
+    direction: text(form, 'direction'),
     appsNo: text(form, 'appsNo'),
     proposedValue: text(form, 'proposedValue'),
     description: text(form, 'description'),

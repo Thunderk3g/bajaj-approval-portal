@@ -95,8 +95,9 @@ export default async function RequestDetailPage({
               ) : null}
               {category === 'MAPPING' ? (
                 <DetailRow label="Note">
-                  If this is approved the sale moves to your SM ID and the SM name is resolved from
-                  the Manpower roster. The rep who currently holds it is told, not asked.
+                  {request.direction === 'TRANSFER_OUT'
+                    ? `If this is approved the sale leaves your book and moves to ${request.proposedValue}, whose SM name is resolved from the Manpower roster. That rep has already been told it is coming; they cannot refuse it, and they are not asked to accept it — the verifier and the approver decide.`
+                    : 'If this is approved the sale moves to your SM ID and the SM name is resolved from the Manpower roster. The rep who currently holds it is told, not asked.'}
                 </DetailRow>
               ) : null}
             </dl>
@@ -113,6 +114,7 @@ export default async function RequestDetailPage({
             <ResubmitForm
               requestId={request.id}
               category={request.category}
+              direction={request.direction}
               fieldLabel={request.fieldLabel}
               currentValue={request.proposedValue}
               currentDescription={request.description ?? ''}

@@ -38,6 +38,22 @@ export const CATEGORY_LABELS: Record<CorrectionCategory, string> = {
   OTHERS: 'Other field',
 };
 
+/**
+ * The two ways a mapping correction can move a sale — 2026-07-29 spec section 2.
+ *
+ * Mirrors `mappingDirectionEnum` in the schema. Kept as a `const` array so the
+ * values are available at runtime for the form's radio group and for Zod, the
+ * same shape `CORRECTION_CATEGORIES` uses.
+ */
+export const MAPPING_DIRECTIONS = ['CLAIM_IN', 'TRANSFER_OUT'] as const;
+export type MappingDirection = (typeof MAPPING_DIRECTIONS)[number];
+
+/** Written from the submitting rep's point of view — they are one of the parties. */
+export const DIRECTION_LABELS: Record<MappingDirection, string> = {
+  CLAIM_IN: 'Claim a sale into my book',
+  TRANSFER_OUT: 'Transfer a sale out of my book',
+};
+
 export const DESCRIPTION_MAX = 2000;
 
 const OTHERS_DESCRIPTION_MESSAGE =
@@ -72,14 +88,28 @@ export function isPlausibleIssuedDate(iso: string, now: Date = new Date()): bool
 }
 
 /**
- * `OTHERS` may name any canonical field except the record's own identity.
+ * `OTHERS` may name any canonical field except the record's own identity, and
+ * except the one field that has a category of its own.
  *
  * `apps_no` is the unique key every correction, version row and audit entry
  * points at. "Correcting" it would either collide with another record or orphan
  * the request's own history — a re-import is the way to fix a wrong application
  * number, not a correction.
+ *
+ * `sm_id` is forbidden for a different reason — 2026-07-29 spec section 9. Not
+ * that it must never change, but that it must never change THIS way. An
+ * `OTHERS` request naming `smId` reaches the apply path with
+ * `category !== 'MAPPING'`, so `applyApprovalWithin` skips its whole mapping
+ * branch: `sm_id` is rewritten while `sm_name` keeps the PREVIOUS rep's name —
+ * the divergence section 6.7 forbids and the branch exists to prevent —
+ * `changedFields` records one column instead of two, and neither rep is
+ * notified, so the record leaves one book and enters another in silence.
+ *
+ * That was a real hole, not a hypothetical: it was the only way to push a sale
+ * out before `TRANSFER_OUT` existed. Now that reassignment has a sanctioned path
+ * in both directions, nothing legitimate needs this one.
  */
-export const OTHERS_FORBIDDEN_FIELDS: ReadonlySet<string> = new Set(['appsNo']);
+export const OTHERS_FORBIDDEN_FIELDS: ReadonlySet<string> = new Set(['appsNo', 'smId']);
 
 export const OTHERS_FIELD_CHOICES = CATEGORY_FIELDS.OTHERS.filter(
   (key) => !OTHERS_FORBIDDEN_FIELDS.has(key),
@@ -168,11 +198,39 @@ const autopayBranch = z.object({
 
 const mappingBranch = z.object({
   category: z.literal('MAPPING'),
+  /**
+   * Which way the sale moves — 2026-07-29 spec section 2.
+   *
+   * The two directions share this whole branch because their *shape* is
+   * identical: an identifier, a destination SM_ID, an optional note. What
+   * separates them cannot be expressed here at all — `CLAIM_IN` pins the
+   * destination to the submitter's own SM_ID, `TRANSFER_OUT` requires it to be
+   * someone else's and present in the roster. Both need the session or the
+   * database, so both live in the service. Splitting the branch to say so would
+   * produce two identical object schemas.
+   */
+  direction: z.enum(MAPPING_DIRECTIONS, {
+    error: 'Choose whether you are claiming this sale or transferring it out.',
+  }),
+  /**
+   * For `CLAIM_IN` this is an application number and nothing else — section 7.2
+   * pins the cross-book lookup to an exact `Apps_No` match.
+   *
+   * For `TRANSFER_OUT` it may be an application OR a policy number: the rep
+   * already owns the record, so resolution happens inside their own book and
+   * needs no scoping exception. `resolveOwnRecord` in the service decides which
+   * it is; whichever was typed, the record's real `apps_no` is what gets stored.
+   */
   appsNo: appsNoField,
-  // The SM_ID the sale should move to. The service additionally pins this to the
-  // claimant's own SM_ID — see section 7.2: approval moves the record to the
-  // *claimant*, so a rep reassigning a sale to a third party would produce an
-  // approval that does something other than what the request said.
+  /**
+   * The SM_ID the sale should end up with.
+   *
+   * For `CLAIM_IN` the service pins this to the claimant's own SM_ID — section
+   * 7.2: approval moves the record to the *claimant*, so a rep naming a third
+   * party would produce an approval that does something other than what the
+   * request said. For `TRANSFER_OUT` naming someone else is the entire point,
+   * and the service checks it is not the submitter and is known to the roster.
+   */
   proposedValue: z
     .string()
     .trim()

@@ -101,7 +101,20 @@ export function QueueTable({
             </Td>
             <Td>
               <CategoryBadge category={r.category} />
-              <div className="mt-0.5 text-xs text-slate-500">{r.fieldLabel}</div>
+              {/*
+                The sub-label carries the direction for a mapping request,
+                because the field name alone ("SM ID") is identical for a claim
+                and a transfer and tells the reviewer nothing about what they
+                are being asked to check. Falls back to the field label for
+                every other category, which is what it always showed.
+              */}
+              <div className="mt-0.5 text-xs text-slate-500">
+                {r.direction === 'TRANSFER_OUT'
+                  ? 'Transfer out'
+                  : r.direction === 'CLAIM_IN'
+                    ? 'Claim in'
+                    : r.fieldLabel}
+              </div>
             </Td>
             <Td>
               <span className="font-mono text-xs text-slate-500">{orDash(r.originalValue)}</span>

@@ -119,13 +119,27 @@ export function RecordContext({ record }: { record: RequestDetail['record'] }) {
 }
 
 /**
- * Both reps side by side — spec 7.2.
+ * Both reps side by side — spec 7.2, with direction from 2026-07-29 spec 7.
  *
  * The approver decides alone; the losing rep is notified, not consulted. Showing
  * both identities is what makes that decision an informed one rather than a
  * rubber stamp on an SM_ID string.
+ *
+ * Direction is shown because the two parties alone no longer identify the
+ * request. The same pair of SM_IDs describes a rep asking for a sale and a rep
+ * giving one away, and which it is changes what the reviewer should check: a
+ * claim needs proof the sale was the claimant's work, a transfer needs the
+ * destination to be the right rep. Without it the panel shows two names and no
+ * indication of who is asking for what.
  */
-export function MappingPanel({ mapping }: { mapping: MappingContext }) {
+export function MappingPanel({
+  mapping,
+  direction,
+}: {
+  mapping: MappingContext;
+  direction: string | null;
+}) {
+  const isTransfer = direction === 'TRANSFER_OUT';
   const Party = ({
     heading,
     tone,
@@ -165,12 +179,32 @@ export function MappingPanel({ mapping }: { mapping: MappingContext }) {
 
   return (
     <Card
-      title="Mapping claim"
-      description="Approving moves the sale. Both reps are notified; the losing rep is not asked to agree."
+      title={isTransfer ? 'Mapping transfer' : 'Mapping claim'}
+      description={
+        isTransfer
+          ? 'The current owner is sending this sale away. Approving moves it; the receiving rep was told at submission and is not asked to agree.'
+          : 'Approving moves the sale. Both reps are notified; the losing rep is not asked to agree.'
+      }
     >
+      <p className="mb-3 text-sm text-slate-700">
+        {isTransfer ? (
+          <>
+            <span className="font-mono">{mapping.currentSmId}</span> raised this and is giving the
+            sale away.
+          </>
+        ) : (
+          <>
+            <span className="font-mono">{mapping.claimSmId}</span> raised this and is asking for the
+            sale.
+          </>
+        )}
+      </p>
+
       <div className="grid gap-3 sm:grid-cols-2">
         <Party
-          heading="Current owner (loses the sale)"
+          heading={
+            isTransfer ? 'Current owner (sending — raised this)' : 'Current owner (loses the sale)'
+          }
           tone="current"
           smId={mapping.currentSmId}
           recordName={mapping.currentSmName}
@@ -179,7 +213,7 @@ export function MappingPanel({ mapping }: { mapping: MappingContext }) {
           account={mapping.currentAccount}
         />
         <Party
-          heading="Claimant (gains the sale)"
+          heading={isTransfer ? 'Receiving rep (gains the sale)' : 'Claimant (gains the sale — raised this)'}
           tone="claim"
           smId={mapping.claimSmId}
           rosterName={mapping.claimRosterName}
@@ -190,10 +224,32 @@ export function MappingPanel({ mapping }: { mapping: MappingContext }) {
 
       {!mapping.claimInRoster ? (
         <div className="mt-3">
-          <Alert tone="warning" title="The claimant is not in the Manpower roster">
+          <Alert
+            tone="warning"
+            title={
+              isTransfer
+                ? 'The receiving rep is not in the Manpower roster'
+                : 'The claimant is not in the Manpower roster'
+            }
+          >
             Approving will move the record and clear <span className="font-mono">SM_Name</span>{' '}
             rather than write a name that may be wrong. Ask an admin to add the roster entry first
             if the name matters.
+          </Alert>
+        </div>
+      ) : null}
+
+      {/*
+        A transfer can hand a policy to an SM_ID with no portal account, which a
+        claim effectively cannot: a claimant is by definition signed in. The
+        record would move into a book nobody can open, and the receiving rep
+        would never see the notification either.
+      */}
+      {isTransfer && !mapping.claimAccount ? (
+        <div className="mt-3">
+          <Alert tone="warning" title="The receiving rep has no active portal account">
+            The sale would move into a book nobody can sign in to see, and no arrival notice can be
+            delivered. Check the SM ID is right before approving.
           </Alert>
         </div>
       ) : null}

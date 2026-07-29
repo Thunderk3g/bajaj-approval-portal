@@ -57,6 +57,8 @@ export type QueueRow = {
   id: string;
   appsNo: string;
   category: string;
+  /** `CLAIM_IN` | `TRANSFER_OUT` on a mapping request, null on every other category. */
+  direction: string | null;
   status: string;
   fieldLabel: string;
   originalValue: string | null;
@@ -101,6 +103,11 @@ export async function listQueue(
       id: correctionRequest.id,
       appsNo: correctionRequest.appsNo,
       category: correctionRequest.category,
+      // Carried into the queue because MAPPING no longer describes one thing —
+      // 2026-07-29 spec section 7. A claim and a transfer show the same badge
+      // and the same smId → smId change, and which one it is decides what the
+      // reviewer should be checking.
+      direction: correctionRequest.direction,
       status: correctionRequest.status,
       fieldLabel: correctionRequest.fieldLabel,
       originalValue: correctionRequest.originalValue,

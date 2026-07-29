@@ -54,6 +54,18 @@ export default async function SalesRecordDetailPage({
             <LinkButton href={`/sales/requests/new?appsNo=${encodeURIComponent(record.appsNo)}`} variant="primary">
               Raise a correction
             </LinkButton>
+            {/*
+              A transfer starts from a record the rep is already looking at —
+              2026-07-29 spec section 4.1 — so this is where it belongs. Reaching
+              it through the generic button would mean choosing the category and
+              then the direction from a screen that has forgotten which record
+              prompted it.
+            */}
+            <LinkButton
+              href={`/sales/requests/new?appsNo=${encodeURIComponent(record.appsNo)}&category=MAPPING&direction=TRANSFER_OUT`}
+            >
+              Transfer to another SM
+            </LinkButton>
             <LinkButton href="/sales/records">Back to my records</LinkButton>
           </>
         }

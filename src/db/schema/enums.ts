@@ -64,6 +64,26 @@ export const correctionCategoryEnum = pgEnum('correction_category', [
   'OTHERS',
 ]);
 
+/**
+ * Which way a mapping correction moves a sale — 2026-07-29 spec section 2.
+ *
+ * `CLAIM_IN` is the original pull: the gaining rep says a sale in someone
+ * else's book is theirs. `TRANSFER_OUT` is the push: the losing rep says a sale
+ * in their own book belongs to someone else.
+ *
+ * Stored rather than derived. Direction is reconstructible at submission —
+ * a claim proposes the submitter's own SM_ID, a transfer names another — but
+ * not afterwards: `sm_id` is the very column the request rewrites, and an
+ * import or a second correction can move the record between submission and
+ * approval. A request read back after that point would re-derive its own
+ * direction wrongly, and the queue, the timeline, the export and the
+ * counterparty list would every one of them inherit the error.
+ *
+ * The same reasoning that gave WITHDRAWN and VERIFIED their own values above:
+ * what every consumer switches on is stored, not recomputed.
+ */
+export const mappingDirectionEnum = pgEnum('mapping_direction', ['CLAIM_IN', 'TRANSFER_OUT']);
+
 export const batchStatusEnum = pgEnum('batch_status', [
   'DRAFT',
   'MAPPED',

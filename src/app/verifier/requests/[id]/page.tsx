@@ -66,6 +66,16 @@ export default async function VerifyRequestPage({
     );
   }
 
+  // Transfers only. A claimant necessarily has an account — they signed in to
+  // raise the claim — so this can only be reached by a push, where the
+  // destination is named by someone else and may be a rep who has never had
+  // one. The record would move into a book nobody can open.
+  if (mapping && request.direction === 'TRANSFER_OUT' && !mapping.claimAccount) {
+    cautions.push(
+      `${mapping.claimSmId} has no active portal account, so the sale would move into a book nobody can sign in to see and no arrival notice could be delivered.`,
+    );
+  }
+
   return (
     <>
       <PageHeader
@@ -104,7 +114,7 @@ export default async function VerifyRequestPage({
           description={request.description}
         />
 
-        {mapping ? <MappingPanel mapping={mapping} /> : null}
+        {mapping ? <MappingPanel mapping={mapping} direction={request.direction} /> : null}
 
         <div className="grid gap-4 lg:grid-cols-2">
           <RecordContext record={record} />

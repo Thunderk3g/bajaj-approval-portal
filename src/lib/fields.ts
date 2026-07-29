@@ -204,8 +204,17 @@ export const REQUIRED_FIELD_KEYS: readonly string[] = CANONICAL_FIELDS.filter((f
  *
  * MAPPING lists only `smId`: `smName` moves with it, but it is resolved from the
  * Manpower roster at approval time rather than proposed as free text, so it is
- * never a target the submitter picks. OTHERS is open — the submitter names the
- * field — and is validated separately against this same registry.
+ * never a target the submitter picks. Both directions of MAPPING — claiming a
+ * sale in and transferring one out, 2026-07-29 spec section 2 — target that same
+ * one field, which is what lets `correction_one_open_per_field` make the two
+ * mutually exclusive on a given record without knowing either exists.
+ *
+ * OTHERS is open — the submitter names the field — and is validated separately
+ * against this same registry. It stays the full list here rather than excluding
+ * `smId`: `resolveTargetField` reads this table when APPLYING an already-approved
+ * request, and narrowing it would strand the historical rows described in
+ * 2026-07-29 spec section 9. New submissions are refused at
+ * `OTHERS_FORBIDDEN_FIELDS` instead, which is the submission-time gate.
  */
 export const CATEGORY_FIELDS: Record<string, readonly string[]> = {
   AUTOPAY: ['autopay'],

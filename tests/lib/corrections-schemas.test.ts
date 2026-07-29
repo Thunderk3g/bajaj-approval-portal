@@ -26,6 +26,7 @@ describe('category discrimination (spec 7.1)', () => {
 
     const mapping = correctionSubmitSchema.parse({
       category: 'MAPPING',
+      direction: 'CLAIM_IN',
       appsNo: VALID_APPS_NO,
       proposedValue: 'C2CM21350',
     });
@@ -105,6 +106,7 @@ describe('MAPPING branch (spec 7.1, 7.2)', () => {
   it('uppercases the SM_ID so a claim cannot split a rep book in two', () => {
     const parsed = correctionSubmitSchema.parse({
       category: 'MAPPING',
+      direction: 'CLAIM_IN',
       appsNo: VALID_APPS_NO,
       proposedValue: ' c2cm21350 ',
     });
@@ -114,6 +116,7 @@ describe('MAPPING branch (spec 7.1, 7.2)', () => {
   it('does not accept an SM name — that is resolved from the roster at approval', () => {
     const parsed = correctionSubmitSchema.parse({
       category: 'MAPPING',
+      direction: 'CLAIM_IN',
       appsNo: VALID_APPS_NO,
       proposedValue: 'C2CM21350',
       smName: 'Ravi Kumar',
@@ -124,10 +127,107 @@ describe('MAPPING branch (spec 7.1, 7.2)', () => {
   it('rejects a blank SM_ID', () => {
     const result = correctionSubmitSchema.safeParse({
       category: 'MAPPING',
+      direction: 'CLAIM_IN',
       appsNo: VALID_APPS_NO,
       proposedValue: '-',
     });
     expect(result.success).toBe(false);
+  });
+
+  /*
+   * Direction — 2026-07-29 spec section 2.
+   *
+   * The branch cannot check what the two directions actually differ on: a claim
+   * pins the destination to the submitter's own SM_ID and a transfer requires
+   * it to be someone else's and on the roster, and both of those need the
+   * session or the database. What the schema owns is that the choice was made
+   * at all, and that it is one of the two.
+   */
+  it('refuses a mapping request that does not say which way the sale moves', () => {
+    const result = correctionSubmitSchema.safeParse({
+      category: 'MAPPING',
+      appsNo: VALID_APPS_NO,
+      proposedValue: 'C2CM21350',
+    });
+    expect(result.success).toBe(false);
+    expect(errorFor(result, 'direction')).toMatch(/claiming this sale or transferring it out/i);
+  });
+
+  it('refuses a direction that is neither of the two', () => {
+    const result = correctionSubmitSchema.safeParse({
+      category: 'MAPPING',
+      direction: 'SIDEWAYS',
+      appsNo: VALID_APPS_NO,
+      proposedValue: 'C2CM21350',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts a transfer out and uppercases the rep it names', () => {
+    const parsed = correctionSubmitSchema.parse({
+      category: 'MAPPING',
+      direction: 'TRANSFER_OUT',
+      appsNo: VALID_APPS_NO,
+      proposedValue: ' c2cm21350 ',
+    });
+    expect(parsed.proposedValue).toBe('C2CM21350');
+    expect(parsed).toMatchObject({ direction: 'TRANSFER_OUT' });
+  });
+
+  it('ignores a direction on a category that has no use for one', () => {
+    const parsed = correctionSubmitSchema.parse({
+      category: 'AUTOPAY',
+      direction: 'TRANSFER_OUT',
+      appsNo: VALID_APPS_NO,
+      proposedValue: 'Yes',
+    });
+    // Stripped rather than carried through. The service writes what the union
+    // returns, and `correction_direction_iff_mapping` rejects a direction on an
+    // AUTOPAY row — so a stray form field must not survive parsing.
+    expect(parsed).not.toHaveProperty('direction');
+  });
+});
+
+describe('OTHERS may no longer target smId (2026-07-29 spec 9)', () => {
+  /*
+   * This was a live hole, not a hypothetical. An OTHERS request naming smId
+   * reaches the apply path with category !== 'MAPPING', so the mapping branch
+   * is skipped: sm_id is rewritten while sm_name keeps the previous rep's name,
+   * changedFields records one column instead of two, and neither rep is told.
+   * It was the only way to push a sale out before TRANSFER_OUT existed.
+   */
+  it('refuses smId, which now has a category of its own', () => {
+    const result = correctionSubmitSchema.safeParse({
+      category: 'OTHERS',
+      appsNo: VALID_APPS_NO,
+      fieldName: 'smId',
+      proposedValue: 'C2CM21350',
+      description: 'Should have been Ravi.',
+    });
+    expect(result.success).toBe(false);
+    expect(errorFor(result, 'fieldName')).toMatch(/not a field a correction can change/i);
+  });
+
+  it('still refuses appsNo, which has no category at all', () => {
+    const result = correctionSubmitSchema.safeParse({
+      category: 'OTHERS',
+      appsNo: VALID_APPS_NO,
+      fieldName: 'appsNo',
+      proposedValue: '6167509999',
+      description: 'Typo in the application number.',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('still accepts an ordinary field', () => {
+    const result = correctionSubmitSchema.safeParse({
+      category: 'OTHERS',
+      appsNo: VALID_APPS_NO,
+      fieldName: 'clientName',
+      proposedValue: 'Meera Nair',
+      description: 'Spelled wrong in the source file.',
+    });
+    expect(result.success).toBe(true);
   });
 });
 

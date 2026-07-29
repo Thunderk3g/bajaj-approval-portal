@@ -1,6 +1,11 @@
 import { sql } from 'drizzle-orm';
 import { check, index, integer, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import { correctionCategoryEnum, correctionStatusEnum, eventActionEnum } from './enums';
+import {
+  correctionCategoryEnum,
+  correctionStatusEnum,
+  eventActionEnum,
+  mappingDirectionEnum,
+} from './enums';
 import { user } from './auth';
 import { period } from './periods';
 import { salesRecord } from './records';
@@ -14,6 +19,15 @@ export const correctionRequest = pgTable(
       .references(() => salesRecord.id, { onDelete: 'cascade' }),
     appsNo: text('apps_no').notNull(),
     category: correctionCategoryEnum('category').notNull(),
+    /**
+     * Which way a MAPPING request moves the sale — 2026-07-29 spec section 3.2.
+     *
+     * Null on every other category, where it has no meaning. The pairing is a
+     * CHECK below rather than a service-layer rule: a MAPPING row with no
+     * direction cannot be rendered, and a direction on an AUTOPAY row would be
+     * read by nothing and mean nothing.
+     */
+    direction: mappingDirectionEnum('direction'),
     fieldName: text('field_name').notNull(),
     fieldLabel: text('field_label').notNull(),
     originalValue: text('original_value'),
@@ -59,6 +73,17 @@ export const correctionRequest = pgTable(
     check(
       'correction_others_requires_description',
       sql`${t.category} <> 'OTHERS' OR (${t.description} IS NOT NULL AND length(trim(${t.description})) > 0)`,
+    ),
+    /**
+     * Direction belongs to MAPPING and to nothing else — spec section 3.2.
+     *
+     * Written as an equivalence so it catches both halves at once: a MAPPING
+     * row that forgot its direction, and a direction stamped on a category that
+     * has no use for one. Either would be a row no consumer knows how to read.
+     */
+    check(
+      'correction_direction_iff_mapping',
+      sql`(${t.category} = 'MAPPING') = (${t.direction} IS NOT NULL)`,
     ),
     index('correction_request_status_idx').on(t.status),
     index('correction_request_sm_id_idx').on(t.smId),

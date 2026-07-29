@@ -480,18 +480,37 @@ export async function applyApprovalWithin(
       findSalesUserBySmId(gainingSmId, tx),
     ]);
 
+    /*
+     * Direction changes only the WORDING, never the recipients — 2026-07-29
+     * spec section 8.
+     *
+     * Losing and gaining are read off the record's current owner and the
+     * proposed owner, which is why this block needed no restructuring when the
+     * push direction arrived. But "an approved mapping claim moved this sale"
+     * misdescribes a transfer to both parties at once: it tells the rep who
+     * ASKED to give the sale away that somebody took it, and tells the receiver
+     * that a claim they never made succeeded.
+     *
+     * On a TRANSFER_OUT the losing rep is the submitter, so the sentence is
+     * addressed to someone reading the outcome of their own request.
+     */
+    const wasTransfer = request.direction === 'TRANSFER_OUT';
+
     // The losing rep is notified, not consulted (spec 7.2). Without this the
     // record simply disappears from their list, which is indistinguishable from
     // data loss and generates a support ticket instead of an understood
     // reassignment.
     if (losing && losingSmId !== gainingSmId) {
+      const target = `${gainingSmId}${resolvedSmName ? ` (${resolvedSmName})` : ''}`;
       notifications.set(losing.id, {
         userId: losing.id,
         type: 'MAPPING_LOST',
-        title: `Application ${request.appsNo} was reassigned`,
-        body: `An approved mapping claim moved this sale to ${gainingSmId}${
-          resolvedSmName ? ` (${resolvedSmName})` : ''
-        }. Raise your own mapping claim if you disagree.`,
+        title: wasTransfer
+          ? `Application ${request.appsNo} was transferred out of your book`
+          : `Application ${request.appsNo} was reassigned`,
+        body: wasTransfer
+          ? `Your transfer request was approved and this sale has moved to ${target}.`
+          : `An approved mapping claim moved this sale to ${target}. Raise your own mapping claim if you disagree.`,
         link: '/sales/records',
       });
     } else if (!losing && losingSmId !== gainingSmId) {
@@ -503,7 +522,9 @@ export async function applyApprovalWithin(
         userId: gaining.id,
         type: 'MAPPING_GAINED',
         title: `Application ${request.appsNo} is now yours`,
-        body: `An approved mapping claim moved this sale to your SM_ID.`,
+        body: wasTransfer
+          ? `${losingSmId} transferred this sale to your SM_ID and it was approved.`
+          : `An approved mapping claim moved this sale to your SM_ID.`,
         link: recordLink(request.appsNo, 'sales'),
       });
     } else {

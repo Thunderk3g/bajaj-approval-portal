@@ -643,6 +643,22 @@ async function applyMappingChanges(
         recordId: record.id,
         appsNo: record.appsNo,
         category: 'MAPPING',
+        /*
+         * A claim, not a transfer — 2026-07-29 spec section 2.
+         *
+         * The sheet says only "this application now belongs to that SM_ID"; it
+         * does not record who asked for the move or which way it was framed
+         * when it happened outside the portal. CLAIM_IN is the honest reading
+         * of that: the row names the GAINING rep, and `sm_id` below is set to
+         * the incoming SM_ID for exactly that reason, which is the shape of a
+         * claim. TRANSFER_OUT would additionally assert that the losing rep
+         * initiated it, and nothing in the file supports that.
+         *
+         * It also agrees with the backfill in migration 0008, which stamps
+         * CLAIM_IN on every mapping row that predates the column — including
+         * the ones this function wrote on earlier imports.
+         */
+        direction: 'CLAIM_IN',
         fieldName: 'smId',
         fieldLabel: fieldLabel('smId'),
         originalValue: record.smId,

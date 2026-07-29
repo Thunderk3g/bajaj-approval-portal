@@ -98,7 +98,7 @@ export default async function RequestDecisionPage({
           description={request.description}
         />
 
-        {mapping ? <MappingPanel mapping={mapping} /> : null}
+        {mapping ? <MappingPanel mapping={mapping} direction={request.direction} /> : null}
 
         <div className="grid gap-4 lg:grid-cols-2">
           <RecordContext record={record} />

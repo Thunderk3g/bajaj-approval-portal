@@ -57,6 +57,13 @@
       "when": 1785242657344,
       "tag": "0007_curly_squirrel_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1785321269808,
+      "tag": "0008_chief_mac_gargan",
+      "breakpoints": true
     }
   ]
 }

@@ -69,6 +69,9 @@ export async function listVerifierQueue(
     id: correctionRequest.id,
     appsNo: correctionRequest.appsNo,
     category: correctionRequest.category,
+    // The verifier is the first human to see a mapping request, so this is the
+    // queue where knowing a claim from a transfer matters most.
+    direction: correctionRequest.direction,
     status: correctionRequest.status,
     fieldLabel: correctionRequest.fieldLabel,
     originalValue: correctionRequest.originalValue,

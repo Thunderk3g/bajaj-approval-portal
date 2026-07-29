@@ -1,11 +1,17 @@
 import { and, eq } from 'drizzle-orm';
 import { db } from '@/db/client';
-import { correctionAttachment, correctionEvent, correctionRequest, salesRecord } from '@/db/schema';
+import {
+  correctionAttachment,
+  correctionEvent,
+  correctionRequest,
+  manpower,
+  salesRecord,
+} from '@/db/schema';
 import { writeAudit, type DbTransaction } from '@/lib/audit/log';
 import type { SessionUser } from '@/lib/auth/rbac';
 import { fieldLabel } from '@/lib/fields';
 import { normalizeIdentifier } from '@/lib/import/normalize';
-import { notifyActiveVerifiers } from '@/lib/notifications/service';
+import { findSalesUserBySmId, notify, notifyActiveVerifiers } from '@/lib/notifications/service';
 import { assertPeriodOpen, PeriodClosedError, periodForRecord } from '@/lib/periods/service';
 import { type ActionResult, fail, ok, zodFieldErrors } from '@/lib/result';
 import {
@@ -19,6 +25,7 @@ import {
   CATEGORY_LABELS,
   type CorrectionCategory,
   correctionSubmitSchema,
+  type MappingDirection,
   normalizeProposedValue,
   targetFieldFor,
   withdrawSchema,
@@ -68,6 +75,9 @@ export const OPEN_STATUSES = WITHDRAWABLE_STATUSES;
 
 export type SubmitCorrectionInput = {
   category: string;
+  /** MAPPING only — which way the sale moves. Ignored on every other category. */
+  direction?: string;
+  /** An application number, or for a TRANSFER_OUT a policy number — spec 4.1. */
   appsNo: string;
   proposedValue: string;
   description?: string;
@@ -163,6 +173,88 @@ function actorScope(actor: SessionUser): { ok: true; smId: string } | { ok: fals
   return { ok: true, smId: actor.smId };
 }
 
+type OwnRecord = typeof salesRecord.$inferSelect;
+
+type ResolveOutcome =
+  | { ok: true; record: OwnRecord }
+  | { ok: false; reason: 'NOT_FOUND' | 'AMBIGUOUS' };
+
+/**
+ * Finds a record in the rep's OWN book by application or policy number —
+ * 2026-07-29 spec section 4.1.
+ *
+ * A rep transferring a sale out already owns it, so this needs none of the
+ * section 7.2 lookup apparatus: no restricted projection, no rate limit, no
+ * audit row per attempt. The scope predicate is part of every query below, so
+ * the widest thing this can return is a record the rep can already read.
+ *
+ * Application number is tried first because it is unique by constraint. Policy
+ * number is neither unique nor NOT NULL, which is why the second arm counts its
+ * matches instead of taking `limit(1)`: silently transferring one of several
+ * policies sharing a number would move a policy nobody named.
+ *
+ * A policy number that matches nothing in the rep's own book is reported the
+ * same way as one that matches nothing at all, so this cannot be used to probe
+ * whether a number exists in someone else's book.
+ */
+async function resolveOwnRecord(smId: string, identifier: string): Promise<ResolveOutcome> {
+  const [byAppsNo] = await db
+    .select()
+    .from(salesRecord)
+    .where(and(eq(salesRecord.appsNo, identifier), eq(salesRecord.smId, smId)))
+    .limit(1);
+
+  if (byAppsNo) return { ok: true, record: byAppsNo };
+
+  // Bounded at two: the query exists to distinguish "one" from "more than one",
+  // and a rep whose book holds fifty rows under one policy number is asked for
+  // the application number just the same as one whose book holds two.
+  const byPolicyNo = await db
+    .select()
+    .from(salesRecord)
+    .where(and(eq(salesRecord.policyNo, identifier), eq(salesRecord.smId, smId)))
+    .limit(2);
+
+  if (byPolicyNo.length === 1) return { ok: true, record: byPolicyNo[0] };
+  if (byPolicyNo.length > 1) return { ok: false, reason: 'AMBIGUOUS' };
+  return { ok: false, reason: 'NOT_FOUND' };
+}
+
+/**
+ * Checks a transfer's destination at SUBMISSION — 2026-07-29 spec section 4.2.
+ *
+ * The roster check is duplicated at approval time as a warning, and the two are
+ * not redundant. Refusing here keeps a request that cannot be applied cleanly
+ * out of the verifier's queue entirely; the approval-time warning still covers
+ * what this cannot see — a roster row deleted, or its `sm_name` blanked, in the
+ * interval between submission and decision.
+ */
+async function checkTransferTarget(
+  targetSmId: string,
+  ownSmId: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  if (targetSmId === ownSmId) {
+    // Not merely pointless: it would still consume the record's one open-request
+    // slot under `correction_one_open_per_field`, blocking a real reassignment.
+    return { ok: false, message: 'Choose a different SM ID — that one is yours.' };
+  }
+
+  const [roster] = await db
+    .select({ smId: manpower.smId })
+    .from(manpower)
+    .where(eq(manpower.smId, targetSmId))
+    .limit(1);
+
+  if (!roster) {
+    return {
+      ok: false,
+      message: `${targetSmId} is not in the Manpower roster, so the sale would be reassigned with no SM name. Check the SM ID.`,
+    };
+  }
+
+  return { ok: true };
+}
+
 /* ------------------------------------------------------------------ submit */
 
 export async function submitCorrection(
@@ -174,6 +266,7 @@ export async function submitCorrection(
 
   const parsed = correctionSubmitSchema.safeParse({
     category: input.category,
+    direction: input.direction,
     appsNo: input.appsNo,
     proposedValue: input.proposedValue,
     description: input.description,
@@ -188,27 +281,66 @@ export async function submitCorrection(
   const fieldName = targetFieldFor(submission);
   const label = fieldLabel(fieldName);
 
-  const { value: appsNo } = normalizeIdentifier(submission.appsNo, 'appsNo');
-  if (!appsNo) return fail('Enter the application number.', { appsNo: ['Enter the application number.'] });
+  const direction: MappingDirection | null =
+    submission.category === 'MAPPING' ? submission.direction : null;
 
-  const [record] = await db
-    .select()
-    .from(salesRecord)
-    .where(eq(salesRecord.appsNo, appsNo))
-    .limit(1);
-
-  if (!record) {
-    return fail(`No record exists for application ${appsNo}.`, {
-      appsNo: [`No record exists for application ${appsNo}.`],
-    });
+  const { value: identifier } = normalizeIdentifier(submission.appsNo, 'appsNo');
+  if (!identifier) {
+    const message =
+      direction === 'TRANSFER_OUT'
+        ? 'Enter the application or policy number.'
+        : 'Enter the application number.';
+    return fail(message, { appsNo: [message] });
   }
 
-  if (submission.category === 'MAPPING') {
+  /*
+   * Two resolution paths, because the two directions start from opposite sides
+   * of the scope boundary — 2026-07-29 spec section 4.1.
+   *
+   * A TRANSFER_OUT is raised by the rep who ALREADY OWNS the record, so it
+   * resolves inside their own book and accepts a policy number as well as an
+   * application number. Everything else — including a CLAIM_IN, whose whole
+   * point is a record in someone else's book — resolves by exact application
+   * number across all records, and is then bound by the ownership rules below.
+   */
+  let record: OwnRecord;
+
+  if (direction === 'TRANSFER_OUT') {
+    const resolved = await resolveOwnRecord(scope.smId, identifier);
+    if (!resolved.ok) {
+      const message =
+        resolved.reason === 'AMBIGUOUS'
+          ? `More than one record in your book has policy number ${identifier}. Enter the application number instead.`
+          : `No record for ${identifier} is in your book.`;
+      return fail(message, { appsNo: [message] });
+    }
+    record = resolved.record;
+  } else {
+    const [found] = await db
+      .select()
+      .from(salesRecord)
+      .where(eq(salesRecord.appsNo, identifier))
+      .limit(1);
+
+    if (!found) {
+      return fail(`No record exists for application ${identifier}.`, {
+        appsNo: [`No record exists for application ${identifier}.`],
+      });
+    }
+    record = found;
+  }
+
+  const appsNo = record.appsNo;
+
+  if (direction === 'CLAIM_IN') {
     // Section 7.2: approval moves the record to the CLAIMANT. Letting a rep
     // name any SM_ID would produce an approval that does something other than
     // what the request said, and would turn the lookup exception into a way to
     // push sales onto other people's books. Taken from the session, never from
     // the form.
+    //
+    // Pushing a sale onto someone else is now a supported thing to want, but it
+    // is TRANSFER_OUT, which starts from a record the rep owns.
     if (submission.proposedValue !== scope.smId) {
       return fail('A mapping claim moves the sale to your own SM ID.', {
         proposedValue: ['A mapping claim moves the sale to your own SM ID.'],
@@ -217,6 +349,12 @@ export async function submitCorrection(
     if (record.smId === scope.smId) {
       return fail(`Application ${appsNo} is already mapped to you.`);
     }
+  } else if (direction === 'TRANSFER_OUT') {
+    // Ownership was already proved by resolveOwnRecord's scope predicate — a
+    // record it returns is in this rep's book by construction. What is left is
+    // the destination.
+    const target = await checkTransferTarget(submission.proposedValue, scope.smId);
+    if (!target.ok) return fail(target.message, { proposedValue: [target.message] });
   } else if (record.smId !== scope.smId) {
     // The section 7.2 exception is for MAPPING only. Every other category is
     // still bound by scope, so a rep cannot change a field on a record they do
@@ -270,6 +408,9 @@ export async function submitCorrection(
           recordId: record.id,
           appsNo,
           category: submission.category as CorrectionCategory,
+          // Null on every category but MAPPING, where it is mandatory — the
+          // `correction_direction_iff_mapping` CHECK enforces both halves.
+          direction,
           fieldName,
           fieldLabel: label,
           originalValue,
@@ -307,6 +448,18 @@ export async function submitCorrection(
         proposedValue: proposed.value as string,
       });
 
+      const counterpartyNotified = direction
+        ? await notifyMappingCounterparty(tx, {
+            requestId: created.id,
+            direction,
+            resubmission: false,
+            actorName: actor.name,
+            appsNo,
+            currentSmId: record.smId,
+            proposedSmId: proposed.value as string,
+          })
+        : 0;
+
       await writeAudit(
         {
           actor,
@@ -316,6 +469,7 @@ export async function submitCorrection(
           after: {
             appsNo,
             category: submission.category,
+            direction,
             fieldName,
             originalValue,
             proposedValue: proposed.value,
@@ -324,6 +478,11 @@ export async function submitCorrection(
             attachmentCount: uploads.stored.length,
             recordSmId: record.smId,
             periodId,
+            // Zero on a mapping request means the rep on the other side has no
+            // active portal account, so the first they will hear of the
+            // reassignment is the record moving. Normal in this data — seven
+            // such SM_IDs in the June file — but only visible if it is recorded.
+            counterpartyNotified,
             // Zero means this request landed in a queue nobody is subscribed to.
             // Recorded rather than swallowed: from the rep's side a request with
             // no verifier looks exactly like one that is being worked on, and
@@ -385,6 +544,9 @@ export async function resubmitCorrection(
   // rather than being skipped on the way back in.
   const parsed = correctionSubmitSchema.safeParse({
     category: existing.category,
+    // From the stored row for the same reason the category is: a resubmission
+    // corrects a value, it does not turn a transfer into a claim.
+    direction: existing.direction ?? undefined,
     appsNo: existing.appsNo,
     proposedValue: input.proposedValue,
     description: input.description,
@@ -404,11 +566,38 @@ export async function resubmitCorrection(
     return fail(message, { proposedValue: [message] });
   }
 
-  if (existing.category === 'MAPPING' && proposed.value !== scope.smId) {
+  /*
+   * The destination is re-checked on the way back in, per direction.
+   *
+   * A returned request is the one place a rep may change the proposed value, so
+   * the rule that constrained it at submission has to hold again here — a claim
+   * that could be resubmitted naming a third party would be a way around the pin
+   * that the submission path refuses.
+   */
+  if (existing.direction === 'CLAIM_IN' && proposed.value !== scope.smId) {
     return fail('A mapping claim moves the sale to your own SM ID.', {
       proposedValue: ['A mapping claim moves the sale to your own SM ID.'],
     });
   }
+
+  if (existing.direction === 'TRANSFER_OUT') {
+    const target = await checkTransferTarget(proposed.value as string, scope.smId);
+    if (!target.ok) return fail(target.message, { proposedValue: [target.message] });
+  }
+
+  // Read fresh rather than carried on the request row. `correction_request.sm_id`
+  // is the SUBMITTER's, and the record's owner can have changed since the request
+  // was raised — by an import, or by another correction applied while this one
+  // sat in RETURNED. The counterparty notice must name who holds the sale now.
+  const currentSmId = existing.direction
+    ? (
+        await db
+          .select({ smId: salesRecord.smId })
+          .from(salesRecord)
+          .where(eq(salesRecord.id, existing.recordId))
+          .limit(1)
+      )[0]?.smId ?? null
+    : null;
 
   const newFiles = input.files ?? [];
   let uploaded: StoredProof[] = [];
@@ -487,6 +676,24 @@ export async function resubmitCorrection(
         proposedValue: proposed.value as string,
       });
 
+      // The counterparty is told again, because what they were told about has
+      // changed — a returned request is the one place the proposed value moves,
+      // and on a TRANSFER_OUT it can move to a DIFFERENT rep entirely. Notifying
+      // only on first submission would leave the original target believing a
+      // sale is coming that is now going somewhere else.
+      const counterpartyNotified =
+        existing.direction && currentSmId
+          ? await notifyMappingCounterparty(tx, {
+              requestId: existing.id,
+              direction: existing.direction,
+              resubmission: true,
+              actorName: actor.name,
+              appsNo: existing.appsNo,
+              currentSmId,
+              proposedSmId: proposed.value as string,
+            })
+          : 0;
+
       await writeAudit(
         {
           actor,
@@ -503,6 +710,7 @@ export async function resubmitCorrection(
             // resubmission that reached no verifier is indistinguishable, from
             // the rep's side, from one being worked on.
             verifiersNotified: recipients,
+            counterpartyNotified,
           },
         },
         tx,
@@ -704,4 +912,76 @@ async function notifyVerifiers(
     },
     tx,
   );
+}
+
+/**
+ * Tells the OTHER rep that a reassignment has been proposed — 2026-07-29 spec
+ * section 6.
+ *
+ * Until now the counterparty heard nothing until the request was APPROVED, at
+ * which point `MAPPING_LOST` / `MAPPING_GAINED` arrived and the record had
+ * already moved. That is late by a whole review cycle: the moment the other rep
+ * can still usefully say something is while the request is in the queue, not
+ * after it has been applied.
+ *
+ * Which rep is the counterparty follows from the direction, and is why direction
+ * is stored rather than inferred:
+ *
+ *  - `CLAIM_IN`      — the submitter is gaining, so the counterparty is the
+ *                      record's CURRENT owner, who stands to lose the sale.
+ *  - `TRANSFER_OUT`  — the submitter is losing, so the counterparty is the
+ *                      PROPOSED owner, who stands to receive it.
+ *
+ * Two notification types rather than one because the recipient reads them
+ * differently: "someone wants a sale you hold" and "a sale is coming to you"
+ * call for different attention. Neither needs a migration — `notification.type`
+ * is a text column.
+ *
+ * Returns the recipient count, which is 0 when the counterparty has no active
+ * portal account. That is recorded in the audit metadata rather than raised: an
+ * SM_ID with no account is normal in this data (seven such IDs in the June
+ * file), and it must not block a reassignment the verifier can still approve.
+ */
+async function notifyMappingCounterparty(
+  tx: DbTransaction,
+  input: {
+    requestId: string;
+    direction: MappingDirection;
+    resubmission: boolean;
+    actorName: string;
+    appsNo: string;
+    currentSmId: string;
+    proposedSmId: string;
+  },
+): Promise<number> {
+  const counterpartySmId =
+    input.direction === 'CLAIM_IN' ? input.currentSmId : input.proposedSmId;
+
+  // A transfer to yourself is refused at submission and a claim on your own
+  // record likewise, so this is defence in depth rather than an expected path —
+  // but notifying the submitter that they are their own counterparty would be
+  // pure noise if either check were ever relaxed.
+  if (counterpartySmId === input.currentSmId && counterpartySmId === input.proposedSmId) return 0;
+
+  const counterparty = await findSalesUserBySmId(counterpartySmId, tx);
+  if (!counterparty) return 0;
+
+  const prefix = input.resubmission ? 'Updated: ' : '';
+
+  const message =
+    input.direction === 'CLAIM_IN'
+      ? {
+          type: 'MAPPING_CLAIM_RAISED' as const,
+          title: `${prefix}${input.actorName} is claiming application ${input.appsNo}`,
+          body: `This sale is currently in your book. It is with the verifier now; you will be told if it is approved. Raise your own request if you disagree.`,
+        }
+      : {
+          type: 'MAPPING_TRANSFER_PROPOSED' as const,
+          title: `${prefix}${input.actorName} is transferring application ${input.appsNo} to you`,
+          body: `This sale is proposed to move into your book. It is with the verifier now; you will be told if it is approved.`,
+        };
+
+  await notify({ userId: counterparty.id, link: '/sales/requests', ...message }, tx);
+
+  return 1;
 }

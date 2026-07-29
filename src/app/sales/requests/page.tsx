@@ -1,12 +1,13 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { CATEGORY_LABELS, type CorrectionCategory } from '@/lib/corrections/schemas';
-import { listMyRequests } from '@/lib/corrections/queries';
+import { listCounterpartyRequests, listMyRequests } from '@/lib/corrections/queries';
 import { requireSalesActor } from '@/lib/corrections/session';
-import { formatDateTime, orDash } from '@/lib/format';
+import { formatDate, formatDateTime, orDash } from '@/lib/format';
 import { buildQuery, pageCount, parsePageParams } from '@/lib/pagination';
 import {
   Badge,
+  Card,
   EmptyState,
   LinkButton,
   PageHeader,
@@ -62,7 +63,14 @@ export default async function MyRequestsPage({
     ? statusParam
     : undefined;
 
-  const { rows, total } = await listMyRequests(actor, { offset, limit: pageSize, status });
+  // Independent reads, so they overlap. The counterparty list is not paginated
+  // and not filtered by the status pills above — it answers a different question
+  // from the one this page's controls ask, and awaiting it after the main query
+  // would put a second serial round trip in front of every filter click.
+  const [{ rows, total }, counterparty] = await Promise.all([
+    listMyRequests(actor, { offset, limit: pageSize, status }),
+    listCounterpartyRequests(actor),
+  ]);
 
   return (
     <section>
@@ -178,6 +186,93 @@ export default async function MyRequestsPage({
           />
         </>
       )}
+
+      {/* Open mapping requests where this rep is the OTHER party — 2026-07-29
+          spec section 5.
+
+          Until this existed a rep learned that a sale was leaving their book
+          only once it had gone: MAPPING_LOST / MAPPING_GAINED fire at approval,
+          a full review cycle past the point where saying something could still
+          change the outcome. This is the same facts while the request is still
+          in the queue.
+
+          Nothing renders at all when the list is empty, rather than an empty
+          state. Being party to someone else's reassignment is rare, and a
+          standing "no cross-book activity" card would charge every rep who
+          reads this page daily a block of chrome to be told nothing. */}
+      {counterparty.length > 0 ? (
+        <Card
+          className="mt-6"
+          title="Involving my book"
+          description="The verifier and the approver decide these — nothing here needs an action from you. Raise your own request if you disagree."
+        >
+          <Table>
+            <thead>
+              <tr>
+                <Th>Application</Th>
+                <Th>Policy</Th>
+                <Th>Client</Th>
+                <Th>What happens</Th>
+                <Th>Status</Th>
+                <Th>Raised</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {counterparty.map((row) => (
+                <tr key={row.id} className="hover:bg-slate-50">
+                  <Td>
+                    <span className="font-mono text-sm font-medium text-slate-900">
+                      {row.appsNo}
+                    </span>
+                    <br />
+                    <span className="text-xs text-slate-500">
+                      issued {formatDate(row.issuedDate)}
+                    </span>
+                  </Td>
+                  <Td className="font-mono">{orDash(row.policyNo)}</Td>
+                  <Td>
+                    {orDash(row.clientName)}
+                    <br />
+                    <span className="text-xs text-slate-500">{orDash(row.productName)}</span>
+                  </Td>
+                  {/* Phrased off `role`, not `direction`: direction says who asked,
+                      and a rep reading this wants to know what becomes of their
+                      own book. The second line is the one place direction is worth
+                      spending a sentence on. */}
+                  <Td>
+                    <Badge tone={row.role === 'LOSING' ? 'warning' : 'info'}>
+                      {row.role === 'LOSING' ? 'Leaving my book' : 'Coming to my book'}
+                    </Badge>
+                    <p className="mt-1">
+                      {row.role === 'LOSING' ? (
+                        <>
+                          Would move to <span className="font-mono">{row.proposedSmId}</span>
+                        </>
+                      ) : (
+                        <>
+                          Would move to you from{' '}
+                          <span className="font-mono">{row.currentSmId}</span>
+                        </>
+                      )}
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      {row.direction === 'CLAIM_IN'
+                        ? 'The other rep is claiming it.'
+                        : 'The other rep is sending it.'}
+                    </p>
+                  </Td>
+                  <Td>
+                    <StatusBadge status={row.status} />
+                  </Td>
+                  <Td className="whitespace-nowrap text-xs text-slate-600">
+                    {formatDateTime(row.submittedAt)}
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        </Card>
+      ) : null}
     </section>
   );
 }
