@@ -38,23 +38,31 @@ services:
       DATABASE_URL: postgresql://reconciliation_user:${RECONCILIATION_DB_PASSWORD}@shared-postgres:5432/reconciliation_db
 
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
-      # MUST be the app's basePath PLUS /api/auth — the full path the auth
-      # routes are mounted at, not just the prefix the app is served under.
+      # ORIGIN ONLY. No /reconciliation, no /api/auth — just scheme and host.
       #
       # Better Auth mounts its router at `new URL(baseURL).pathname` exactly
-      # (node_modules/better-auth/dist/api/index.mjs), and strips that prefix
-      # before matching endpoints like /sign-in/email. Set to
-      # `.../reconciliation` alone it strips only that, then looks for
-      # `/api/auth/sign-in/email` among endpoints that are named `/sign-in/email`
-      # — and every auth request 404s while the rest of the app works normally.
+      # (better-auth/dist/api/index.mjs) and strips that prefix before matching
+      # endpoints named /sign-in/email. Next strips `basePath` from the request
+      # BEFORE a Route Handler sees it, so what reaches Better Auth is already
+      # /api/auth/sign-in/email with no /reconciliation on it. Leaving the path
+      # off lets getBaseURL() append its /api/auth default, which lines up
+      # exactly.
       #
-      # Its `basePath` option cannot fix this: getBaseURL() ignores basePath
-      # whenever baseURL already carries a path of its own (utils/url.mjs).
+      # Verified by running the standalone build behind basePath=/reconciliation
+      # and POSTing to /reconciliation/api/auth/sign-in/email:
+      #   BETTER_AUTH_URL=http://host                     -> reaches the handler
+      #   BETTER_AUTH_URL=http://host/api/auth            -> reaches the handler
+      #   BETTER_AUTH_URL=http://host/reconciliation      -> 404
+      #   BETTER_AUTH_URL=http://host/reconciliation/api/auth -> 404
       #
-      # The host must also be the one USERS TYPE. Its origin is trusted by
+      # Putting the basePath here mounts the router at /reconciliation, so every
+      # auth request 404s while the rest of the app works perfectly — which is
+      # what shipped, and why login never worked on the VM.
+      #
+      # The host must also be the one USERS TYPE: this origin is trusted by
       # default, and a sign-in from an untrusted origin is refused as
       # INVALID_ORIGIN, which the login form shows as a wrong password.
-      BETTER_AUTH_URL: http://bajajlife-marketing-ai.bajajlifeinsurance.com/reconciliation/api/auth
+      BETTER_AUTH_URL: http://bajajlife-marketing-ai.bajajlifeinsurance.com
 
       # Every origin this deployment answers on. Scheme and host only, no path,
       # comma-separated. The BETTER_AUTH_URL origin is trusted automatically;
