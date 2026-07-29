@@ -51,16 +51,26 @@ collide with a role prefix inside the app.
 
 Seven things will break this deployment. Six of them fail silently.
 
-### 1. Build the **portal** image where `cdn.sheetjs.com` is reachable
+### 1. ~~Build the **portal** image where `cdn.sheetjs.com` is reachable~~ — RESOLVED 2026-07-29
 
-`package.json` pins SheetJS to `https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`
-— the official distribution, because the `xlsx` package on the public npm
-registry is abandoned and its last release carries unpatched prototype-pollution
-and ReDoS advisories.
+**This failure mode no longer applies. The third option below was taken: the
+tarball is vendored.**
 
-**`cdn.sheetjs.com` is not on the outbound whitelist** in `infra-access-request.md`.
-`npm ci` will fail on the VM. Build elsewhere and move the image (below), or get
-the host whitelisted, or vendor the tarball into the repo.
+`package.json` now pins SheetJS to `file:vendor/xlsx-0.20.3.tgz`, checked into
+the repo, rather than to `https://cdn.sheetjs.com/...`. It is still the official
+distribution — the `xlsx` package on the public npm registry is abandoned and its
+last release carries unpatched prototype-pollution and ReDoS advisories — but it
+is now fetched at vendoring time rather than at every build.
+
+So `npm ci` no longer reaches `cdn.sheetjs.com`, that host no longer needs to be
+on the outbound whitelist in `infra-access-request.md`, and **the portal image
+can be built on the VM itself**. Building elsewhere and moving the image (below)
+still works and is still fine; it is no longer required.
+
+Verified 2026-07-29 by building `--target runtime` from a clean checkout with the
+CDN blocked. If you ever see `npm ci` reach for that host again, someone has
+reverted the `file:` specifier — check `package.json` before whitelisting
+anything.
 
 This applies to `Dockerfile` only. `ingest/Dockerfile` needs nothing but PyPI —
 every one of its requirements resolves to a prebuilt wheel — so it is the one

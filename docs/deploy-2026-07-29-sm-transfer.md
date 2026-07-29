@@ -68,25 +68,44 @@ grep -c "SET \"direction\" = 'CLAIM_IN'" drizzle/0008_chief_mac_gargan.sql   # e
 If that grep returns 0, stop — the migration has been regenerated and the
 backfill is gone. Restore it from `45a05d1` before continuing.
 
-## Build (on a machine that can reach `cdn.sheetjs.com`)
+## Build — on the VM is now fine
 
-Failure mode 1 in the base doc: the CDN is not on the VM's outbound whitelist, so
-`npm ci` fails there. Build here, carry the image over.
+Failure mode 1 of the base doc is **resolved**: SheetJS is vendored at
+`vendor/xlsx-0.20.3.tgz` and referenced as `file:`, so `npm ci` no longer reaches
+`cdn.sheetjs.com` and the image builds anywhere npm registry access exists —
+including the VM. That removes the image-transfer step entirely.
 
 ```bash
-podman build \
+# On the VM, from a checkout of this repo
+git fetch origin && git checkout main && git pull   # expect 95244c6 or later
+
+sudo podman build \
   --build-arg NEXT_PUBLIC_BASE_PATH=/reconciliation \
   -t localhost/reconciliation-app:latest .
-podman save localhost/reconciliation-app:latest | gzip > reconciliation-app.tar.gz
 
-# The one-shot migration runner — a named stage of the same Dockerfile.
-podman build --target migrate -t localhost/reconciliation-migrate:latest .
-podman save localhost/reconciliation-migrate:latest | gzip > reconciliation-migrate.tar.gz
+sudo podman build --target migrate -t localhost/reconciliation-migrate:latest .
 ```
 
 `NEXT_PUBLIC_BASE_PATH` is a **build** arg. Next bakes `basePath` into every
 emitted route and asset URL; setting it at runtime gives you a bundle whose links
 point where nothing is served.
+
+<details>
+<summary>If the VM has no npm registry access either — build elsewhere</summary>
+
+```bash
+podman build --build-arg NEXT_PUBLIC_BASE_PATH=/reconciliation \
+  -t localhost/reconciliation-app:latest .
+podman save localhost/reconciliation-app:latest | gzip > reconciliation-app.tar.gz
+
+podman build --target migrate -t localhost/reconciliation-migrate:latest .
+podman save localhost/reconciliation-migrate:latest | gzip > reconciliation-migrate.tar.gz
+```
+
+`docker` works identically here and produces a tarball `podman load` accepts —
+verified 2026-07-29, `docker 20.10.17`, 281 MB image. Then `scp` both to the VM
+and `gunzip -c ... | sudo podman load` before step 3 below.
+</details>
 
 ## On the VM
 
@@ -96,9 +115,10 @@ cd /opt/reconciliation-agent
 # 1. Stop. Do this BEFORE migrating — see "the two things that will bite".
 sudo podman-compose -f docker-compose.shared.yml down
 
-# 2. Load the new images. Ingest is unchanged; do not reload it.
-gunzip -c reconciliation-app.tar.gz     | sudo podman load
-gunzip -c reconciliation-migrate.tar.gz | sudo podman load
+# 2. Images. If you built on the VM they are already there — skip this.
+#    Only if you built elsewhere. Ingest is unchanged; do not reload it.
+# gunzip -c reconciliation-app.tar.gz     | sudo podman load
+# gunzip -c reconciliation-migrate.tar.gz | sudo podman load
 
 # 3. Migrate. shared-postgres publishes no host port, so this runs INSIDE the
 #    network. The image entrypoint is `npm run db:migrate && npm run db:custom`.
@@ -113,8 +133,15 @@ sudo podman run --rm --network shared-network \
 #    violated by some row`, the backfill line is missing from 0008 — see
 #    pre-flight. NOTHING has been half-applied; drizzle wraps each file.
 
-# 4. The auth fix. This is a compose-file change, not an image change, so it
-#    only lands if you re-copy the file.
+# 4. The auth fix. Compose-file change, not an image change — it only lands if
+#    you re-copy the file.
+#
+#    NOTE: production was already fixed by hand. Probed 2026-07-29,
+#    POST /reconciliation/api/auth/sign-in/email returned 401, not 404, so the
+#    router is already mounted correctly on the running VM. Commit 45a05d1 puts
+#    the repo in line with it. That matters precisely BECAUSE this step copies
+#    the repo's file over the VM's: before 45a05d1 this copy would have
+#    reintroduced the bug someone had already fixed in place.
 sudo cp <repo>/docker-compose.shared.yml /opt/reconciliation-agent/
 grep BETTER_AUTH_URL /opt/reconciliation-agent/docker-compose.shared.yml
 #    Expect exactly: http://bajajlife-marketing-ai.bajajlifeinsurance.com
