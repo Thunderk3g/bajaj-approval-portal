@@ -150,7 +150,10 @@ services:
       # 3000 because that is the published port below, and Better Auth builds
       # its callback and cookie paths from this value.
       BETTER_AUTH_URL: http://localhost:3000
-      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      # Reaching this container as http://<lan-ip>:3000 rather than localhost is
+      # a different origin, and Better Auth would refuse the sign-in. Uncomment
+      # and name that address to allow it.
+      # TRUSTED_ORIGINS: http://192.168.1.10:3000
       # http://localhost is a secure context in every current browser, so a
       # Secure cookie would in fact work — but not over http://<lan-ip>:3000,
       # which is how anyone else on the network reaches this. Off locally, and

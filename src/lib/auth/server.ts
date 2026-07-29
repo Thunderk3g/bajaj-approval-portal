@@ -16,6 +16,12 @@ export const auth = betterAuth({
   }),
   secret: env.BETTER_AUTH_SECRET,
   baseURL: env.BETTER_AUTH_URL,
+  // Additive: Better Auth already trusts the origin of baseURL. This covers the
+  // OTHER hostnames the same deployment answers on — the VM's bare IP alongside
+  // the domain in front of it — because a sign-in from an unlisted origin is
+  // rejected as INVALID_ORIGIN and surfaces to the user as a wrong password.
+  // See TRUSTED_ORIGINS in src/lib/env.ts.
+  trustedOrigins: env.TRUSTED_ORIGINS,
   emailAndPassword: {
     enabled: true,
     // No public registration. Accounts are created by an admin, or by the

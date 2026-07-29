@@ -41,8 +41,25 @@ services:
       # Includes the basePath. Better Auth builds its own callback and cookie
       # paths from this, so omitting the prefix produces auth routes that
       # nginx does not route and cookies scoped to the wrong path.
-      BETTER_AUTH_URL: http://10.3.5.99/reconciliation
-      NEXT_PUBLIC_APP_URL: http://10.3.5.99/reconciliation
+      #
+      # This must name the host USERS TYPE, not the VM's IP: its origin is the
+      # one Better Auth trusts by default, and a sign-in POST from anywhere else
+      # is refused as INVALID_ORIGIN — which the login form shows as "Incorrect
+      # email or password."
+      BETTER_AUTH_URL: http://bajajlife-marketing-ai.bajajlifeinsurance.com/reconciliation
+
+      # The other origins this same deployment answers on. The BETTER_AUTH_URL
+      # origin above is trusted automatically and is not repeated. Scheme and
+      # host only, no path, comma-separated. Restarting the container is enough
+      # to add one — see TRUSTED_ORIGINS in src/lib/env.ts.
+      TRUSTED_ORIGINS: http://10.3.5.99
+
+      # NEXT_PUBLIC_APP_URL is deliberately absent. It did nothing here: Next
+      # inlines NEXT_PUBLIC_ values at BUILD time, so setting it at run time
+      # never reached the browser bundle, and the auth client shipped pointing at
+      # http://localhost:3000. The client now derives its origin from
+      # window.location at run time and needs no variable at all — see
+      # src/lib/auth/client.ts.
 
       # KNOWN GAP, deliberate. shared-nginx serves plain HTTP on :80, and a
       # Secure cookie there is accepted by the browser and then never sent

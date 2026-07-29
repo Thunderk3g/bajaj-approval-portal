@@ -6,6 +6,30 @@ const schema = z.object({
   BETTER_AUTH_SECRET: z.string().min(32, 'BETTER_AUTH_SECRET must be at least 32 characters'),
   BETTER_AUTH_URL: z.string().min(1),
   /**
+   * Extra origins Better Auth will accept a state-changing request from,
+   * comma-separated — e.g. `http://10.3.5.99,http://portal.example.com`.
+   *
+   * The origin of BETTER_AUTH_URL is trusted automatically and does not need
+   * repeating here. This exists because the portal answers on more than one
+   * hostname, and every sign-in POST carries the browser's `Origin` header:
+   * Better Auth's origin-check middleware refuses one it does not recognise with
+   * INVALID_ORIGIN (403), which the login form reports as "Incorrect email or
+   * password." A hostname missing from this list therefore looks exactly like
+   * the whole team's passwords being wrong.
+   *
+   * Runtime, not build-time: adding a hostname here is a container restart, not
+   * an image rebuild. Origins only — scheme and host, no path.
+   */
+  TRUSTED_ORIGINS: z
+    .string()
+    .optional()
+    .transform((v) =>
+      (v ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  /**
    * Whether the session cookie carries the `Secure` attribute.
    *
    * Defaults to true, and MUST stay true anywhere the app is reachable over
