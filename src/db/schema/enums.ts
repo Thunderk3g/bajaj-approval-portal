@@ -57,11 +57,31 @@ export const correctionStatusEnum = pgEnum('correction_status', [
   'WITHDRAWN',
 ]);
 
+/**
+ * AGENT_ID is the fourth named category — the `Agent_ID` column the business
+ * dashboard began carrying.
+ *
+ * It gets a value of its own rather than riding on OTHERS for the same reason
+ * AUTOPAY and ISSUANCE_DATE do: a named category pins the target field in the
+ * database enum, where `field_name` is free text written by the client. A rep
+ * raising an agent correction through OTHERS could name any field at all, and
+ * `resolveTargetField` would believe them — the enum is the only part of the
+ * request an approval path can trust without checking.
+ *
+ * It also makes the queue filterable by it, which is the thing every reviewer
+ * asks for first when a new column starts generating disputes.
+ *
+ * Appended, never inserted. Postgres assigns enum values a sort order at
+ * creation and `ALTER TYPE ... ADD VALUE` without BEFORE/AFTER appends; slotting
+ * it beside the other named categories would need the type rebuilt, which means
+ * dropping every default and constraint that references it.
+ */
 export const correctionCategoryEnum = pgEnum('correction_category', [
   'AUTOPAY',
   'MAPPING',
   'ISSUANCE_DATE',
   'OTHERS',
+  'AGENT_ID',
 ]);
 
 /**

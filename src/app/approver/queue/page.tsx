@@ -11,6 +11,8 @@ import {
   type SearchParams,
 } from '@/lib/approvals/schemas';
 import { QueueTable } from '@/components/approvals/queue-table';
+import { BulkDecisions } from '@/components/approvals/bulk-decisions';
+import { APPROVABLE_STATUS } from '@/lib/approvals/apply';
 
 export const dynamic = 'force-dynamic';
 
@@ -126,7 +128,20 @@ export default async function QueuePage({
         </form>
       </Card>
 
-      <QueueTable rows={queue.rows} />
+      {/*
+        Only the rows the approver may actually decide are offered for batching,
+        and this map is what decides that — `QueueTable` renders a checkbox on
+        exactly the same predicate. An empty map turns the bar off entirely,
+        which is what the RETURNED and PENDING scopes get.
+      */}
+      <BulkDecisions
+        stage="approver"
+        appsNoById={Object.fromEntries(
+          queue.rows.filter((r) => r.status === APPROVABLE_STATUS).map((r) => [r.id, r.appsNo]),
+        )}
+      >
+        <QueueTable rows={queue.rows} selectable />
+      </BulkDecisions>
 
       <Pagination
         page={queue.page}

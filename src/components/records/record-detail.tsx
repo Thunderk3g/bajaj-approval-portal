@@ -14,7 +14,12 @@ import { GapBadges } from './gap-badges';
  */
 const GROUPS: Array<{ title: string; keys: Array<keyof RecordDetailRow> }> = [
   { title: 'Identity', keys: ['appsNo', 'policyNo', 'clientName', 'leadId'] },
-  { title: 'Attribution', keys: ['smId', 'smName', 'tlId', 'tlName', 'ccmId', 'ccmName', 'location'] },
+  {
+    title: 'Attribution',
+    // agentId leads the group for the same reason it leads the field registry:
+    // credit reads outwards from the person who made the sale.
+    keys: ['agentId', 'smId', 'smName', 'tlId', 'tlName', 'ccmId', 'ccmName', 'location'],
+  },
   { title: 'Dates', keys: ['loginDate', 'issuedDate'] },
   { title: 'Money', keys: ['fp', 'anp'] },
   {

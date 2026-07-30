@@ -262,6 +262,82 @@ describe('ISSUANCE_DATE branch (spec 7.1)', () => {
   });
 });
 
+describe('AGENT_ID branch', () => {
+  // The three codes that actually appear in the June `Businesses Dashboard`
+  // workbook: two purely numeric, one alphanumeric, all ten characters.
+  const REAL_CODES = ['3000000007', '59L0000000', '2000003060'];
+
+  it.each(REAL_CODES)('accepts %j and targets agent_id', (code) => {
+    const parsed = correctionSubmitSchema.parse({
+      category: 'AGENT_ID',
+      appsNo: VALID_APPS_NO,
+      proposedValue: `  ${code}  `,
+    });
+    expect(parsed.proposedValue).toBe(code);
+    // Read out of CATEGORY_FIELDS, never off the payload — the category is the
+    // part of a request the approval path can trust.
+    expect(targetFieldFor(parsed)).toBe('agentId');
+  });
+
+  it.each(['', '   ', '-', 'N/A'])('refuses %j as an agent code', (value) => {
+    // The last two are the source workbook's sentinels for "no value".
+    // Accepting them would let a correction write the literal text the importer
+    // exists to turn into NULL.
+    const result = correctionSubmitSchema.safeParse({
+      category: 'AGENT_ID',
+      appsNo: VALID_APPS_NO,
+      proposedValue: value,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('refuses a code that already lost its digits to scientific notation', () => {
+    // The codes are ten-digit numbers that live in Excel, so this is the
+    // realistic corruption, not a hypothetical one. Expanding `3.0E+09` would
+    // invent seven digits and store a code nobody has.
+    const result = correctionSubmitSchema.safeParse({
+      category: 'AGENT_ID',
+      appsNo: VALID_APPS_NO,
+      proposedValue: '3.0E+09',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('caps the length, since nothing downstream truncates', () => {
+    const result = correctionSubmitSchema.safeParse({
+      category: 'AGENT_ID',
+      appsNo: VALID_APPS_NO,
+      proposedValue: 'A'.repeat(65),
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('needs no description', () => {
+    // Unlike OTHERS, the category already names the field, so there is nothing
+    // a description would disambiguate.
+    expect(
+      correctionSubmitSchema.safeParse({
+        category: 'AGENT_ID',
+        appsNo: VALID_APPS_NO,
+        proposedValue: 'AG-2002',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('takes no direction — that belongs to MAPPING', () => {
+    const parsed = correctionSubmitSchema.parse({
+      category: 'AGENT_ID',
+      appsNo: VALID_APPS_NO,
+      proposedValue: 'AG-2002',
+      direction: 'CLAIM_IN',
+    });
+    // Stripped by the branch rather than carried through, so the service never
+    // has one to stamp on the row — `correction_direction_iff_mapping` is the
+    // backstop, this is what stops it ever being reached.
+    expect('direction' in parsed).toBe(false);
+  });
+});
+
 describe('OTHERS branch (spec 7.1) — the three-layer requiredness rule', () => {
   it('accepts a named field with a description', () => {
     const parsed = correctionSubmitSchema.parse({

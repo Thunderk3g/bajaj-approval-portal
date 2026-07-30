@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { CORRECTION_CATEGORIES, type SearchParams } from '@/lib/approvals/schemas';
+import { BULK_MAX, CORRECTION_CATEGORIES, type SearchParams } from '@/lib/approvals/schemas';
 
 /**
  * Verifier decision input — 2026-07-28 spec section 3.
@@ -48,6 +48,48 @@ export const verifierDecisionSchema = z.discriminatedUnion('decision', [
 ]);
 
 export type VerifierDecisionPayload = z.infer<typeof verifierDecisionSchema>;
+
+/* --------------------------------------------------------------------- bulk */
+
+/**
+ * The batch form of the two decisions above.
+ *
+ * Restated rather than shared with the approver's `bulkDecisionSchema`, for the
+ * reason the single-request schemas are not shared either: the two stages offer
+ * DIFFERENT decisions. A union that accepted 'APPROVE' here would validate a
+ * payload no verifier is allowed to send, and leave the refusal to the action —
+ * where a future edit can drop it silently.
+ *
+ * The id array's rules are shared, because those are about the transport rather
+ * than the stage: same cap, same deduplication, same reasons.
+ */
+const bulkRequestIds = z
+  .array(z.uuid('That request identifier is not valid.'))
+  .min(1, 'Select at least one request.')
+  .max(BULK_MAX, `Decide at most ${BULK_MAX} requests at a time.`)
+  .transform((ids) => [...new Set(ids)]);
+
+export const bulkVerifierDecisionSchema = z.discriminatedUnion('decision', [
+  z.object({
+    requestIds: bulkRequestIds,
+    decision: z.literal('VERIFY'),
+    remarks: z
+      .string()
+      .trim()
+      .max(MAX_REMARKS, `Remarks are limited to ${MAX_REMARKS} characters.`)
+      .optional()
+      .transform((v) => (v ? v : null)),
+  }),
+  z.object({
+    requestIds: bulkRequestIds,
+    decision: z.literal('RETURN'),
+    remarks: z
+      .string()
+      .trim()
+      .min(1, 'Remarks are required so the submitter knows what to change.')
+      .max(MAX_REMARKS, `Remarks are limited to ${MAX_REMARKS} characters.`),
+  }),
+]);
 
 /* ------------------------------------------------------------------ filters */
 

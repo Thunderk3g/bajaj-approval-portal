@@ -67,6 +67,46 @@ export const CANONICAL_FIELDS: readonly CanonicalField[] = [
     aliases: ['leadid', 'lead', 'leadno'],
   },
   {
+    // The new business-dashboard column. The June workbook spells it `agent
+    // code` — lowercase, a space, and the last of the 37 columns on `Login
+    // Data` — which is the fourth name in this registry that differs from the
+    // one the requirement uses, after ANP/APE, FP/FRP and Issued_Date. The key
+    // and label follow the requirement; `agentcode` in the aliases is what
+    // actually matches the file, exactly as `ape` and `frp` do above.
+    //
+    // Placed at the head of the attribution block — agent, then SM, then TL,
+    // then CCM — so the export reads outwards from the person who made the sale.
+    //
+    // NO BARE `agent` ALIAS, deliberately. It is five characters, so it clears
+    // the four-character noise floor in `scoreColumn` and would PREFIX-match any
+    // `Agent_Name` column — a header the `SM Summary` sheet already carries. It
+    // would win that column for `agentId` in any file that ships a name but no
+    // code, which is the silent mis-mapping that guard exists to prevent. Every
+    // real spelling is covered by a specific alias below.
+    //
+    // `required: false` even though the dashboard now always sends it: the
+    // column arrived after go-live, so every workbook already imported lacks it,
+    // and a required field blocks the commit of any file that predates it.
+    // `identifier`, NOT `text`, and the June file is what decides it.
+    //
+    // All 1171 rows carry a value, there are three distinct codes, and they come
+    // back from the `.xlsb` as BOTH `number` and `string` in the same column:
+    // `3000000007` and `2000003060` are numeric, `59L0000000` is not. That is
+    // the Apps_No shape exactly, and `identifier` is the kind that handles it —
+    // a raw number goes through BigInt rather than JS display text, incoming
+    // scientific notation is refused instead of being expanded into invented
+    // digits, and the export writes the column with a text number format so
+    // Excel cannot re-render a ten-digit code as 3.0E+09 on the way out.
+    //
+    // `text` would have worked for these three values today and failed quietly
+    // on the first code long enough for Excel to reformat.
+    key: 'agentId',
+    label: 'Agent ID',
+    kind: 'identifier',
+    required: false,
+    aliases: ['agentcode', 'agentid', 'agentno', 'agentnumber', 'agtid', 'advisorid', 'advisorcode'],
+  },
+  {
     key: 'smId',
     label: 'SM ID',
     kind: 'text',
@@ -220,5 +260,6 @@ export const CATEGORY_FIELDS: Record<string, readonly string[]> = {
   AUTOPAY: ['autopay'],
   MAPPING: ['smId'],
   ISSUANCE_DATE: ['issuedDate'],
+  AGENT_ID: ['agentId'],
   OTHERS: CANONICAL_FIELDS.map((f) => f.key),
 };

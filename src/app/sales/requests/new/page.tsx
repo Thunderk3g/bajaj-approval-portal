@@ -27,6 +27,8 @@ const CATEGORY_HINTS: Record<string, string> = {
   MAPPING:
     'Move a sale between reps — either one credited to someone else that should be yours, or one in your book that belongs to someone else. Choose the direction below.',
   ISSUANCE_DATE: 'Correct the date the policy was issued.',
+  AGENT_ID:
+    'Correct the agent credited with this sale. This changes the Agent ID only — it does not move the sale between reps. Use Mapping for that.',
   OTHERS: 'Anything else — name the field and say what is wrong.',
 };
 

@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { decisionSchema, parseHistoryFilters, parseQueueFilters } from '@/lib/approvals/schemas';
+import {
+  BULK_MAX,
+  bulkDecisionSchema,
+  CATEGORY_LABELS,
+  CORRECTION_CATEGORIES,
+  decisionSchema,
+  parseHistoryFilters,
+  parseQueueFilters,
+} from '@/lib/approvals/schemas';
+import { bulkVerifierDecisionSchema } from '@/lib/verification/schemas';
 import { zodFieldErrors } from '@/lib/result';
 
 describe('decision validation (spec 7)', () => {
@@ -71,5 +80,91 @@ describe('filter parsing (spec 9.1)', () => {
   it('reads the "my decisions only" toggle', () => {
     expect(parseHistoryFilters({ mine: '1' }).mine).toBe(true);
     expect(parseHistoryFilters({}).mine).toBe(false);
+  });
+});
+
+describe('batch decision validation', () => {
+  const ids = [
+    '4f1a3d7c-2a0c-4a7e-9f2b-2f7a9c1e5b30',
+    '8c2b4e9d-1f3a-4b6c-8d7e-3a5b7c9d1e2f',
+  ];
+
+  it('carries the same remarks rules as a single decision', () => {
+    expect(
+      bulkDecisionSchema.safeParse({ requestIds: ids, decision: 'APPROVE', remarks: '' }).success,
+    ).toBe(true);
+    expect(
+      bulkDecisionSchema.safeParse({ requestIds: ids, decision: 'REJECT', remarks: '  ' }).success,
+    ).toBe(false);
+    expect(
+      bulkDecisionSchema.safeParse({ requestIds: ids, decision: 'RETURN', remarks: '' }).success,
+    ).toBe(false);
+  });
+
+  it('collapses a repeated id, because the same id twice is not two decisions', () => {
+    // Left in, the second copy reaches the approval path, finds the request no
+    // longer VERIFIED — it just approved it — and is reported as a failure. The
+    // approver would see their own success counted against them.
+    const parsed = bulkDecisionSchema.safeParse({
+      requestIds: [ids[0], ids[1], ids[0]],
+      decision: 'APPROVE',
+    });
+    expect(parsed.success && parsed.data.requestIds).toEqual(ids);
+  });
+
+  it('refuses an empty selection', () => {
+    const parsed = bulkDecisionSchema.safeParse({ requestIds: [], decision: 'APPROVE' });
+    expect(parsed.success).toBe(false);
+    expect(parsed.success === false && zodFieldErrors(parsed.error).requestIds).toBeDefined();
+  });
+
+  it('caps how many requests one batch may carry', () => {
+    // The endpoint is reachable without the queue page, and an unbounded array
+    // is an unbounded sequence of transactions held open by one request.
+    const many = Array.from(
+      { length: BULK_MAX + 1 },
+      (_, i) => `4f1a3d7c-2a0c-4a7e-9f2b-${String(i).padStart(12, '0')}`,
+    );
+    expect(bulkDecisionSchema.safeParse({ requestIds: many, decision: 'APPROVE' }).success).toBe(
+      false,
+    );
+  });
+
+  it('refuses an identifier that is not a uuid', () => {
+    expect(
+      bulkDecisionSchema.safeParse({ requestIds: ['1 OR 1=1'], decision: 'APPROVE' }).success,
+    ).toBe(false);
+  });
+
+  it('gives the verifier only the two decisions that stage has', () => {
+    // A verifier has no terminal reject — their "no" returns the request to the
+    // rep. If this ever parsed, the refusal would rest entirely on the action
+    // remembering to check, which is where such rules get dropped silently.
+    expect(
+      bulkVerifierDecisionSchema.safeParse({ requestIds: ids, decision: 'VERIFY' }).success,
+    ).toBe(true);
+    expect(
+      bulkVerifierDecisionSchema.safeParse({
+        requestIds: ids,
+        decision: 'REJECT',
+        remarks: 'no',
+      }).success,
+    ).toBe(false);
+    expect(
+      bulkVerifierDecisionSchema.safeParse({ requestIds: ids, decision: 'RETURN', remarks: '' })
+        .success,
+    ).toBe(false);
+  });
+});
+
+describe('the correction categories a reviewer can filter by', () => {
+  it('includes AGENT_ID and labels every value', () => {
+    // The queue's category dropdown is built from this list. A category a rep
+    // can raise but a reviewer cannot filter for is one that disappears into
+    // "everything else" exactly when it starts generating volume.
+    expect(CORRECTION_CATEGORIES).toContain('AGENT_ID');
+    for (const category of CORRECTION_CATEGORIES) {
+      expect(CATEGORY_LABELS[category]).toBeTruthy();
+    }
   });
 });

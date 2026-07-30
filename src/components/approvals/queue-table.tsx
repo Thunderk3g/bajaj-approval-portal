@@ -38,11 +38,23 @@ export function QueueTable({
   rows,
   basePath = '/approver',
   homeStatus = APPROVABLE_STATUS,
+  selectable = false,
 }: {
   rows: QueueRow[];
   basePath?: string;
   /** The status this queue exists to work on — chips are suppressed for it. */
   homeStatus?: string;
+  /**
+   * Renders the batch-selection column. Off by default, so the table is
+   * unchanged anywhere it is read rather than worked.
+   *
+   * This component stays a SERVER component with this on. The checkboxes are
+   * plain uncontrolled inputs named `requestIds`, and the client component that
+   * wraps the table reads them off its own `<form>` — which is what keeps
+   * `APPROVABLE_STATUS`, and through it `apply.ts` and the database client, out
+   * of the browser bundle.
+   */
+  selectable?: boolean;
 }) {
   if (rows.length === 0) {
     return (
@@ -57,6 +69,11 @@ export function QueueTable({
     <Table>
       <thead>
         <tr>
+          {selectable ? (
+            <Th className="w-8">
+              <span className="sr-only">Select</span>
+            </Th>
+          ) : null}
           <Th>Age</Th>
           <Th>Application</Th>
           <Th>Category / field</Th>
@@ -70,6 +87,28 @@ export function QueueTable({
       <tbody>
         {rows.map((r) => (
           <tr key={r.id} className="hover:bg-slate-50">
+            {/*
+              A checkbox only on rows this queue can actually act on.
+
+              In the OPEN scope the list mixes all three open statuses, and a
+              batch of them would come back mostly failed — an approver
+              selecting a PENDING row is asking for a decision the verifier gate
+              refuses. An absent checkbox says that before the click rather than
+              after it, and it says it in the same place the status chip does.
+            */}
+            {selectable ? (
+              <Td>
+                {r.status === homeStatus ? (
+                  <input
+                    type="checkbox"
+                    name="requestIds"
+                    value={r.id}
+                    aria-label={`Select application ${r.appsNo}`}
+                    className="h-4 w-4 accent-slate-900"
+                  />
+                ) : null}
+              </Td>
+            ) : null}
             <Td>
               <AgeBadge days={r.ageDays} />
             </Td>

@@ -170,6 +170,58 @@ describe.each(FORMATS)('mapping auto-suggestion (%s) — spec 6.2', (format) => 
   });
 });
 
+describe('the agent column, as the dashboard actually spells it', () => {
+  const column = (index: number, header: string) => ({
+    index,
+    header,
+    key: header,
+    blank: false,
+    duplicate: false,
+  });
+
+  it('maps `agent code` to agentId', () => {
+    // The header in the June `Businesses Dashboard` workbook, verbatim:
+    // lowercase, one space, last of the 37 columns on `Login Data`. The
+    // requirement calls the field agent_id. This is the fourth such rename
+    // after APE/ANP, FRP/FP and Issuance_Date/Issued_Date, and it is absorbed
+    // the same way — by an alias, not by anyone editing a mapping.
+    const { mapping } = suggestMapping([
+      column(0, 'Apps_No'),
+      column(1, 'SM_ID'),
+      column(2, 'agent code'),
+    ]);
+    expect(mapping.agentId).toBe('agent code');
+  });
+
+  it.each(['Agent_ID', 'AGENT ID', 'agent_code', 'Agent No'])('also answers to %j', (header) => {
+    const { mapping } = suggestMapping([column(0, 'Apps_No'), column(1, header)]);
+    expect(mapping.agentId).toBe(header);
+  });
+
+  it('does NOT claim an Agent Name column', () => {
+    // `Agent Name` is a header the `SM Summary` sheet already carries, and a
+    // rep's name is not their code. A bare `agent` alias would be five
+    // characters — past the four-character noise floor in `scoreColumn` — and
+    // would prefix-match this into agentId in any file that ships the name
+    // without the code, writing a person's name into an identifier column.
+    const { mapping, unmappedColumns } = suggestMapping([
+      column(0, 'Apps_No'),
+      column(1, 'Agent Name'),
+    ]);
+    expect(mapping.agentId).toBeUndefined();
+    expect(unmappedColumns).toContain('Agent Name');
+  });
+
+  it('prefers the code over the name when a sheet carries both', () => {
+    const { mapping } = suggestMapping([
+      column(0, 'Apps_No'),
+      column(1, 'Agent Name'),
+      column(2, 'agent code'),
+    ]);
+    expect(mapping.agentId).toBe('agent code');
+  });
+});
+
 describe('mapping validation', () => {
   const columns = [
     { index: 0, header: 'Apps_No', key: 'Apps_No', blank: false, duplicate: false },

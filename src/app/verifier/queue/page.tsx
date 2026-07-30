@@ -13,6 +13,7 @@ import {
   parseVerifierQueueFilters,
 } from '@/lib/verification/schemas';
 import { QueueTable } from '@/components/approvals/queue-table';
+import { BulkDecisions } from '@/components/approvals/bulk-decisions';
 
 export const dynamic = 'force-dynamic';
 
@@ -128,8 +129,16 @@ export default async function VerifierQueuePage({
 
       {/* homeStatus, because this table defaults to the approver's. The
           verifier works on PENDING; without this every row in their own queue
-          would wear a redundant PENDING chip. */}
-      <QueueTable rows={queue.rows} basePath="/verifier" homeStatus="PENDING" />
+          would wear a redundant PENDING chip — and, now, would offer a checkbox
+          on rows a verifier has already passed on. */}
+      <BulkDecisions
+        stage="verifier"
+        appsNoById={Object.fromEntries(
+          queue.rows.filter((r) => r.status === 'PENDING').map((r) => [r.id, r.appsNo]),
+        )}
+      >
+        <QueueTable rows={queue.rows} basePath="/verifier" homeStatus="PENDING" selectable />
+      </BulkDecisions>
 
       <Pagination
         page={queue.page}

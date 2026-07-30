@@ -52,6 +52,70 @@ export const decisionSchema = z.discriminatedUnion('decision', [
 
 export type DecisionPayload = z.infer<typeof decisionSchema>;
 
+/* --------------------------------------------------------------------- bulk */
+
+/**
+ * The most requests one batch may carry.
+ *
+ * A ceiling rather than a page size: the queue pages at 100, so this covers a
+ * full page with room for a wider one later. It exists because `requestIds`
+ * arrives as a repeated form field on a POST endpoint reachable without the
+ * page, and an unbounded array is an unbounded sequence of transactions held
+ * open by one request.
+ *
+ * Defined here rather than beside `runBulk` on purpose — `bulk.ts` reaches
+ * `apply.ts` and through it the database client, and this module is imported by
+ * the queue pages. Keeping the constant on the pure side is what lets the limit
+ * be stated in UI copy without dragging a connection pool into the bundle.
+ */
+export const BULK_MAX = 200;
+
+/**
+ * Deduplicated, because the same id twice is not two decisions.
+ *
+ * Without this the second copy reaches `applyApproval`, finds the request no
+ * longer VERIFIED — it just approved it — and reports "already approved" as a
+ * failure. The approver would see a batch of 40 come back as "39 applied, 1
+ * failed" with no way to tell that the failure was their own success.
+ */
+const bulkRequestIds = z
+  .array(z.uuid('That request identifier is not valid.'))
+  .min(1, 'Select at least one request.')
+  .max(BULK_MAX, `Decide at most ${BULK_MAX} requests at a time.`)
+  .transform((ids) => [...new Set(ids)]);
+
+export const bulkDecisionSchema = z.discriminatedUnion('decision', [
+  z.object({
+    requestIds: bulkRequestIds,
+    decision: z.literal('APPROVE'),
+    remarks: optionalRemarks,
+  }),
+  z.object({
+    requestIds: bulkRequestIds,
+    decision: z.literal('REJECT'),
+    // One remark, applied to every request in the batch — so it has to be true
+    // of all of them. That is a real constraint on the approver, not a gap: a
+    // reason that only fits some of the selection is a sign the selection was
+    // wrong, and they still have the per-request screen for the rest.
+    remarks: requiredRemarks,
+  }),
+  z.object({
+    requestIds: bulkRequestIds,
+    decision: z.literal('RETURN'),
+    remarks: requiredRemarks,
+  }),
+]);
+
+export type BulkDecisionPayload = z.infer<typeof bulkDecisionSchema>;
+
+/** Shared by both stages' bulk actions so one client component can render either. */
+export type BulkOutcome = {
+  decision: string;
+  applied: number;
+  failed: Array<{ requestId: string; message: string }>;
+  warnings: string[];
+};
+
 /* ------------------------------------------------------------------ filters */
 
 /**
@@ -78,13 +142,26 @@ export const QUEUE_SCOPE_LABELS: Record<QueueScope, string> = {
 /** Everything still in flight, for the OPEN scope. */
 export const OPEN_QUEUE_STATUSES = ['PENDING', 'VERIFIED', 'RETURNED'] as const;
 
-export const CORRECTION_CATEGORIES = ['AUTOPAY', 'MAPPING', 'ISSUANCE_DATE', 'OTHERS'] as const;
+export const CORRECTION_CATEGORIES = [
+  'AUTOPAY',
+  'MAPPING',
+  'ISSUANCE_DATE',
+  'AGENT_ID',
+  'OTHERS',
+] as const;
 export type CorrectionCategory = (typeof CORRECTION_CATEGORIES)[number];
 
+/**
+ * The reviewer's shorter labels. Kept separate from the submitter's in
+ * `corrections/schemas.ts` on purpose — a rep needs "Mapping (SM attribution)"
+ * to pick the right category from a list they see once a month, a reviewer
+ * reading forty badges in a column does not.
+ */
 export const CATEGORY_LABELS: Record<CorrectionCategory, string> = {
   AUTOPAY: 'AutoPay',
   MAPPING: 'Mapping',
   ISSUANCE_DATE: 'Issuance date',
+  AGENT_ID: 'Agent ID',
   OTHERS: 'Others',
 };
 

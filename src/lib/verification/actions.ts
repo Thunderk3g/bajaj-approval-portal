@@ -5,12 +5,14 @@ import { revalidatePath } from 'next/cache';
 import { requireRole } from '@/lib/auth/rbac';
 import { fail, ok, zodFieldErrors, type ActionResult } from '@/lib/result';
 import { ApprovalError } from '@/lib/approvals/apply';
+import { runBulk } from '@/lib/approvals/bulk';
+import type { BulkOutcome } from '@/lib/approvals/schemas';
 import {
   returnFromVerification,
   verifyRequest,
   type VerificationOutcome,
 } from './apply';
-import { verifierDecisionSchema } from './schemas';
+import { bulkVerifierDecisionSchema, verifierDecisionSchema } from './schemas';
 
 /**
  * Verifier decisions — 2026-07-28 spec section 3.
@@ -34,14 +36,18 @@ async function requestContext() {
   };
 }
 
-function refresh(requestId: string) {
+function refreshLists() {
   revalidatePath('/verifier');
   revalidatePath('/verifier/queue');
   revalidatePath('/verifier/history');
-  revalidatePath(`/verifier/requests/${requestId}`);
   // The approver's queue depth changes the moment something is verified.
   revalidatePath('/approver');
   revalidatePath('/approver/queue');
+}
+
+function refresh(requestId: string) {
+  refreshLists();
+  revalidatePath(`/verifier/requests/${requestId}`);
 }
 
 function toResult(error: unknown): ActionResult<never> {
@@ -105,4 +111,50 @@ export async function returnFromVerificationAction(
   } catch (error) {
     return toResult(error);
   }
+}
+
+/**
+ * One decision over a selection — the verification queue's batch action.
+ *
+ * The approver's twin, and the same reasoning: `requireRole('verifier')` runs
+ * here because the endpoint is reachable without the page, each id travels the
+ * unmodified single-request path so `lockPending` still decides who wins a race,
+ * and the batch reports per-request rather than collapsing to a total.
+ *
+ * `VerificationOutcome` carries no `warnings`, so `runBulk` contributes none —
+ * its `warnings ?? []` is what lets the two stages share it without the verifier
+ * path having to invent a field it has nothing to put in.
+ */
+export async function bulkVerifyDecideAction(
+  formData: FormData,
+): Promise<ActionResult<BulkOutcome>> {
+  const verifier = await requireRole('verifier');
+
+  const parsed = bulkVerifierDecisionSchema.safeParse({
+    requestIds: formData.getAll('requestIds'),
+    decision: formData.get('decision'),
+    remarks: formData.get('remarks') ?? '',
+  });
+
+  if (!parsed.success) {
+    return fail('Check the highlighted fields.', zodFieldErrors(parsed.error));
+  }
+
+  const { requestIds, decision, remarks } = parsed.data;
+  const context = await requestContext();
+  const input = (requestId: string) => ({ requestId, actor: verifier, remarks, ...context });
+
+  const report = await runBulk(requestIds, (requestId) =>
+    decision === 'VERIFY' ? verifyRequest(input(requestId)) : returnFromVerification(input(requestId)),
+  );
+
+  refreshLists();
+  for (const requestId of report.succeeded) revalidatePath(`/verifier/requests/${requestId}`);
+
+  return ok({
+    decision,
+    applied: report.succeeded.length,
+    failed: report.failed,
+    warnings: report.warnings,
+  });
 }

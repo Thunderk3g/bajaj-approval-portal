@@ -104,6 +104,18 @@ export const salesRecord = pgTable(
     policyNo: text('policy_no'),
     clientName: text('client_name'),
     leadId: text('lead_id'),
+    /**
+     * The agent credited with sourcing the sale — the `Agent_ID` column added to
+     * the business dashboard.
+     *
+     * Text and nullable, like every other identifier here: it is never an
+     * arithmetic operand, and no row that predates the column has one. Carries
+     * no uppercase CHECK — unlike `sm_id`, nothing scopes a book by it, so the
+     * mixed-case collapse that constraint exists to prevent has no equivalent
+     * failure here, and forcing a case the source does not use would make the
+     * portal's value differ from the dashboard's for no gain.
+     */
+    agentId: text('agent_id'),
     smId: text('sm_id').notNull(),
     smName: text('sm_name'),
     tlId: text('tl_id'),

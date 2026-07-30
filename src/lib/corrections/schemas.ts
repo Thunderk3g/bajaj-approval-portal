@@ -28,13 +28,29 @@ import { normalizeDate } from '@/lib/import/dates';
  * control: the action is reachable without the form.
  */
 
-export const CORRECTION_CATEGORIES = ['AUTOPAY', 'MAPPING', 'ISSUANCE_DATE', 'OTHERS'] as const;
+export const CORRECTION_CATEGORIES = [
+  'AUTOPAY',
+  'MAPPING',
+  'ISSUANCE_DATE',
+  'AGENT_ID',
+  'OTHERS',
+] as const;
 export type CorrectionCategory = (typeof CORRECTION_CATEGORIES)[number];
 
+/**
+ * Listed before OTHERS, though the database enum appends it last.
+ *
+ * The two orders answer different questions and are allowed to differ: the enum
+ * order is a storage detail Postgres fixes at ALTER TYPE time, this one is what
+ * a rep reads down in the category dropdown, and OTHERS belongs at the bottom of
+ * that list because it is the fallback for everything the named ones do not
+ * cover. Nothing joins the two — every consumer keys by value.
+ */
 export const CATEGORY_LABELS: Record<CorrectionCategory, string> = {
   AUTOPAY: 'AutoPay',
   MAPPING: 'Mapping (SM attribution)',
   ISSUANCE_DATE: 'Issuance date',
+  AGENT_ID: 'Agent ID',
   OTHERS: 'Other field',
 };
 
@@ -252,6 +268,42 @@ const issuanceDateBranch = z.object({
   description: optionalDescription,
 });
 
+/**
+ * The `Agent_ID` correction — one identifier and nothing else.
+ *
+ * Deliberately thin. There is no roster to check an agent code against the way
+ * `checkTransferTarget` checks an SM_ID, and inventing one would refuse every
+ * correction naming an agent the portal has not seen yet — which is most of
+ * them, since the column arrived after go-live and only three distinct codes
+ * appear in the June file.
+ *
+ * `normalizeIdentifier`, matching the field's `identifier` kind, so a corrected
+ * agent code and an imported one are the same string. It is what refuses
+ * `5.92E+09` — a real hazard here, because the codes are ten-digit numbers that
+ * spend their lives in Excel — rather than storing the display text of a value
+ * that already lost its digits.
+ *
+ * The cap matches `appsNoField`; the real codes are ten characters. Nothing
+ * downstream truncates, so without it a pasted paragraph becomes a permanent
+ * `agent_id` and the queue's change column renders it in full.
+ */
+const agentIdBranch = z.object({
+  category: z.literal('AGENT_ID'),
+  appsNo: appsNoField,
+  proposedValue: z
+    .string()
+    .trim()
+    .max(64, 'That is not an agent code.')
+    .transform((raw) => normalizeIdentifier(raw, 'agentId').value ?? '')
+    .refine((value) => value.length > 0, {
+      // Covers all three ways the transform yields nothing: empty, a source
+      // sentinel like `-`, and scientific notation, which is refused rather
+      // than expanded because expanding it would invent digits.
+      message: 'Enter the agent code as it appears on the dashboard, e.g. 3000000007 or 59L0000000.',
+    }),
+  description: optionalDescription,
+});
+
 const othersBranch = z.object({
   category: z.literal('OTHERS'),
   appsNo: appsNoField,
@@ -275,6 +327,7 @@ export const correctionSubmitSchema = z
     autopayBranch,
     mappingBranch,
     issuanceDateBranch,
+    agentIdBranch,
     othersBranch,
   ])
   // The other three branches know their target field at compile time and
