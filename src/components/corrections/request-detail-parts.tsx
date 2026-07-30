@@ -1,5 +1,5 @@
-import Link from 'next/link';
 import { formatDateTime } from '@/lib/format';
+import { apiPath } from '@/lib/nav';
 import type { RequestAttachment, RequestEvent } from '@/lib/corrections/queries';
 import { Badge, EmptyState, cx } from '@/components/ui';
 
@@ -109,8 +109,14 @@ export function ProofList({ attachments }: { attachments: RequestAttachment[] })
     <ul className="grid gap-3 sm:grid-cols-2">
       {attachments.map((file) => (
         <li key={file.id} className="rounded border border-slate-200 p-2">
-          <Link
-            href={`/api/proofs/${file.id}`}
+          {/* A plain anchor, not next/link. The response is a file, so there is
+              no route for the client router to navigate to and nothing to
+              prefetch — and it puts the proof link on the same footing as the
+              approver's copy in request-view.tsx: one rule, apiPath everywhere,
+              rather than one attribute the framework prefixes and one it does
+              not. tests/lib/nav.test.ts enforces that as a source scan. */}
+          <a
+            href={apiPath(`/api/proofs/${file.id}`)}
             target="_blank"
             rel="noopener noreferrer"
             className="block"
@@ -123,7 +129,7 @@ export function ProofList({ attachments }: { attachments: RequestAttachment[] })
               // proof route is right to refuse.
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={`/api/proofs/${file.id}`}
+                src={apiPath(`/api/proofs/${file.id}`)}
                 alt={file.originalName}
                 className="h-32 w-full rounded border border-slate-100 bg-slate-50 object-contain"
               />
@@ -136,7 +142,7 @@ export function ProofList({ attachments }: { attachments: RequestAttachment[] })
             <p className="mt-2 truncate text-sm font-medium text-slate-800" title={file.originalName}>
               {file.originalName}
             </p>
-          </Link>
+          </a>
 
           <p className="text-xs text-slate-500">
             {formatBytes(file.sizeBytes)}

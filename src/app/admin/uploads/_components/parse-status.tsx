@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { reparseBatchAction } from '@/lib/import/actions';
+import { apiPath } from '@/lib/nav';
 import type { IngestJobStatus } from '@/lib/ingest/types';
 import { Alert, Button } from '@/components/ui';
 
@@ -61,7 +62,7 @@ export function ParseProgress({ jobId, initial }: { jobId: string; initial: JobS
   const poll = useCallback(
     async (signal: AbortSignal) => {
       try {
-        const response = await fetch(`/api/ingest/jobs/${jobId}`, {
+        const response = await fetch(apiPath(`/api/ingest/jobs/${jobId}`), {
           signal,
           cache: 'no-store',
           headers: { accept: 'application/json' },

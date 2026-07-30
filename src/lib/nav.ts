@@ -3,6 +3,26 @@ import type { Role } from '@/lib/auth/rbac';
 export type NavItem = { href: string; label: string };
 
 /**
+ * Prefixes a URL the framework will not rewrite for us.
+ *
+ * `basePath` is applied to `next/link`, `next/navigation` and every emitted
+ * asset URL — but NOT to a string handed to `fetch`, nor to a plain `<a href>`
+ * or `<img src>`. Those three are exactly where the portal reaches its own Route
+ * Handlers, so on the VM, where the app is served under `/reconciliation`, an
+ * unprefixed `/api/...` leaves this application entirely: `shared-nginx` has no
+ * such location, the request falls through to the platform's landing SPA, and
+ * the only symptom is that SPA's router logging `No routes matched location
+ * /api/exports/<id>/download`. Nothing in this app's log at all.
+ *
+ * Read straight off `process.env` on every call rather than hoisted to a
+ * constant: `NEXT_PUBLIC_` values are substituted textually into the client
+ * bundle at build time, and only a direct property access is substituted.
+ */
+export function apiPath(path: string): string {
+  return `${process.env.NEXT_PUBLIC_BASE_PATH ?? ''}${path}`;
+}
+
+/**
  * Sidebar navigation per role.
  *
  * Every href here must live under that role's own prefix — a link is only a

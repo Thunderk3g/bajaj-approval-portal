@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join, sep } from 'node:path';
+import { afterEach, describe, it, expect } from 'vitest';
 import type { Role } from '@/lib/auth/rbac';
-import { navForRole } from '@/lib/nav';
+import { apiPath, navForRole } from '@/lib/nav';
 import { ROLE_PREFIXES, dashboardPathForRole, roleForPath } from '@/lib/auth/redirects';
 
 // Derived from the role map rather than hand-listed. A hand-written list goes
@@ -75,5 +77,62 @@ describe('navForRole', () => {
     const first = navForRole('sales');
     first[0].href = '/admin';
     expect(navForRole('sales')[0].href).toBe('/sales');
+  });
+});
+
+describe('apiPath', () => {
+  const original = process.env.NEXT_PUBLIC_BASE_PATH;
+
+  afterEach(() => {
+    if (original === undefined) delete process.env.NEXT_PUBLIC_BASE_PATH;
+    else process.env.NEXT_PUBLIC_BASE_PATH = original;
+  });
+
+  it('leaves the path alone when the app is served at the root', () => {
+    delete process.env.NEXT_PUBLIC_BASE_PATH;
+    expect(apiPath('/api/notifications')).toBe('/api/notifications');
+  });
+
+  it('prefixes the mount the app is served under', () => {
+    process.env.NEXT_PUBLIC_BASE_PATH = '/reconciliation';
+    expect(apiPath('/api/exports/abc/download')).toBe('/reconciliation/api/exports/abc/download');
+  });
+
+  /**
+   * The reason this is a source scan and not six assertions.
+   *
+   * `basePath` rewrites next/link and every emitted asset URL, so the bug is
+   * invisible in development, where the base path is empty — and invisible in a
+   * unit test, which renders no attributes. It surfaces only on the VM, as the
+   * platform landing SPA answering `/api/...` with HTML and logging "No routes
+   * matched location". Six call sites had it at once for exactly that reason.
+   *
+   * The rule it enforces is therefore uniform, with no exceptions to remember:
+   * a `/api/...` URL in a component goes through `apiPath`, whether it is a
+   * fetch, an href or an img src. That is also why the one proof link that used
+   * next/link (which would have been correct, and would have double-prefixed if
+   * wrapped) is now a plain anchor.
+   */
+  it('is used by every /api URL under src, with none left raw', () => {
+    const root = join(process.cwd(), 'src');
+    const offenders: string[] = [];
+
+    for (const entry of readdirSync(root, { recursive: true, encoding: 'utf8' })) {
+      if (!/\.tsx?$/.test(entry)) continue;
+      // Route Handlers ARE /api/...; they define the paths rather than call them.
+      if (entry.startsWith(`app${sep}api${sep}`)) continue;
+
+      const source = readFileSync(join(root, entry), 'utf8');
+
+      // href/src as a literal, and fetch of a literal. `apiPath('/api/...')`
+      // does not match either: the quote is preceded by `apiPath(`.
+      const raw = /(?:href|src)=\{?['"`]\/api\/|fetch\(\s*['"`]\/api\//g;
+      for (const match of source.matchAll(raw)) {
+        const upto = source.slice(0, match.index);
+        offenders.push(`src/${entry}:${upto.split('\n').length} — ${match[0]}`);
+      }
+    }
+
+    expect(offenders).toEqual([]);
   });
 });

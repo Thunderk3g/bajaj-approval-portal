@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { apiPath } from '@/lib/nav';
 import { markAllNotificationsRead, markNotificationRead } from '@/lib/notifications/actions';
 import { badgeLabel, bellLabel, relativeTime } from './format';
 
@@ -43,7 +44,7 @@ export function NotificationBell() {
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
-      const response = await fetch('/api/notifications', {
+      const response = await fetch(apiPath('/api/notifications'), {
         signal,
         cache: 'no-store',
         headers: { accept: 'application/json' },

@@ -5,6 +5,7 @@ import { db } from '@/db/client';
 import { uploadBatch, user } from '@/db/schema';
 import { requireRole } from '@/lib/auth/rbac';
 import { formatDateTime } from '@/lib/format';
+import { apiPath } from '@/lib/nav';
 import { DEFAULT_DATE_FORMAT, type DateFormat } from '@/lib/import/dates';
 import { suggestMapping } from '@/lib/import/mapping';
 import type { ColumnMapping, SourceColumn, ValidationReport } from '@/lib/import/types';
@@ -18,7 +19,15 @@ import {
   type IngestJobRow,
 } from '@/lib/ingest/queries';
 import type { ParseJobResult } from '@/lib/ingest/types';
-import { Alert, Card, DetailRow, LinkButton, PageHeader, StatusBadge } from '@/components/ui';
+import {
+  Alert,
+  Card,
+  DetailRow,
+  LinkButton,
+  PageHeader,
+  StatusBadge,
+  buttonClass,
+} from '@/components/ui';
 import { DeleteUploadButton } from '../_components/delete-upload-button';
 import { ImportLeadsButton } from '../_components/leads-import';
 import { MappingForm } from '../_components/mapping-form';
@@ -126,9 +135,18 @@ export default async function UploadDetailPage({
         }
         actions={
           <>
-            <LinkButton href={`/api/uploads/${record.id}/original`} prefetch={false}>
+            {/* A plain anchor, not LinkButton: the response is a file, so there
+                is no route for the client router to reach. next/link would
+                apply the base path for us here — which is precisely the
+                inconsistency worth losing, since the sibling proof and export
+                links cannot. apiPath everywhere, enforced by
+                tests/lib/nav.test.ts. */}
+            <a
+              href={apiPath(`/api/uploads/${record.id}/original`)}
+              className={buttonClass('secondary')}
+            >
               Download original
-            </LinkButton>
+            </a>
             <LinkButton href="/admin/uploads">Back to uploads</LinkButton>
           </>
         }

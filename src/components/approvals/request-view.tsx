@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { Alert, Badge, Card, DetailRow, EmptyState, StatusBadge, cx } from '@/components/ui';
 import { formatDate, formatDateTime, formatMoney, orDash } from '@/lib/format';
+import { apiPath } from '@/lib/nav';
 import { CATEGORY_LABELS, type CorrectionCategory } from '@/lib/approvals/schemas';
 import type { MappingContext, RequestDetail } from '@/lib/approvals/queries';
 
@@ -277,7 +278,7 @@ export function ProofList({ attachments }: { attachments: RequestDetail['attachm
           <li key={a.id} className="space-y-2">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <a
-                href={`/api/proofs/${a.id}`}
+                href={apiPath(`/api/proofs/${a.id}`)}
                 target="_blank"
                 rel="noreferrer"
                 className="text-sm font-medium text-slate-900 underline underline-offset-2 hover:text-slate-600"
@@ -293,7 +294,7 @@ export function ProofList({ attachments }: { attachments: RequestDetail['attachm
             {a.mimeType.startsWith('image/') ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={`/api/proofs/${a.id}`}
+                src={apiPath(`/api/proofs/${a.id}`)}
                 alt={a.originalName}
                 className="max-h-96 w-auto max-w-full rounded border border-slate-200"
               />

@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { committedBatches, listExports } from '@/lib/export/queries';
 import { describeFilters } from '@/lib/export/schemas';
 import { formatDateTime } from '@/lib/format';
+import { apiPath } from '@/lib/nav';
 import { buttonClass, Card, EmptyState, PageHeader, Table, Td, Th } from '@/components/ui';
 import { ExportForm } from './export-form';
 
@@ -72,9 +73,11 @@ export default async function ExportsPage() {
                     <Td className="text-right tabular-nums">{row.downloadCount}</Td>
                     <Td>
                       {/* A plain anchor, not next/link: the response is a file,
-                          and there is no page for the router to navigate to. */}
+                          and there is no page for the router to navigate to.
+                          Which is also why the base path has to be added by
+                          hand — see apiPath. */}
                       <a
-                        href={`/api/exports/${row.id}/download`}
+                        href={apiPath(`/api/exports/${row.id}/download`)}
                         className={buttonClass('secondary', 'px-2.5 py-1.5')}
                       >
                         Download
