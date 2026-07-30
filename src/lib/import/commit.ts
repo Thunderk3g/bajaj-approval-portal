@@ -60,32 +60,33 @@ function recordValuesFrom(normalized: Record<string, string | null>): RecordValu
   return values;
 }
 
-function insertPayload(values: RecordValues) {
-  return {
-    appsNo: values.appsNo as string,
-    policyNo: values.policyNo,
-    clientName: values.clientName,
-    leadId: values.leadId,
-    smId: values.smId as string,
-    smName: values.smName,
-    tlId: values.tlId,
-    tlName: values.tlName,
-    ccmId: values.ccmId,
-    ccmName: values.ccmName,
-    location: values.location,
-    loginDate: values.loginDate,
-    issuedDate: values.issuedDate,
-    fp: values.fp,
-    anp: values.anp,
-    productName: values.productName,
-    productType: values.productType,
-    productVariant: values.productVariant,
-    bookingFrequency: values.bookingFrequency,
-    payMode: values.payMode,
-    status: values.status,
-    status2: values.status2,
-    autopay: values.autopay,
-  };
+/**
+ * Derived from `CANONICAL_FIELDS`, never hand-listed.
+ *
+ * It WAS a hand-written list of the twenty-three columns, and that is a bug
+ * waiting on the next field: adding one to the registry wires up the mapper, the
+ * validator, the export, the correction forms and the re-import UPDATE path —
+ * every one of which iterates the registry — while INSERT silently keeps writing
+ * the old set. The column then exists, corrections against it work, and it is
+ * NULL on every record a first import ever created, with nothing failing
+ * anywhere to say so.
+ *
+ * That is exactly what happened when `agentId` was added: the update path picked
+ * it up for free (it loops CANONICAL_FIELDS at the conflict check below) and
+ * only new records lost it, which is the half that no test covered.
+ *
+ * `recordValuesFrom` directly above already derives the same list. The two
+ * disagreeing was the whole defect.
+ */
+/** Exposed for tests — the registry-coverage assertion is the guard on all of this. */
+export function insertPayload(values: RecordValues) {
+  const payload: RecordValues = {};
+  for (const field of CANONICAL_FIELDS) payload[field.key] = values[field.key] ?? null;
+
+  // The two NOT NULL columns. Validation guarantees both are present on a row
+  // that reaches here — `REQUIRED_FIELD_KEYS` blocks the commit otherwise — so
+  // this narrows the type rather than asserting anything new.
+  return payload as RecordValues & { appsNo: string; smId: string };
 }
 
 function gapsOf(values: RecordValues): string[] {

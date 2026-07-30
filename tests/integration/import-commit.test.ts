@@ -15,7 +15,8 @@ import {
   uploadBatchRow,
 } from '@/db/schema';
 import type { SessionUser } from '@/lib/auth/rbac';
-import { commitBatch } from '@/lib/import/commit';
+import { commitBatch, insertPayload } from '@/lib/import/commit';
+import { CANONICAL_FIELDS } from '@/lib/fields';
 import { suggestMapping } from '@/lib/import/mapping';
 import { readSheet } from '@/lib/import/parse';
 import { loadMasterSnapshots, stageRows } from '@/lib/import/stage';
@@ -113,6 +114,48 @@ async function recordFor(appsNo: string) {
   const [row] = await db.select().from(salesRecord).where(eq(salesRecord.appsNo, appsNo));
   return row;
 }
+
+describe('what a first import is allowed to write', () => {
+  it('writes every canonical field, so a new one cannot be added to the registry and missed', () => {
+    /*
+     * This is a regression test for a bug that shipped.
+     *
+     * `insertPayload` used to restate the twenty-three record columns by hand.
+     * Adding `agentId` to CANONICAL_FIELDS wired up the mapper, the validator,
+     * the export, the correction forms and the re-import UPDATE path — all of
+     * which iterate the registry — while INSERT went on writing the old set. So
+     * the column existed, corrections against it worked, re-imported records
+     * picked it up, and every record created by a FIRST import had it NULL
+     * forever, with nothing failing anywhere to say so.
+     *
+     * The fixture workbook carries no agent column, so no end-to-end commit test
+     * could have caught it. What the defect actually was is a set difference,
+     * and this asserts the set difference directly.
+     */
+    const values = Object.fromEntries(
+      CANONICAL_FIELDS.map((f) => [f.key, `value-for-${f.key}`]),
+    ) as Record<string, string>;
+
+    const payload = insertPayload(values);
+
+    expect(Object.keys(payload).sort()).toEqual(CANONICAL_FIELDS.map((f) => f.key).sort());
+
+    // Not just present — carrying the value it was given. A key mapped to
+    // undefined would satisfy the comparison above and still write nothing.
+    for (const field of CANONICAL_FIELDS) {
+      expect(payload[field.key]).toBe(`value-for-${field.key}`);
+    }
+  });
+
+  it('nulls a field the row has no value for rather than dropping the column', () => {
+    // Drizzle omits an undefined key from the INSERT entirely, which on a
+    // re-created record would leave the previous default rather than the blank
+    // the file actually asserted.
+    const payload = insertPayload({ appsNo: '6167509575', smId: SM.SPLIT_CASE });
+    expect(payload.agentId).toBeNull();
+    expect('agentId' in payload).toBe(true);
+  });
+});
 
 describe('batch commit', () => {
   let admin: SessionUser;
