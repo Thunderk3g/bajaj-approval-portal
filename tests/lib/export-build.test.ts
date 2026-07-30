@@ -17,6 +17,7 @@ import {
   writeExportWorkbook,
   type ExportCorrection,
   type ExportRecord,
+  type SourceLayout,
 } from '@/lib/export/build';
 import { NO_FILTERS } from '@/lib/export/schemas';
 import { CANONICAL_FIELDS } from '@/lib/fields';
@@ -512,6 +513,105 @@ describe('Export Info sheet (spec 8)', () => {
     expect(infoValue('Records exported')).toBe(2);
     expect(infoValue('Corrections applied')).toBe(2);
     expect(infoValue('Preserved extra columns')).toBe(4);
+  });
+});
+
+describe('the uploaded sheet, updated in place', () => {
+  /**
+   * Source spellings deliberately unlike the canonical labels — `Cust_Name` for
+   * Client name, `AutoPay` in its source position rather than last — so a test
+   * that passes cannot be passing against the canonical layout by coincidence.
+   * `FY` and `RECEIPT_NO` are unmapped and therefore read from `extra`.
+   */
+  const LAYOUT: SourceLayout = {
+    sheetName: 'Login Data',
+    columns: [
+      { key: 'Apps_No', header: 'Apps_No', fieldKey: 'appsNo' },
+      { key: 'FY', header: 'FY', fieldKey: null },
+      { key: 'AutoPay', header: 'AutoPay', fieldKey: 'autopay' },
+      { key: 'Cust_Name', header: 'Cust_Name', fieldKey: 'clientName' },
+      { key: 'RECEIPT_NO', header: 'RECEIPT_NO', fieldKey: null },
+    ],
+  };
+
+  let sheet: Worksheet;
+  let book: Workbook;
+
+  beforeAll(async () => {
+    const path = join(directory, 'source-layout.xlsx');
+
+    await writeExportWorkbook(
+      {
+        records: RECORDS,
+        corrections: CORRECTIONS,
+        periodLabels: PERIOD_LABELS,
+        sourceLayout: LAYOUT,
+        meta: {
+          fileName: 'sales-reconciliation-20260727-1015-v2.xlsx',
+          generatedAt: new Date('2026-07-27T10:15:00.000Z'),
+          generatedByName: 'Admin One',
+          generatedByEmail: 'admin@example.test',
+          filters: { ...NO_FILTERS, batchId: PERIOD_ID, sourceLayout: true },
+          batchLabel: 'June Login Data.xlsb (uploaded 2026-07-01)',
+        },
+      },
+      path,
+    );
+
+    book = new Workbook();
+    await book.xlsx.readFile(path);
+    sheet = book.getWorksheet('Login Data')!;
+  });
+
+  it('names the worksheet after the uploaded sheet', () => {
+    expect(book.worksheets.map((w) => w.name)).toEqual([
+      'Login Data',
+      SHEET_CORRECTIONS,
+      SHEET_INFO,
+    ]);
+  });
+
+  it('writes the source headers verbatim, in source order, and adds none', () => {
+    // The `.toEqual` is the whole feature: an appended Period or
+    // Corrected_Fields column would shift nothing but would still make the file
+    // stop lining up with the one the admin uploaded.
+    expect((sheet.getRow(1).values as unknown[]).slice(1)).toEqual([
+      'Apps_No',
+      'FY',
+      'AutoPay',
+      'Cust_Name',
+      'RECEIPT_NO',
+    ]);
+  });
+
+  it('puts each value under the column it came from', () => {
+    expect(cellAt(sheet, 2, 'Apps_No').value).toBe('5920000001');
+    expect(cellAt(sheet, 2, 'Cust_Name').value).toBe('Ravi Kumar');
+    expect(cellAt(sheet, 2, 'AutoPay').value).toBe('Yes');
+    // Unmapped columns still resolve, out of `extra` under the source key.
+    expect(cellAt(sheet, 2, 'FY').value).toBe('2026-27');
+    expect(cellAt(sheet, 2, 'RECEIPT_NO').value).toBe('900012345');
+  });
+
+  it('highlights the corrected cell and leaves the rest alone', () => {
+    const corrected = cellAt(sheet, 2, 'AutoPay');
+    expect((corrected.fill as { fgColor?: { argb?: string } }).fgColor?.argb).toBe(
+      CORRECTED_FILL_ARGB,
+    );
+    // The highlight is the only record of the change on this sheet, so the
+    // comment behind it has to survive the round-trip too.
+    const note = corrected.note;
+    expect(typeof note === 'string' ? note : JSON.stringify(note)).toContain('Anita Approver');
+
+    const untouched = cellAt(sheet, 2, 'Cust_Name');
+    expect(untouched.note).toBeUndefined();
+    expect((untouched.fill as { pattern?: string } | undefined)?.pattern ?? 'none').not.toBe(
+      'solid',
+    );
+  });
+
+  it('emits one row per record, as the canonical layout does', () => {
+    expect(sheet.actualRowCount).toBe(RECORDS.length + 1);
   });
 });
 

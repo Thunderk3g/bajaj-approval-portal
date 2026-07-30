@@ -13,6 +13,7 @@ import {
   fetchExportRecords,
   nextExportVersion,
   periodLabelsFor,
+  sourceLayoutFor,
 } from './queries';
 import { describeFilters, type ExportFilters } from './schemas';
 
@@ -45,6 +46,11 @@ export async function runExport(
   const corrections = await fetchAppliedCorrections(records.map((r) => r.id));
   const periodLabels = await periodLabelsFor(records);
 
+  // The schema guarantees a batch alongside the flag, so this is the only shape
+  // that can reach here — the `&&` narrows the type rather than defending.
+  const sourceLayout =
+    filters.sourceLayout && filters.batchId ? await sourceLayoutFor(filters.batchId) : null;
+
   const version = await nextExportVersion();
   const fileName = exportFileName(now, version);
 
@@ -52,6 +58,7 @@ export async function runExport(
     records,
     corrections,
     periodLabels,
+    sourceLayout,
     meta: {
       fileName,
       generatedAt: now,

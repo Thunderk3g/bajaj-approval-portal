@@ -95,6 +95,28 @@ export function ExportForm({ batches }: { batches: BatchOption[] }) {
           Corrected records only
         </label>
 
+        <div className="space-y-1.5">
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              name="sourceLayout"
+              className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-500"
+            />
+            Match the uploaded sheet
+          </label>
+          <p className="text-xs text-slate-500">
+            Same columns, same order, nothing added — corrected cells are highlighted. Needs a
+            batch, since the layout belongs to one file.
+          </p>
+          {fieldErrors.sourceLayout
+            ? [fieldErrors.sourceLayout].flat().map((message) => (
+                <p key={message} className="text-xs text-red-700">
+                  {message}
+                </p>
+              ))
+            : null}
+        </div>
+
         <SubmitButton />
       </form>
     </Card>

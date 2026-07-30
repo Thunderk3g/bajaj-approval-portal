@@ -29,6 +29,7 @@ export async function generateExportAction(
     issuedFrom: formData.get('issuedFrom'),
     issuedTo: formData.get('issuedTo'),
     correctedOnly: formData.get('correctedOnly'),
+    sourceLayout: formData.get('sourceLayout'),
   });
 
   if (!parsed.success) {

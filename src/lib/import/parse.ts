@@ -101,10 +101,11 @@ export function findSheet(sheets: SheetInfo[], wanted: string): SheetInfo | null
  * The allowlist is the whole point of the parameter: without it SheetJS parses
  * every sheet in the workbook to hand back the one that was asked for.
  */
-function loadSheet(input: WorkbookInput, sheetName: string): XLSX.WorkSheet {
+function loadSheet(input: WorkbookInput, sheetName: string, sheetRows?: number): XLSX.WorkSheet {
   const workbook = XLSX.read(toBuffer(input), {
     type: 'buffer',
     sheets: [sheetName],
+    ...(sheetRows ? { sheetRows } : {}),
     ...CELL_OPTIONS,
   });
 
@@ -179,7 +180,13 @@ export type ReadSheetOptions = {
 
 export function readSheet(input: WorkbookInput, options: ReadSheetOptions): ParsedSheet {
   const headerRow = Math.max(1, Math.floor(options.headerRow ?? 1));
-  const sheet = loadSheet(input, options.sheetName);
+
+  // `maxRows: 0` asks for the columns and nothing else — the export's
+  // uploaded-layout mode. Truncating the parse there is not a nicety: the source
+  // `.xlsb` costs ~75 s through SheetJS in full (which is why the Python ingest
+  // service exists), and paying it to read one header row would put the export
+  // past nginx's 180 s proxy timeout on a big book.
+  const sheet = loadSheet(input, options.sheetName, options.maxRows === 0 ? headerRow : undefined);
 
   const grid = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
     header: 1,

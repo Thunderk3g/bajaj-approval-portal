@@ -1,8 +1,12 @@
+import { readFile } from 'node:fs/promises';
 import { and, asc, count, desc, eq, gte, inArray, isNotNull, lte, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { db } from '@/db/client';
 import { correctionRequest, excelExport, period, salesRecord, uploadBatch, user } from '@/db/schema';
-import type { ExportCorrection, ExportRecord } from './build';
+import { readSheet } from '@/lib/import/parse';
+import { resolveStoredPath } from '@/lib/storage/paths';
+import type { ExportCorrection, ExportRecord, SourceLayout } from './build';
+import type { ColumnMapping } from '@/lib/import/types';
 import { coerceFilters, type ExportFilters } from './schemas';
 
 /** Reads. Every one of them assumes the caller has already authorized. */
@@ -144,6 +148,62 @@ export async function periodLabelsFor(records: ExportRecord[]): Promise<Map<stri
     .where(inArray(period.id, ids));
 
   return new Map(rows.map((r) => [r.id, r.label]));
+}
+
+/**
+ * The uploaded sheet's column order and header spellings.
+ *
+ * Read out of the stored original, because the batch does not keep the ordered
+ * column list: `column_mapping` says which column fed which field, and the
+ * validation report lists the unmapped ones, but neither records where a column
+ * sat. The file is the only place that survived, and it is also the honest
+ * source — it is what the admin is asking to see their data back in.
+ *
+ * Throws rather than falling back to the canonical layout. An admin who ticked
+ * "uploaded layout" and silently got the other one has a file they will not
+ * check before mailing it on.
+ */
+export async function sourceLayoutFor(batchId: string): Promise<SourceLayout> {
+  const [batch] = await db
+    .select({
+      storedPath: uploadBatch.storedPath,
+      sheetName: uploadBatch.sheetName,
+      headerRow: uploadBatch.headerRow,
+      columnMapping: uploadBatch.columnMapping,
+    })
+    .from(uploadBatch)
+    .where(eq(uploadBatch.id, batchId))
+    .limit(1);
+
+  if (!batch) throw new Error(`Batch ${batchId} not found`);
+  if (!batch.sheetName) throw new Error(`Batch ${batchId} records no sheet name`);
+
+  const buffer = await readFile(resolveStoredPath(batch.storedPath));
+
+  // ponytail: `maxRows: 0` skips building the row objects but SheetJS still
+  // parses the sheet's cells — ~3 s on the 54,000-row book. Give `readSheet` a
+  // headers-only path if that ever shows up next to the export's own cost.
+  const { columns } = readSheet(buffer, {
+    sheetName: batch.sheetName,
+    headerRow: batch.headerRow,
+    maxRows: 0,
+  });
+
+  const fieldByColumn = new Map(
+    Object.entries((batch.columnMapping ?? {}) as ColumnMapping).map(([fieldKey, columnKey]) => [
+      columnKey,
+      fieldKey,
+    ]),
+  );
+
+  return {
+    sheetName: batch.sheetName,
+    columns: columns.map((column) => ({
+      key: column.key,
+      header: column.header,
+      fieldKey: fieldByColumn.get(column.key) ?? null,
+    })),
+  };
 }
 
 /** Names the source batch for the `Export Info` sheet. */

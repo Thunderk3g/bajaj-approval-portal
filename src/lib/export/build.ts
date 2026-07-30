@@ -1,7 +1,7 @@
 import { Workbook, type Cell, type Row, type Worksheet } from 'exceljs';
 import type { InferSelectModel } from 'drizzle-orm';
 import type { salesRecord } from '@/db/schema';
-import { CANONICAL_FIELDS, type FieldKind } from '@/lib/fields';
+import { CANONICAL_FIELDS, FIELD_BY_KEY, type FieldKind } from '@/lib/fields';
 import { describeFilters, type ExportFilters } from './schemas';
 
 /**
@@ -87,10 +87,35 @@ export type ExportMeta = {
   batchLabel: string | null;
 };
 
+/**
+ * The uploaded sheet's own column layout.
+ *
+ * Present when the admin asked for the export to come back in the shape of the
+ * file they handed in: same headers, same order, nothing appended. The updated
+ * values sit in their original columns and a corrected cell is highlighted, so
+ * the file is diffable against the source by eye.
+ *
+ * Read back off the stored original rather than reconstructed from
+ * `upload_batch.column_mapping`, which records which column fed which field but
+ * not where the columns sat or what the unmapped ones were called.
+ */
+export type SourceLayout = {
+  /** The batch's sheet, used as the worksheet name. */
+  sheetName: string;
+  /**
+   * Every source column in worksheet order. `fieldKey` is set for the columns
+   * the import mapped to a canonical field; the rest are read from `extra` by
+   * `key`, which is exactly how the importer stored them.
+   */
+  columns: Array<{ key: string; header: string; fieldKey: string | null }>;
+};
+
 export type ExportInput = {
   records: ExportRecord[];
   corrections: ExportCorrection[];
   meta: ExportMeta;
+  /** Set to write the source sheet's layout instead of the canonical one. */
+  sourceLayout?: SourceLayout | null;
   /**
    * period id → label, for the `Period` column on Master Data.
    *
@@ -318,7 +343,71 @@ function indexCorrections(
   return byRecord;
 }
 
+/** Excel rejects `[]:*?/\` in a tab name and truncates past 31 characters. */
+function safeSheetName(name: string): string {
+  const cleaned = name.replace(/[[\]:*?/\\]/g, ' ').trim().slice(0, 31);
+  return cleaned === '' ? SHEET_MASTER : cleaned;
+}
+
+/**
+ * The uploaded sheet, updated in place.
+ *
+ * Deliberately adds no columns: no `Period`, no correction summary. The whole
+ * point is a file whose columns line up with the one that was handed in, so an
+ * appended column — however useful elsewhere — is the thing that breaks it.
+ * The corrections are still recorded, on the `Corrections Log` sheet and in the
+ * comment on each highlighted cell.
+ */
+function addSourceLayoutSheet(
+  workbook: Workbook,
+  input: ExportInput,
+  layout: SourceLayout,
+): void {
+  const sheet = workbook.addWorksheet(safeSheetName(layout.sheetName), {
+    views: [{ state: 'frozen', ySplit: 1 }],
+  });
+
+  // Verbatim, including a blank one: a synthesised name would put a header on a
+  // column the source left untitled.
+  const headers = layout.columns.map((column) => column.header);
+
+  styleHeaderRow(sheet.addRow(headers), headers.length);
+  sizeColumns(sheet, headers);
+  sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: headers.length } };
+
+  const byRecord = indexCorrections(input.corrections);
+
+  for (const record of input.records) {
+    const applied = byRecord.get(record.id);
+    const values = record as unknown as Record<string, unknown>;
+    const extra = (record.extra ?? {}) as Record<string, unknown>;
+
+    const cells = layout.columns.map((column) => {
+      const field = column.fieldKey ? FIELD_BY_KEY.get(column.fieldKey) : undefined;
+      // No field means the column was never mapped, so its value only ever
+      // lived in `extra` under the source column key.
+      return field
+        ? prepareCanonicalCell(field.kind, values[field.key])
+        : prepareExtraCell(extra[column.key]);
+    });
+
+    const row = sheet.addRow(cells.map((cell) => cell.value));
+    applyPrepared(row, cells);
+
+    if (!applied) continue;
+    layout.columns.forEach((column, index) => {
+      const correction = column.fieldKey ? applied.get(column.fieldKey) : undefined;
+      if (correction) annotateCorrectedCell(row.getCell(index + 1), correction);
+    });
+  }
+}
+
 function addMasterSheet(workbook: Workbook, input: ExportInput): void {
+  if (input.sourceLayout) {
+    addSourceLayoutSheet(workbook, input, input.sourceLayout);
+    return;
+  }
+
   const sheet = workbook.addWorksheet(SHEET_MASTER, {
     views: [{ state: 'frozen', ySplit: 1 }],
   });
@@ -468,6 +557,7 @@ function addInfoSheet(workbook: Workbook, input: ExportInput): void {
     ['Filter — issued from', { value: meta.filters.issuedFrom }],
     ['Filter — issued to', { value: meta.filters.issuedTo }],
     ['Filter — corrected records only', { value: meta.filters.correctedOnly ? 'Yes' : 'No' }],
+    ['Layout', { value: input.sourceLayout ? `Uploaded sheet "${input.sourceLayout.sheetName}"` : 'Canonical columns' }],
     ['Source batch', { value: meta.batchLabel ?? 'All batches' }],
     ['Records exported', { value: input.records.length }],
     ['Corrections applied', { value: input.corrections.length }],

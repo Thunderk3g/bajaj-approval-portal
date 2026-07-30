@@ -16,6 +16,15 @@ export type ExportFilters = {
   issuedFrom: string | null;
   issuedTo: string | null;
   correctedOnly: boolean;
+  /**
+   * Write the batch's own sheet back out instead of the canonical layout.
+   *
+   * Not a filter on the rows, but it lives here because it is part of what
+   * produced the file, and `excel_export.filters` is the only record of that.
+   * "Why does last month's export have different columns?" is otherwise
+   * unanswerable a year later.
+   */
+  sourceLayout: boolean;
 };
 
 export const NO_FILTERS: ExportFilters = {
@@ -24,6 +33,7 @@ export const NO_FILTERS: ExportFilters = {
   issuedFrom: null,
   issuedTo: null,
   correctedOnly: false,
+  sourceLayout: false,
 };
 
 /**
@@ -63,10 +73,17 @@ export const exportFiltersSchema = z
     issuedFrom: z.preprocess(blankToNull, z.iso.date('Use the date picker').nullable()),
     issuedTo: z.preprocess(blankToNull, z.iso.date('Use the date picker').nullable()),
     correctedOnly: z.preprocess(toBoolean, z.boolean()),
+    sourceLayout: z.preprocess(toBoolean, z.boolean()),
   })
   .refine((f) => !f.issuedFrom || !f.issuedTo || f.issuedFrom <= f.issuedTo, {
     path: ['issuedTo'],
     message: 'The end of the range is before its start',
+  })
+  // A column layout belongs to one uploaded file. Two batches need not agree on
+  // their columns, so an unscoped export has no single sheet to reproduce.
+  .refine((f) => !f.sourceLayout || f.batchId !== null, {
+    path: ['sourceLayout'],
+    message: 'Pick the batch whose layout you want',
   });
 
 /**
@@ -100,5 +117,6 @@ export function describeFilters(
   if (filters.issuedFrom) parts.push(`Issued on or after ${filters.issuedFrom}`);
   if (filters.issuedTo) parts.push(`Issued on or before ${filters.issuedTo}`);
   if (filters.correctedOnly) parts.push('Corrected records only');
+  if (filters.sourceLayout) parts.push('Uploaded sheet layout');
   return parts.length ? parts : ['All records'];
 }
