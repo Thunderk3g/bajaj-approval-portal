@@ -116,13 +116,16 @@ export function VerifyForm({
         />
       </Field>
 
-      <div className="flex flex-wrap gap-2">
-        <Button type="button" disabled={pending} onClick={() => submit('VERIFY')}>
+      {/* Stacked and full width: this form sits in the decision screen's narrow
+          sticky rail, where a wrapping row gives two buttons of different sizes. */}
+      <div className="flex flex-col gap-2">
+        <Button type="button" className="w-full" disabled={pending} onClick={() => submit('VERIFY')}>
           {pending ? 'Working…' : LABELS.VERIFY}
         </Button>
         <Button
           type="button"
           variant="secondary"
+          className="w-full"
           disabled={pending}
           onClick={() => submit('RETURN')}
         >
@@ -130,7 +133,7 @@ export function VerifyForm({
         </Button>
       </div>
 
-      <p className="text-xs text-slate-500">
+      <p className="text-[11px] leading-snug text-slate-500">
         Verifying does not change the record — it passes the request to an approver, who applies
         it. If this correction should not go ahead at all, return it with a reason; only an
         approver can reject a request outright.

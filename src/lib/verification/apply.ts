@@ -1,23 +1,26 @@
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db } from '@/db/client';
-import { correctionEvent, correctionRequest, salesRecord } from '@/db/schema';
-import { writeAudit, type DbTransaction } from '@/lib/audit/log';
-import { notifyActiveApprovers, notifyMany } from '@/lib/notifications/service';
-import { CATEGORY_LABELS, type CorrectionCategory } from '@/lib/approvals/schemas';
-import { ApprovalError, type DecisionActor } from '@/lib/approvals/apply';
+import { correctionRequest, salesRecord } from '@/db/schema';
+import { decideStage, type DecideStageOutcome } from '@/lib/workflows/engine';
+import { WorkflowError } from '@/lib/workflows/errors';
+import { ApprovalError, type DecisionActor } from '@/lib/approvals/record-apply';
 
 /**
- * The verification stage — 2026-07-28 spec section 3.
+ * The verification stage — 2026-07-28 spec section 3, now the first rung of a
+ * configurable chain (2026-08-06 spec section 4).
  *
- * The first of two gates. A request leaves PENDING only through here, and the
- * approval transaction accepts nothing but VERIFIED, so this module is the sole
- * path from "a rep claimed something" to "an approver may act on it".
+ * These two functions are adapters, not a second state machine. Under the
+ * two-stage chains every category ships with, "verify" is exactly "advance the
+ * first rung" and "return from verification" is exactly "return it", so the verbs
+ * the verifier UI and its tests already speak map straight through. Under a
+ * longer chain the same verb advances whichever rung that verifier is actually
+ * standing on, which is what makes a mapping request's V2 work without a third
+ * module appearing beside this one.
  *
  * `ApprovalError` is reused rather than a parallel `VerificationError` being
  * introduced. The failures are the same failures — the request vanished, or
  * somebody else already moved it — and the actions layer maps that one type onto
- * the form contract. A second error class would mean two catch branches doing
- * identical work, and a third when the next stage arrives.
+ * the form contract.
  */
 
 export type VerificationOutcome = {
@@ -25,9 +28,10 @@ export type VerificationOutcome = {
   appsNo: string;
   status: 'VERIFIED' | 'RETURNED';
   /**
-   * How many approvers were notified. Zero means the request is now in a queue
-   * nobody is subscribed to — surfaced to the verifier rather than swallowed,
-   * because from the rep's side that is indistinguishable from progress.
+   * How many people were notified at the next rung. Zero means the request is
+   * now in a queue nobody is subscribed to — surfaced to the verifier rather than
+   * swallowed, because from the rep's side that is indistinguishable from
+   * progress.
    */
   notified: number;
 };
@@ -40,230 +44,87 @@ export type VerificationInput = {
   userAgent?: string | null;
 };
 
+async function viaEngine(
+  input: VerificationInput,
+  decision: 'ADVANCE' | 'RETURN',
+): Promise<DecideStageOutcome> {
+  try {
+    return await decideStage({ ...input, decision });
+  } catch (error) {
+    if (error instanceof WorkflowError) {
+      throw new ApprovalError(
+        error.code === 'NOT_FOUND'
+          ? 'NOT_FOUND'
+          : error.code === 'INVALID_VALUE'
+            ? 'INVALID_VALUE'
+            : 'NOT_PENDING',
+        error.message,
+      );
+    }
+    throw error;
+  }
+}
+
 /**
- * Locks the request at PENDING and returns it, or throws.
+ * Passes the rung this verifier is standing on.
  *
- * `FOR UPDATE` on the request row is enough here — unlike approval, nothing
- * touches `sales_record`, so there is no second row two actors could race for.
- * What it does prevent is two verifiers passing the same request, which would
- * write two VERIFIED events and notify the approvers twice for one claim.
- *
- * The status predicate is inside the WHERE, not checked after the read: a
- * check-then-act on a row read outside the lock is exactly the window this is
- * closing.
+ * Deliberately does NOT touch `sales_record` unless the rung it advances is the
+ * LAST one. Verification is an assertion that the claim and its proof hang
+ * together, not an application of the change — applying it early would leave the
+ * next reviewer deciding whether to keep a change that had already landed, which
+ * is a different and much weaker question than the one they are there to answer.
+ * Under the standard chains the last rung is always an approver's, so this
+ * function never applies anything; the guard below says so out loud rather than
+ * relying on that staying true.
  */
-async function lockPending(tx: DbTransaction, requestId: string) {
-  const [request] = await tx
-    .select()
-    .from(correctionRequest)
-    .where(and(eq(correctionRequest.id, requestId), eq(correctionRequest.status, 'PENDING')))
-    .limit(1)
-    .for('update');
+export async function verifyRequest(input: VerificationInput): Promise<VerificationOutcome> {
+  const outcome = await viaEngine(input, 'ADVANCE');
 
-  if (request) return request;
-
-  const [exists] = await tx
-    .select({ status: correctionRequest.status })
-    .from(correctionRequest)
-    .where(eq(correctionRequest.id, requestId))
-    .limit(1);
-
-  if (!exists) {
-    throw new ApprovalError('NOT_FOUND', 'That correction request no longer exists.');
+  if (outcome.kind === 'APPLIED') {
+    // Reachable only from a chain whose final rung resolves to a verifier, which
+    // no shipped chain does. Reported rather than silently returning VERIFIED:
+    // the record HAS changed, and a caller told otherwise would show the rep a
+    // request still in review.
+    throw new ApprovalError(
+      'NOT_PENDING',
+      'That step was the final one and applied the correction directly. Reload to see the result.',
+    );
+  }
+  if (outcome.kind !== 'ADVANCED') {
+    throw new ApprovalError('NOT_PENDING', `This request was ${outcome.kind.toLowerCase()}.`);
   }
 
-  // Naming the status it actually holds, because the three reachable cases need
-  // three different responses from the reader: VERIFIED means a colleague got
-  // there first, RETURNED/WITHDRAWN means it went back to the rep, and
-  // APPROVED/REJECTED means it is already finished.
-  throw new ApprovalError(
-    'NOT_PENDING',
-    exists.status === 'VERIFIED'
-      ? 'Another verifier has already passed this request to the approvers. Reload to see it.'
-      : `This request is ${exists.status.toLowerCase()} and is no longer awaiting verification.`,
-  );
-}
-
-/* ----------------------------------------------------------------- verify */
-
-export async function verifyRequest(input: VerificationInput): Promise<VerificationOutcome> {
-  return db.transaction((tx) => verifyWithin(tx, input));
+  return {
+    requestId: outcome.requestId,
+    appsNo: outcome.appsNo,
+    status: 'VERIFIED',
+    notified: outcome.notified,
+  };
 }
 
 /**
- * PENDING → VERIFIED.
+ * Sends the request back to the submitter.
  *
- * Deliberately does NOT touch `sales_record`. Verification is an assertion that
- * the claim and its proof hang together, not an application of the change —
- * applying it here would leave the approver deciding whether to keep a change
- * that had already landed, which is a different and much weaker question than
- * the one they are there to answer.
+ * The same terminal status an approver's return produces, on purpose: the request
+ * lands in the same place and the rep does the same thing next, so one
+ * resubmission path serves both. Which rung sent it back is answered by the
+ * `stage_key` on the event row, which the timeline renders.
  */
-export async function verifyWithin(
-  tx: DbTransaction,
-  input: VerificationInput,
-): Promise<VerificationOutcome> {
-  const remarks = input.remarks?.trim() || null;
-  const request = await lockPending(tx, input.requestId);
-  const verifiedAt = new Date();
-
-  await tx
-    .update(correctionRequest)
-    .set({ status: 'VERIFIED', verifiedBy: input.actor.id, verifiedAt, verifierRemarks: remarks })
-    .where(eq(correctionRequest.id, request.id));
-
-  await tx.insert(correctionEvent).values({
-    requestId: request.id,
-    action: 'VERIFIED',
-    actorId: input.actor.id,
-    fromStatus: 'PENDING',
-    toStatus: 'VERIFIED',
-    remarks,
-  });
-
-  await writeAudit(
-    {
-      actor: input.actor,
-      action: 'CORRECTION_VERIFY',
-      entityType: 'correction_request',
-      entityId: request.id,
-      before: { status: 'PENDING' },
-      after: { status: 'VERIFIED', verifierRemarks: remarks },
-      metadata: {
-        appsNo: request.appsNo,
-        category: request.category,
-        fieldName: request.fieldName,
-        submittedBy: request.submittedBy,
-      },
-      ipAddress: input.ipAddress ?? null,
-      userAgent: input.userAgent ?? null,
-    },
-    tx,
-  );
-
-  const categoryLabel =
-    CATEGORY_LABELS[request.category as CorrectionCategory] ?? request.category;
-
-  const notified = await notifyActiveApprovers(
-    {
-      type: 'CORRECTION_VERIFIED',
-      title: `Verified ${categoryLabel} correction — ${request.appsNo}`,
-      body: `${request.fieldLabel}: ${request.originalValue ?? '(blank)'} → ${request.proposedValue}${
-        remarks ? ` · Verifier: ${remarks}` : ''
-      }`,
-      link: `/approver/requests/${request.id}`,
-    },
-    tx,
-  );
-
-  // The rep is told too. Without it, the only observable difference between
-  // "waiting on a verifier" and "waiting on an approver" is a status word they
-  // would have to go looking for.
-  await notifyMany(
-    [
-      {
-        userId: request.submittedBy,
-        type: 'CORRECTION_VERIFIED',
-        title: `Verified — ${request.appsNo}`,
-        body: `Your ${categoryLabel.toLowerCase()} correction passed verification and is now with an approver.`,
-        link: `/sales/requests/${request.id}`,
-      },
-    ],
-    tx,
-  );
-
-  return { requestId: request.id, appsNo: request.appsNo, status: 'VERIFIED', notified };
-}
-
-/* ----------------------------------------------------------------- return */
-
 export async function returnFromVerification(
   input: VerificationInput,
 ): Promise<VerificationOutcome> {
-  return db.transaction((tx) => returnFromVerificationWithin(tx, input));
-}
+  const outcome = await viaEngine(input, 'RETURN');
 
-/**
- * PENDING → RETURNED, at the verifier's request.
- *
- * The same terminal status an approver's return produces, on purpose: the
- * request lands in the same place and the rep does the same thing next, so one
- * resubmission path serves both. Which stage sent it back is answered by the
- * actor's role on the event row, which the timeline renders.
- */
-export async function returnFromVerificationWithin(
-  tx: DbTransaction,
-  input: VerificationInput,
-): Promise<VerificationOutcome> {
-  const remarks = input.remarks?.trim() || null;
-  if (!remarks) {
-    throw new ApprovalError(
-      'INVALID_VALUE',
-      'Remarks are required so the submitter knows what to change.',
-    );
+  if (outcome.kind !== 'RETURNED') {
+    throw new ApprovalError('NOT_PENDING', 'That decision did not return the request.');
   }
 
-  const request = await lockPending(tx, input.requestId);
-  const decidedAt = new Date();
-
-  // verifiedAt is set even though the outcome is a return: it records that this
-  // request was looked at and when, which is what the verifier's own history and
-  // the stage-ageing numbers are counted from. verifiedBy names who looked, not
-  // who approved — the status column already says the outcome was RETURNED.
-  await tx
-    .update(correctionRequest)
-    .set({
-      status: 'RETURNED',
-      verifiedBy: input.actor.id,
-      verifiedAt: decidedAt,
-      verifierRemarks: remarks,
-    })
-    .where(eq(correctionRequest.id, request.id));
-
-  await tx.insert(correctionEvent).values({
-    requestId: request.id,
-    action: 'RETURNED',
-    actorId: input.actor.id,
-    fromStatus: 'PENDING',
-    toStatus: 'RETURNED',
-    remarks,
-  });
-
-  await writeAudit(
-    {
-      actor: input.actor,
-      action: 'CORRECTION_RETURN_VERIFIER',
-      entityType: 'correction_request',
-      entityId: request.id,
-      before: { status: 'PENDING' },
-      after: { status: 'RETURNED', verifierRemarks: remarks },
-      metadata: {
-        appsNo: request.appsNo,
-        category: request.category,
-        fieldName: request.fieldName,
-        submittedBy: request.submittedBy,
-        stage: 'VERIFICATION',
-      },
-      ipAddress: input.ipAddress ?? null,
-      userAgent: input.userAgent ?? null,
-    },
-    tx,
-  );
-
-  await notifyMany(
-    [
-      {
-        userId: request.submittedBy,
-        type: 'CORRECTION_RETURNED_BY_VERIFIER',
-        title: `More information needed — ${request.appsNo}`,
-        body: remarks,
-        link: `/sales/requests/${request.id}`,
-      },
-    ],
-    tx,
-  );
-
-  return { requestId: request.id, appsNo: request.appsNo, status: 'RETURNED', notified: 0 };
+  return {
+    requestId: outcome.requestId,
+    appsNo: outcome.appsNo,
+    status: 'RETURNED',
+    notified: 0,
+  };
 }
 
 /* ---------------------------------------------------------------- preview */

@@ -60,7 +60,7 @@ export function ReviewPanel({
   const { totals } = report;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <StatCard label="Rows parsed" value={totals.rows.toLocaleString('en-IN')} />
         <StatCard label="Will commit" value={totals.valid.toLocaleString('en-IN')} tone="success" />
@@ -112,10 +112,16 @@ export function ReviewPanel({
                 return (
                   <tr key={key}>
                     <Td className="tabular-nums">{conflict.rowNumber}</Td>
-                    <Td className="font-mono text-xs">{conflict.appsNo}</Td>
-                    <Td>{conflict.label}</Td>
-                    <Td className="font-medium text-emerald-800">{conflict.currentValue ?? '—'}</Td>
-                    <Td className="text-amber-800">{conflict.incomingValue ?? '—'}</Td>
+                    <Td className="font-mono text-[12px]">{conflict.appsNo}</Td>
+                    <Td className="text-[12px]">{conflict.label}</Td>
+                    {/* Both values monospaced: the whole decision on this row is
+                        whether two strings differ in a way that matters. */}
+                    <Td className="font-mono text-[12px] font-medium text-emerald-800">
+                      {conflict.currentValue ?? '—'}
+                    </Td>
+                    <Td className="font-mono text-[12px] text-amber-800">
+                      {conflict.incomingValue ?? '—'}
+                    </Td>
                     <Td>
                       <input
                         type="checkbox"
@@ -158,10 +164,10 @@ export function ReviewPanel({
               {report.errors.slice(0, VISIBLE).map((problem) => (
                 <tr key={problem.rowNumber}>
                   <Td className="tabular-nums">{problem.rowNumber}</Td>
-                  <Td className="font-mono text-xs">{problem.appsNo ?? '—'}</Td>
+                  <Td className="font-mono text-[12px]">{problem.appsNo ?? '—'}</Td>
                   <Td>
                     {problem.issues.map((issue, index) => (
-                      <p key={`${issue.code}-${index}`} className="text-red-800">
+                      <p key={`${issue.code}-${index}`} className="text-[12px] text-red-800">
                         {issue.message}
                       </p>
                     ))}
@@ -190,7 +196,7 @@ export function ReviewPanel({
               {report.duplicates.slice(0, VISIBLE).map((duplicate) => (
                 <tr key={duplicate.rowNumber}>
                   <Td className="tabular-nums">{duplicate.rowNumber}</Td>
-                  <Td className="font-mono text-xs">{duplicate.appsNo}</Td>
+                  <Td className="font-mono text-[12px]">{duplicate.appsNo}</Td>
                   <Td className="tabular-nums">{duplicate.duplicateOfRow}</Td>
                 </tr>
               ))}
@@ -216,10 +222,10 @@ export function ReviewPanel({
               {report.warnings.slice(0, VISIBLE).map((problem) => (
                 <tr key={problem.rowNumber}>
                   <Td className="tabular-nums">{problem.rowNumber}</Td>
-                  <Td className="font-mono text-xs">{problem.appsNo ?? '—'}</Td>
+                  <Td className="font-mono text-[12px]">{problem.appsNo ?? '—'}</Td>
                   <Td>
                     {problem.issues.map((issue, index) => (
-                      <p key={`${issue.code}-${index}`} className="text-amber-800">
+                      <p key={`${issue.code}-${index}`} className="text-[12px] text-amber-800">
                         {issue.message}
                       </p>
                     ))}

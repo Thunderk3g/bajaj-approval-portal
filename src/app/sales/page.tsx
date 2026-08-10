@@ -53,7 +53,7 @@ export default async function SalesDashboardPage() {
       />
 
       {requests.returned > 0 ? (
-        <div className="mb-6">
+        <div className="mb-4">
           <Alert
             tone="warning"
             title={`${n(requests.returned)} request${
@@ -70,7 +70,7 @@ export default async function SalesDashboardPage() {
         </div>
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           label="My records"
           value={n(records.total)}
@@ -106,7 +106,7 @@ export default async function SalesDashboardPage() {
         />
       </div>
 
-      <div className="mt-6 grid gap-6 lg:grid-cols-2">
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <Card
           title="My worklist"
           description="Only issued applications count as a gap — a blank on a pending application is correct."

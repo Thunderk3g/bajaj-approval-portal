@@ -6,8 +6,11 @@ import { eq } from 'drizzle-orm';
 import { db } from '@/db/client';
 import {
   auditLog,
+  correctionRequest,
   ingestJob,
   lead,
+  manpower,
+  manpowerOverride,
   salesRecord,
   uploadBatch,
   uploadBatchRow,
@@ -213,13 +216,46 @@ describe('deleting an upload removes all of it', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.data).toEqual({ leadsRemoved: 2, fileRemoved: true });
+    // recordsRemoved is 0 on a batch that never committed — there are no master
+    // records to take with it.
+    expect(result.data).toEqual({ leadsRemoved: 2, fileRemoved: true, recordsRemoved: 0 });
 
     // Three different mechanisms: upload_batch_row and ingest_job go by
     // ON DELETE CASCADE, the leads had to be deleted explicitly, and the file is
     // not in the database at all. Any one of them can regress alone.
     expect(await survivors(seeded.batchId)).toEqual(GONE);
     expect(existsSync(seeded.absolutePath)).toBe(false);
+  });
+
+  it('deletes a draft whose roster step has already run, and takes that roster with it', async () => {
+    /**
+     * The regression this file exists to prevent, and it reached production.
+     *
+     * The roster step runs BEFORE the policy commit — it is step 1 on the review
+     * screen — so a batch that is still VALIDATED can already own `manpower`
+     * rows. The cleanup used to sit inside the COMMITTED branch, leaving
+     * `manpower.source_batch_id` pointing at a batch the delete was trying to
+     * remove: Postgres refused with
+     * `manpower_source_batch_id_upload_batch_id_fk`, and the admin was told
+     * "other data still refers to it" about a step the same page had just walked
+     * them through. Every such upload was undeletable.
+     */
+    const seeded = await seedBatch(admin.id, { status: 'VALIDATED' });
+    await db.insert(manpower).values([
+      { smId: SM_CODE, smName: 'Aarti Rep', tlId: 'TL001', ccmId: 'CCM001', sourceBatchId: seeded.batchId },
+      { smId: 'ICCS999999', smName: 'Other Rep', tlId: 'TL001', ccmId: 'CCM001', sourceBatchId: seeded.batchId },
+      // Written by an earlier import: it has no reference to this batch and must
+      // survive, or deleting one upload would empty the whole roster.
+      { smId: 'ICCS111111', smName: 'Earlier Rep', tlId: 'TL002', ccmId: 'CCM001' },
+    ]);
+
+    const result = await deleteBatchAction({ batchId: seeded.batchId });
+
+    expect(result.ok).toBe(true);
+    expect(await survivors(seeded.batchId)).toEqual(GONE);
+    expect((await db.select({ smId: manpower.smId }).from(manpower)).map((r) => r.smId)).toEqual([
+      'ICCS111111',
+    ]);
   });
 
   it('leaves the audit entry standing as the only evidence the file ever existed', async () => {
@@ -284,7 +320,7 @@ describe('a stored file that has already gone', () => {
     // The row is gone, so the upload is gone from the admin's point of view.
     // Calling the whole delete failed would invite a retry that can no longer do
     // anything, and would leave them believing the batch is still there.
-    expect(result.data).toEqual({ leadsRemoved: 2, fileRemoved: false });
+    expect(result.data).toEqual({ leadsRemoved: 2, fileRemoved: false, recordsRemoved: 0 });
     expect(await survivors(seeded.batchId)).toEqual(GONE);
 
     const [entry] = await db.select().from(auditLog).where(eq(auditLog.action, 'UPLOAD_DELETE'));
@@ -292,15 +328,142 @@ describe('a stored file that has already gone', () => {
   });
 });
 
+/**
+ * Removing a committed upload — the destructive path, spec §4 (2026-08-06).
+ *
+ * A committed batch cannot simply be dropped: every record it created points
+ * back at it. The honest reading of "delete it" is therefore to take those
+ * records too, which is a different act from deleting a draft and is gated
+ * accordingly.
+ */
+describe('purging a committed upload', () => {
+  async function seedCommittedWithRecord() {
+    const seeded = await seedBatch(admin.id, { status: 'COMMITTED' });
+    const [record] = await db
+      .insert(salesRecord)
+      .values({
+        appsNo: `PURGE-${randomUUID().slice(0, 8)}`,
+        smId: SM_CODE,
+        status: 'ISSUED',
+        sourceBatchId: seeded.batchId,
+        sourceRowNumber: 2,
+      })
+      .returning();
+    return { seeded, record };
+  }
+
+  it('asks for the record count before destroying anything', async () => {
+    const { seeded } = await seedCommittedWithRecord();
+
+    const result = await deleteBatchAction({ batchId: seeded.batchId, purge: true });
+
+    expect(result.ok).toBe(false);
+    // The number is IN the refusal, because it is what the admin has to type
+    // back — asking them to go and count it themselves would guarantee they
+    // guess.
+    if (!result.ok) expect(result.error).toMatch(/Type 1 to confirm/);
+    expect(await db.select().from(salesRecord)).toHaveLength(1);
+  });
+
+  it('takes the records with it once the count is confirmed', async () => {
+    const { seeded } = await seedCommittedWithRecord();
+
+    const result = await deleteBatchAction({
+      batchId: seeded.batchId,
+      purge: true,
+      confirm: '1',
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.recordsRemoved).toBe(1);
+
+    expect(await db.select().from(salesRecord)).toHaveLength(0);
+    expect(await db.select().from(uploadBatch).where(eq(uploadBatch.id, seeded.batchId))).toHaveLength(0);
+    expect(existsSync(seeded.absolutePath)).toBe(false);
+  });
+
+  it('takes the roster this upload wrote with it — clean in, clean out', async () => {
+    const { seeded } = await seedCommittedWithRecord();
+    await db.insert(manpower).values({
+      smId: SM_CODE,
+      tlId: 'TL001',
+      ccmId: 'CCM001',
+      sourceBatchId: seeded.batchId,
+      isOrphan: false,
+    });
+
+    await deleteBatchAction({ batchId: seeded.batchId, purge: true, confirm: '1' });
+
+    // Deleting an upload removes exactly what it created, roster included.
+    // Keeping the placements would leave a reporting line whose source file no
+    // longer exists, so a re-import of a corrected sheet would merge into stale
+    // rows nobody could account for.
+    expect(await db.select().from(manpower).where(eq(manpower.smId, SM_CODE))).toHaveLength(0);
+  });
+
+  it('leaves an admin override alone — it is a decision about a person, not a row this file wrote', async () => {
+    const { seeded } = await seedCommittedWithRecord();
+    await db.insert(manpower).values({
+      smId: SM_CODE,
+      tlId: 'TL001',
+      ccmId: 'CCM001',
+      sourceBatchId: seeded.batchId,
+      isOrphan: false,
+    });
+    await db.insert(manpowerOverride).values({
+      smId: SM_CODE,
+      tlId: 'TL999',
+      ccmId: 'CCM999',
+      overriddenBy: admin.id,
+    });
+
+    await deleteBatchAction({ batchId: seeded.batchId, purge: true, confirm: '1' });
+
+    // `manpower_override` carries no batch reference on purpose: the pin applies
+    // again the moment that rep is re-imported.
+    const [override] = await db
+      .select()
+      .from(manpowerOverride)
+      .where(eq(manpowerOverride.smId, SM_CODE));
+    expect(override).toBeDefined();
+    expect(override.tlId).toBe('TL999');
+  });
+
+  it('refuses when an approved correction would be erased with the records', async () => {
+    const { seeded, record } = await seedCommittedWithRecord();
+
+    await db.insert(correctionRequest).values({
+      recordId: record.id,
+      appsNo: record.appsNo,
+      category: 'AUTOPAY',
+      fieldName: 'autopay',
+      fieldLabel: 'AutoPay',
+      proposedValue: 'Yes',
+      submittedBy: admin.id,
+      smId: SM_CODE,
+      status: 'APPROVED',
+    });
+
+    const result = await deleteBatchAction({ batchId: seeded.batchId, purge: true, confirm: '1' });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/approved correction/i);
+    // An approved correction is an audited decision about a record. Nothing is
+    // removed rather than erasing it along with the version it produced.
+    expect(await db.select().from(salesRecord)).toHaveLength(1);
+    expect(await db.select().from(uploadBatch).where(eq(uploadBatch.id, seeded.batchId))).toHaveLength(1);
+  });
+});
+
 describe('deletions the action refuses', () => {
-  it('refuses a committed upload and leaves every part of it in place', async () => {
+  it('refuses a committed upload without the purge flag, and leaves every part of it in place', async () => {
     const seeded = await seedBatch(admin.id, { status: 'COMMITTED' });
 
     const result = await deleteBatchAction({ batchId: seeded.batchId });
 
     expect(result.ok).toBe(false);
-    // The refusal has to name the route that IS open, or the admin's next move is
-    // to try again rather than to raise a correction.
+    // The refusal has to name the routes that ARE open, or the admin's next move
+    // is to try again rather than to pick one of them.
     if (!result.ok) expect(result.error).toMatch(/correction request/i);
 
     expect(await survivors(seeded.batchId)).toEqual(INTACT);

@@ -14,11 +14,12 @@
  * drift the column type exists to prevent.
  */
 
-import { and, asc, count, eq, exists, gte, lte, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, eq, exists, gte, lte, notInArray, sql, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { db } from '@/db/client';
-import { correctionRequest, salesRecord, uploadBatch } from '@/db/schema';
+import { correctionRequest, manpower, salesRecord, uploadBatch } from '@/db/schema';
 import { scopedRecordCondition, type SessionUser } from '@/lib/auth/rbac';
+import { PLACEHOLDER_CODE_LIST } from '@/lib/roster/placeholders';
 import { ISSUED_STATUS } from '@/lib/records/gaps';
 import type { PageParams } from '@/lib/pagination';
 import {
@@ -316,24 +317,27 @@ export async function listBatchOptions(
  * A sales user must not be handed the roster of other reps' IDs: the filter
  * would not widen their scope, but the list of IDs is information they have no
  * reason to hold.
+ *
+ * Read off the Manpower roster, never off `sales_record.sm_id`. The login dump's
+ * SM_ID column is not a list of people: it carries `DIY` for digital-channel
+ * business and `111222-UN` for issuance nobody has claimed, and a distinct scan
+ * of it offered both as reps to filter by. The roster is the register of who
+ * exists — orphan rows and the two bucket codes excluded, the same predicate the
+ * tree and the provisioning worklist use.
+ *
+ * The consequence is deliberate: a rep with no rows in any batch still appears,
+ * and picking them returns nothing. That is the honest answer to "show me this
+ * rep's records" for a rep who has none.
  */
 export async function listSmIdOptions(
   viewer: SessionUser,
 ): Promise<Array<{ smId: string; smName: string | null }>> {
   if (viewer.role !== 'admin') return [];
 
-  const rows = await db
-    .selectDistinct({ smId: salesRecord.smId, smName: salesRecord.smName })
-    .from(salesRecord)
-    .where(scopedRecordWhere(viewer))
-    .orderBy(asc(salesRecord.smId));
-
-  // Distinct on the pair can repeat an SM_ID whose name is spelled two ways;
-  // the first spelling wins so the dropdown holds one entry per rep.
-  const seen = new Set<string>();
-  return rows.filter((r) => {
-    if (seen.has(r.smId)) return false;
-    seen.add(r.smId);
-    return true;
-  });
+  // No dedupe pass: `manpower.sm_id` is UNIQUE, so one row is one person.
+  return db
+    .select({ smId: manpower.smId, smName: manpower.smName })
+    .from(manpower)
+    .where(and(eq(manpower.isOrphan, false), notInArray(manpower.smId, PLACEHOLDER_CODE_LIST)))
+    .orderBy(asc(manpower.smId));
 }

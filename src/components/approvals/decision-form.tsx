@@ -123,24 +123,34 @@ export function DecisionForm({
         />
       </Field>
 
-      <div className="flex flex-wrap gap-2">
-        <Button type="button" disabled={pending} onClick={() => submit('APPROVE')}>
+      {/* Stacked and full width, not a wrapping row. This form lives in a narrow
+          sticky rail, where a row of three would wrap into two lines of unequal
+          buttons and put Reject directly under Approve at an arbitrary offset. */}
+      <div className="flex flex-col gap-2">
+        <Button type="button" className="w-full" disabled={pending} onClick={() => submit('APPROVE')}>
           {pending ? 'Working…' : LABELS.APPROVE}
         </Button>
         <Button
           type="button"
           variant="secondary"
+          className="w-full"
           disabled={pending}
           onClick={() => submit('RETURN')}
         >
           {LABELS.RETURN}
         </Button>
-        <Button type="button" variant="danger" disabled={pending} onClick={() => submit('REJECT')}>
+        <Button
+          type="button"
+          variant="danger"
+          className="w-full"
+          disabled={pending}
+          onClick={() => submit('REJECT')}
+        >
           {LABELS.REJECT}
         </Button>
       </div>
 
-      <p className="text-xs text-slate-500">
+      <p className="text-[11px] leading-snug text-slate-500">
         Approving writes a new version of the record and cannot be undone from here — the previous
         value stays on the version history.
       </p>

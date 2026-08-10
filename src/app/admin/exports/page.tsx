@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { requireRole } from '@/lib/auth/rbac';
 import { committedBatches, listExports } from '@/lib/export/queries';
 import { describeFilters } from '@/lib/export/schemas';
 import { formatDateTime } from '@/lib/format';
@@ -17,11 +18,16 @@ export const dynamic = 'force-dynamic';
 /**
  * /admin/exports — spec section 9.
  *
- * The page itself is gated by src/app/admin/layout.tsx, which is the documented
- * authorization boundary for this subtree. The mutation and the download do not
- * rely on that: the Server Action and the Route Handler each call requireRole.
+ * `requireRole` runs here as well as in the layout and again inside the Server
+ * Action and the Route Handler. This page was the one admin route that relied on
+ * its parent alone, which is the arrangement every sibling's comment warns about:
+ * a layout guard protects the render, and a route that trusts it is one refactor
+ * away from being reachable without one. The list it renders names every export
+ * anyone has generated, so it is worth the line.
  */
 export default async function ExportsPage() {
+  await requireRole('admin');
+
   const [batches, exports] = await Promise.all([committedBatches(), listExports()]);
   const batchNames = new Map(batches.map((b) => [b.id, b.name]));
 
@@ -32,7 +38,7 @@ export default async function ExportsPage() {
         description="Generates a new workbook with the master data, an applied-corrections log, and the filters that produced it. The uploaded file is never modified."
       />
 
-      <div className="space-y-6">
+      <div className="space-y-4">
         <ExportForm batches={batches} />
 
         <Card title="Past exports" description="Every generated file stays downloadable.">
@@ -60,16 +66,22 @@ export default async function ExportsPage() {
               <tbody>
                 {exports.map((row) => (
                   <tr key={row.id}>
-                    <Td className="font-medium whitespace-nowrap">{row.fileName}</Td>
-                    <Td className="text-slate-600">
+                    {/* Monospaced: generated names differ only in their
+                        timestamp, and that is the part being compared. */}
+                    <Td className="font-mono text-[12px] font-medium whitespace-nowrap">
+                      {row.fileName}
+                    </Td>
+                    <Td className="text-[12px] text-slate-600">
                       {describeFilters(row.filters, batchNames).join('; ')}
                     </Td>
                     <Td className="text-right tabular-nums">{row.rowCount.toLocaleString('en-IN')}</Td>
                     <Td className="text-right tabular-nums">{row.correctionCount}</Td>
-                    <Td className="whitespace-nowrap">
+                    <Td className="text-[12px] whitespace-nowrap text-slate-600">
                       {row.requestedByName ?? row.requestedByEmail ?? '—'}
                     </Td>
-                    <Td className="whitespace-nowrap">{formatDateTime(row.createdAt)}</Td>
+                    <Td className="text-[12px] whitespace-nowrap text-slate-600">
+                      {formatDateTime(row.createdAt)}
+                    </Td>
                     <Td className="text-right tabular-nums">{row.downloadCount}</Td>
                     <Td>
                       {/* A plain anchor, not next/link: the response is a file,

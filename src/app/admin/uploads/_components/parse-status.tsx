@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { reparseBatchAction } from '@/lib/import/actions';
 import { apiPath } from '@/lib/nav';
 import type { IngestJobStatus } from '@/lib/ingest/types';
-import { Alert, Button } from '@/components/ui';
+import { Alert, Button, Spinner } from '@/components/ui';
 
 /**
  * The live half of the review page — 2026-07-28 ingestion spec section 5.
@@ -149,12 +149,12 @@ export function ParseProgress({ jobId, initial }: { jobId: string; initial: JobS
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3">
-        <Spinner />
+        <Spinner className="text-slate-500" />
         <div className="min-w-0">
-          <p className="text-sm font-medium text-slate-900">
+          <p className="text-[13px] font-medium text-slate-900">
             {job.stage ?? (job.status === 'QUEUED' ? 'Waiting for a worker' : 'Reading the workbook')}
           </p>
-          <p className="text-xs text-slate-500 tabular-nums">
+          <p className="text-[12px] text-slate-500 tabular-nums">
             {percent !== null
               ? `${job.done.toLocaleString('en-IN')} of ${job.total!.toLocaleString('en-IN')}`
               : job.done > 0
@@ -230,26 +230,5 @@ export function ReparseButton({ batchId, label }: { batchId: string; label: stri
       </Button>
       {error ? <Alert tone="danger">{error}</Alert> : null}
     </div>
-  );
-}
-
-function Spinner() {
-  return (
-    <svg
-      aria-hidden="true"
-      viewBox="0 0 20 20"
-      width="18"
-      height="18"
-      className="shrink-0 animate-spin text-slate-500"
-    >
-      <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />
-      <path
-        d="M18 10a8 8 0 0 0-8-8"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="3"
-        strokeLinecap="round"
-      />
-    </svg>
   );
 }

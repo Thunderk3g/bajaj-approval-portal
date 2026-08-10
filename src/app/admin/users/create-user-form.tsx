@@ -15,9 +15,13 @@ import { Alert, Button, Field, Input, Select } from '@/components/ui';
 export type CreateUserDefaults = {
   name?: string;
   smId?: string;
+  tlCode?: string;
+  acmCode?: string;
   role?: string;
   /** True when the prefilled SM_ID appears in transaction data but not the roster. */
   orphan?: boolean;
+  /** Where the roster already places the prefilled SM_ID, so the form can show it. */
+  placement?: { tlId: string | null; acmId: string | null } | null;
 };
 
 export function CreateUserForm({ defaults }: { defaults: CreateUserDefaults }) {
@@ -99,28 +103,102 @@ export function CreateUserForm({ defaults }: { defaults: CreateUserDefaults }) {
           </Select>
         </Field>
 
-        <Field
-          label="SM_ID"
-          htmlFor="smId"
-          required={role === 'sales'}
-          hint={
-            role === 'sales'
-              ? 'Scopes this account to one rep’s records. Stored uppercase.'
-              : 'Only a Sales account has an SM_ID.'
-          }
-          error={errors.smId}
-        >
-          <Input
-            id="smId"
-            name="smId"
-            defaultValue={defaults.smId ?? ''}
-            disabled={role !== 'sales'}
-            required={role === 'sales'}
-            autoComplete="off"
-            className="font-mono uppercase"
-          />
-        </Field>
+        {/*
+          One scope field per role, and only the one that role actually reads.
+          A code on the wrong field is the subtler failure than a missing one —
+          the row looks scoped without being scoped — so the others are not merely
+          disabled, they are absent, and the server refuses them either way.
+        */}
+        {role === 'sales' ? (
+          <Field
+            label="SM_ID"
+            htmlFor="smId"
+            required
+            hint="Scopes this account to one rep’s records. Stored uppercase."
+            error={errors.smId}
+          >
+            <Input
+              id="smId"
+              name="smId"
+              defaultValue={defaults.smId ?? ''}
+              required
+              autoComplete="off"
+              className="font-mono uppercase"
+            />
+          </Field>
+        ) : null}
+
+        {role === 'tl' ? (
+          <Field
+            label="TL code"
+            htmlFor="tlCode"
+            required
+            hint="The code the Manpower sheet carries for this team leader. It is what resolves their reps and their approval steps."
+            error={errors.tlCode}
+          >
+            <Input
+              id="tlCode"
+              name="tlCode"
+              defaultValue={defaults.tlCode ?? ''}
+              required
+              autoComplete="off"
+              className="font-mono uppercase"
+            />
+          </Field>
+        ) : null}
+
+        {role === 'acm' ? (
+          <Field
+            label="ACM code"
+            htmlFor="acmCode"
+            required
+            hint="The CCM code the Manpower sheet carries for this area manager — ACM and CCM are the same rung."
+            error={errors.acmCode}
+          >
+            <Input
+              id="acmCode"
+              name="acmCode"
+              defaultValue={defaults.acmCode ?? ''}
+              required
+              autoComplete="off"
+              className="font-mono uppercase"
+            />
+          </Field>
+        ) : null}
       </div>
+
+      {/*
+        The placement this account will have, shown before it is saved.
+        A rep is only reachable by their TL and ACM if the roster places them
+        there, and an account created with a code the roster does not know is a
+        login whose approval steps resolve to nobody — visible here rather than
+        discovered when the first request fails to route.
+      */}
+      {role === 'sales' && defaults.placement ? (
+        <Alert tone={defaults.placement.tlId ? 'info' : 'warning'}>
+          {defaults.placement.tlId ? (
+            <>
+              The roster places {defaults.smId} under{' '}
+              <strong className="font-mono">{defaults.placement.tlId}</strong>
+              {defaults.placement.acmId ? (
+                <>
+                  {' '}
+                  → <strong className="font-mono">{defaults.placement.acmId}</strong>
+                </>
+              ) : (
+                <> — but that team leader has no area manager on the roster.</>
+              )}
+              . Their mapping corrections will route through them.
+            </>
+          ) : (
+            <>
+              The roster places {defaults.smId} under no team leader, so their mapping corrections
+              will skip the team-leader and area-manager steps. Import an up-to-date Manpower sheet
+              to fix it.
+            </>
+          )}
+        </Alert>
+      ) : null}
 
       <Button type="submit" disabled={pending}>
         {pending ? 'Creating…' : 'Create account'}

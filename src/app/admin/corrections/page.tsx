@@ -9,6 +9,7 @@ import {
   EmptyState,
   Field,
   Input,
+  LinkButton,
   Pagination,
   PageHeader,
   Select,
@@ -63,12 +64,18 @@ export default async function AdminCorrectionsPage({
         description="Every request raised, in any state. Decisions are made by an approver — this view is read-only."
       />
 
-      <Card className="mb-6">
+      <Card className="mb-4">
         {/* A GET form: the filter state lives in the URL, so a filtered view can
             be linked, bookmarked and paged without any client-side state. */}
-        <form method="get" className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
+        <form method="get" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
           <Field label="Apps_No" htmlFor="q">
-            <Input id="q" name="q" defaultValue={filters.q ?? ''} placeholder="Contains…" />
+            <Input
+              id="q"
+              name="q"
+              defaultValue={filters.q ?? ''}
+              placeholder="Contains…"
+              className="font-mono"
+            />
           </Field>
 
           <Field label="Status" htmlFor="status">
@@ -94,7 +101,7 @@ export default async function AdminCorrectionsPage({
           </Field>
 
           <Field label="SM_ID" htmlFor="smId">
-            <Input id="smId" name="smId" defaultValue={filters.smId ?? ''} />
+            <Input id="smId" name="smId" defaultValue={filters.smId ?? ''} className="font-mono" />
           </Field>
 
           <Field label="Submitted from" htmlFor="from">
@@ -107,12 +114,9 @@ export default async function AdminCorrectionsPage({
 
           <div className="flex items-end gap-2 sm:col-span-2 lg:col-span-6">
             <Button type="submit">Apply filters</Button>
-            <Link
-              href="/admin/corrections"
-              className="text-sm text-slate-600 underline hover:text-slate-900"
-            >
+            <LinkButton href="/admin/corrections" variant="ghost">
               Clear
-            </Link>
+            </LinkButton>
           </div>
         </form>
       </Card>
@@ -145,42 +149,47 @@ export default async function AdminCorrectionsPage({
             <tbody>
               {rows.map((row) => (
                 <tr key={row.id}>
-                  <Td className="whitespace-nowrap text-slate-600">
+                  <Td className="text-[11px] whitespace-nowrap text-slate-500">
                     {formatDateTime(row.submittedAt)}
                     {row.resubmissionCount > 0 ? (
-                      <span className="ml-1 text-xs text-slate-500">
-                        (resubmitted &times;{row.resubmissionCount})
+                      <span className="block text-[11px] text-amber-700">
+                        resubmitted &times;{row.resubmissionCount}
                       </span>
                     ) : null}
                   </Td>
-                  <Td className="font-medium">
+                  <Td>
                     <Link
                       href={`/admin/records/${encodeURIComponent(row.appsNo)}`}
-                      className="text-slate-900 hover:underline"
+                      className="font-mono font-medium text-slate-900 underline underline-offset-2 hover:text-slate-600"
                     >
                       {row.appsNo}
                     </Link>
                   </Td>
-                  <Td>{CATEGORY_LABELS[row.category] ?? row.category}</Td>
-                  <Td className="text-slate-600">{row.fieldLabel}</Td>
-                  <Td>
-                    <span className="text-slate-500 line-through">{orDash(row.originalValue)}</span>{' '}
+                  <Td className="whitespace-nowrap">{CATEGORY_LABELS[row.category] ?? row.category}</Td>
+                  <Td className="text-[12px] text-slate-600">{row.fieldLabel}</Td>
+                  {/* old → new rather than a strikethrough. The two values are
+                      compared character by character down this column, so both
+                      are monospaced and the arrow — not a line through one of
+                      them — is what says which direction the change runs. */}
+                  <Td className="font-mono text-[12px]">
+                    <span className="text-slate-500">{orDash(row.originalValue)}</span>
+                    <span className="px-1 text-slate-400" aria-hidden="true">
+                      →
+                    </span>
                     <span className="font-medium text-slate-900">{row.proposedValue}</span>
                   </Td>
-                  <Td className="whitespace-nowrap">{row.smId}</Td>
-                  <Td className="text-slate-600">
+                  <Td className="font-mono whitespace-nowrap">{row.smId}</Td>
+                  <Td className="text-[12px] text-slate-600">
                     {orDash(row.submitterName ?? row.submitterEmail)}
                   </Td>
                   <Td>
                     <StatusBadge status={row.status} />
                   </Td>
-                  <Td className="whitespace-nowrap text-slate-600">
+                  <Td className="text-[11px] whitespace-nowrap text-slate-500">
                     {row.reviewedAt ? (
                       <>
                         {formatDateTime(row.reviewedAt)}
-                        <span className="block text-xs text-slate-500">
-                          {orDash(row.reviewerName)}
-                        </span>
+                        <span className="block text-slate-500">{orDash(row.reviewerName)}</span>
                       </>
                     ) : (
                       '—'

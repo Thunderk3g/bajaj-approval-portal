@@ -1,15 +1,7 @@
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
-import {
-  Button,
-  Card,
-  Input,
-  LinkButton,
-  PageHeader,
-  Pagination,
-  Select,
-  StatCard,
-} from '@/components/ui';
+import { Button, Input, LinkButton, PageHeader, Pagination, Select, StatCard } from '@/components/ui';
+import { FilterBar, FilterField } from '@/components/approvals/filter-bar';
 import { LeadTable } from '@/components/leads/lead-table';
 import { AuthzError } from '@/lib/auth/errors';
 import { requireRole, type SessionUser } from '@/lib/auth/rbac';
@@ -81,49 +73,41 @@ export default async function SalesLeadsPage({
         />
       </div>
 
-      <Card>
-        <form method="get" className="grid gap-3 sm:grid-cols-4">
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">Search</span>
-            <Input name="q" defaultValue={values.q} placeholder="Lead number or location" />
-          </label>
+      <FilterBar>
+        <FilterField label="Search">
+          <Input name="q" defaultValue={values.q} placeholder="Lead number or location" />
+        </FilterField>
 
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">Registered from</span>
-            <Input type="date" name="registerFrom" defaultValue={values.registerFrom} />
-          </label>
+        <FilterField label="Registered from">
+          <Input type="date" name="registerFrom" defaultValue={values.registerFrom} />
+        </FilterField>
 
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">Registered to</span>
-            <Input type="date" name="registerTo" defaultValue={values.registerTo} />
-          </label>
+        <FilterField label="Registered to">
+          <Input type="date" name="registerTo" defaultValue={values.registerTo} />
+        </FilterField>
 
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">Per page</span>
-            <Select name="pageSize" defaultValue={String(page.pageSize)}>
-              {PAGE_SIZES.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </Select>
-          </label>
+        <FilterField label="Per page">
+          <Select name="pageSize" defaultValue={String(page.pageSize)}>
+            {PAGE_SIZES.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </Select>
+        </FilterField>
 
-          <div className="flex items-center gap-2 sm:col-span-4">
-            <Button type="submit" variant="secondary">
-              Apply filters
-            </Button>
-            {/* A link rather than a reset button: resetting the controls would
-                leave the URL — and therefore the rows — untouched, which reads
-                as a Clear that did nothing. */}
-            {filtered ? (
-              <LinkButton href="/sales/leads" variant="ghost">
-                Clear filters
-              </LinkButton>
-            ) : null}
-          </div>
-        </form>
-      </Card>
+        <Button type="submit" variant="secondary">
+          Apply
+        </Button>
+        {/* A link rather than a reset button: resetting the controls would
+            leave the URL — and therefore the rows — untouched, which reads
+            as a Clear that did nothing. */}
+        {filtered ? (
+          <LinkButton href="/sales/leads" variant="ghost">
+            Clear
+          </LinkButton>
+        ) : null}
+      </FilterBar>
 
       <LeadTable rows={leads.rows} variant="sales" />
 

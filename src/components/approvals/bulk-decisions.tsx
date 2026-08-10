@@ -2,7 +2,7 @@
 
 import { useRef, useState, useTransition, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Button, Field, Textarea } from '@/components/ui';
+import { Alert, Button, Textarea, cx } from '@/components/ui';
 import { bulkDecideAction } from '@/lib/approvals/actions';
 import { bulkVerifyDecideAction } from '@/lib/verification/actions';
 import type { BulkOutcome } from '@/lib/approvals/schemas';
@@ -174,54 +174,77 @@ export function BulkDecisions({
 
   return (
     <form ref={formRef} onSubmit={(event) => event.preventDefault()} onChange={recount}>
-      <div className="mb-4 space-y-3 rounded border border-slate-200 bg-white p-4">
+      {/* A toolbar, not a form card. It sits directly above the table it acts on
+          and every pixel it takes is a queue row pushed under the fold, so the
+          selection, the buttons and the remarks box share one bar. */}
+      <div className="mb-3 rounded-lg border border-slate-200 bg-white">
         {hasControls ? (
-          <>
-            <div className="flex flex-wrap items-center gap-3">
-              <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+          <div className="space-y-2.5 px-3 py-2.5">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+              <label className="flex items-center gap-2 text-[12px] font-medium text-slate-700">
                 <input
                   type="checkbox"
                   checked={allSelected}
                   onChange={(event) => setAll(event.target.checked)}
-                  className="h-4 w-4 accent-slate-900"
+                  className="size-4 accent-slate-900"
                 />
                 Select all {selectableCount} on this page
               </label>
-              <span className="text-sm text-slate-500">{selected} selected</span>
+              <span className="text-[12px] tabular-nums text-slate-500">{selected} selected</span>
+
+              <div className="ml-auto flex flex-wrap gap-2">
+                {decisions.map((decision) => (
+                  <Button
+                    key={decision.value}
+                    type="button"
+                    variant={decision.variant}
+                    disabled={pending || selected === 0}
+                    onClick={() => submit(decision)}
+                  >
+                    {pending ? 'Working…' : `${decision.label} (${selected})`}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-start gap-3">
+              <div className="min-w-0 grow basis-72">
+                <label htmlFor="bulkRemarks">
+                  <span className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.07em] text-slate-500">
+                    Remarks
+                  </span>
+                </label>
+                <Textarea
+                  id="bulkRemarks"
+                  name="remarks"
+                  value={remarks}
+                  maxLength={2000}
+                  disabled={pending}
+                  onChange={(event) => setRemarks(event.target.value)}
+                  placeholder="What did you check, or what does the submitter need to change?"
+                />
+                {remarkErrors?.map((message) => (
+                  <p key={message} className="mt-1 text-[11px] text-red-700">
+                    {message}
+                  </p>
+                ))}
+              </div>
+              <p className="min-w-0 grow basis-64 pt-4 text-[12px] leading-snug text-slate-500">
+                {remarksHint} Rows this queue cannot act on carry no checkbox.
+              </p>
             </div>
 
             {error ? <Alert tone="danger">{error}</Alert> : null}
-
-            <Field label="Remarks" htmlFor="bulkRemarks" hint={remarksHint} error={remarkErrors}>
-              <Textarea
-                id="bulkRemarks"
-                name="remarks"
-                value={remarks}
-                maxLength={2000}
-                disabled={pending}
-                onChange={(event) => setRemarks(event.target.value)}
-                placeholder="What did you check, or what does the submitter need to change?"
-              />
-            </Field>
-
-            <div className="flex flex-wrap gap-2">
-              {decisions.map((decision) => (
-                <Button
-                  key={decision.value}
-                  type="button"
-                  variant={decision.variant}
-                  disabled={pending || selected === 0}
-                  onClick={() => submit(decision)}
-                >
-                  {pending ? 'Working…' : `${decision.label} (${selected})`}
-                </Button>
-              ))}
-            </div>
-          </>
+          </div>
         ) : null}
 
         {report ? (
-          <div className="space-y-2">
+          <div
+            className={cx(
+              'space-y-2 px-3 py-2.5',
+              hasControls ? 'border-t border-slate-200' : undefined,
+            )}
+          >
             <Alert
               tone={report.failed.length === 0 ? 'success' : 'warning'}
               title={`${report.applied} ${report.applied === 1 ? 'request' : 'requests'} ${

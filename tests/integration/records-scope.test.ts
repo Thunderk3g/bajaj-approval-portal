@@ -15,7 +15,7 @@ import { eq } from 'drizzle-orm';
 import { AuthzError } from '@/lib/auth/errors';
 import type { Role, SessionUser } from '@/lib/auth/rbac';
 import { db } from '@/db/client';
-import { correctionRequest, salesRecord, salesRecordVersion, uploadBatch } from '@/db/schema';
+import { correctionRequest, manpower, salesRecord, salesRecordVersion, uploadBatch } from '@/db/schema';
 import { DEFAULT_PAGE_SIZE, type PageParams } from '@/lib/pagination';
 import { EMPTY_FILTERS, parseRecordFilters, type RecordFilters } from '@/lib/records/filters';
 import {
@@ -284,6 +284,13 @@ describe('the version chain is scoped through its join', () => {
 
 describe('filter dropdowns are scoped too', () => {
   it('gives a sales user no SM_ID roster at all', async () => {
+    // The list is the Manpower roster, not a distinct scan of the dump — the
+    // seeded records alone are no longer enough to populate it.
+    await db.insert(manpower).values([
+      { smId: A, smName: 'Rep A' },
+      { smId: B, smName: 'Rep B' },
+    ]);
+
     // Not a scope leak — the filter could not widen anything — but the list of
     // other reps IDs is information a rep has no reason to hold.
     expect(await listSmIdOptions(salesA)).toEqual([]);

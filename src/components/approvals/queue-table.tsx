@@ -59,8 +59,8 @@ export function QueueTable({
   if (rows.length === 0) {
     return (
       <EmptyState
-        title="Nothing waiting"
-        description="No correction requests match these filters."
+        title="Nothing waiting on you"
+        description="Requests arrive here when their current step resolves to you. Reps raise them from their own records; nothing you can do puts a row in this table. If you expected one, widen the scope or clear the search above."
       />
     );
   }

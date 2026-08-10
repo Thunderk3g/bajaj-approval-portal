@@ -30,11 +30,18 @@ export function PageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+    // 19px, not 24px. The design keeps the page title only a step above body
+    // text: on a screen that is mostly table, a large heading pushes the first
+    // row below the fold and buys nothing.
+    <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
       <div className="min-w-0">
-        <h1 className="text-xl font-semibold tracking-tight text-slate-900">{title}</h1>
+        <h1 className="text-[19px] font-semibold leading-tight tracking-[-0.01em] text-slate-900">
+          {title}
+        </h1>
         {description ? (
-          <div className="mt-1.5 max-w-2xl text-sm text-slate-600">{description}</div>
+          <div className="mt-[5px] max-w-3xl text-[13px] text-pretty text-slate-600">
+            {description}
+          </div>
         ) : null}
       </div>
       {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
@@ -58,15 +65,19 @@ export function Card({
   return (
     <section className={cx('rounded-lg border border-slate-200 bg-white', className)}>
       {title || actions ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
+        <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-slate-200 px-3.5 py-[9px]">
           <div className="min-w-0">
-            {title ? <h2 className="text-sm font-semibold text-slate-900">{title}</h2> : null}
-            {description ? <p className="mt-0.5 text-xs text-slate-500">{description}</p> : null}
+            {title ? (
+              <h2 className="text-[13px] font-semibold text-slate-900">{title}</h2>
+            ) : null}
+            {description ? (
+              <p className="mt-0.5 text-[11px] leading-snug text-slate-500">{description}</p>
+            ) : null}
           </div>
           {actions ? <div className="flex items-center gap-2">{actions}</div> : null}
         </div>
       ) : null}
-      <div className="p-4">{children}</div>
+      <div className="px-3.5 py-3">{children}</div>
     </section>
   );
 }
@@ -93,14 +104,25 @@ export function StatCard({
 
   const body = (
     <>
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
-      <p className={cx('mt-1 text-2xl font-semibold tabular-nums', tones[tone])}>{value}</p>
-      {hint ? <p className="mt-1 text-xs text-slate-500">{hint}</p> : null}
+      {/* 10px uppercase over a 25px number: the label names the figure, it is
+          not competing with it. Same treatment as a column header. */}
+      <p className="text-[10px] font-semibold uppercase tracking-[0.07em] text-slate-500">
+        {label}
+      </p>
+      <p
+        className={cx(
+          'mt-1 text-[25px] leading-tight font-semibold tracking-[-0.02em] tabular-nums',
+          tones[tone],
+        )}
+      >
+        {value}
+      </p>
+      {hint ? <p className="mt-1 text-[11px] text-slate-500">{hint}</p> : null}
     </>
   );
 
   const className =
-    'block rounded-lg border border-slate-200 bg-white p-4' +
+    'block rounded-lg border border-slate-200 bg-white px-3.5 py-3 no-underline' +
     (href ? ' transition-colors hover:border-slate-300 hover:bg-slate-50' : '');
 
   return href ? (
@@ -116,9 +138,16 @@ export function StatCard({
 
 export function EmptyState({ title, description }: { title: string; description?: ReactNode }) {
   return (
-    <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-10 text-center">
-      <p className="text-sm font-medium text-slate-700">{title}</p>
-      {description ? <p className="mt-1 text-sm text-slate-500">{description}</p> : null}
+    <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-11 text-center">
+      <p className="text-[13px] font-medium text-slate-700">{title}</p>
+      {description ? (
+        // Capped and centred: an explanation of why a queue is empty runs to a
+        // sentence or two, and centred text set the full width of a 1500px
+        // canvas is unreadable.
+        <p className="mx-auto mt-1.5 max-w-[52ch] text-[13px] text-pretty text-slate-500">
+          {description}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -133,16 +162,27 @@ export function Alert({
   children?: ReactNode;
 }) {
   const tones = {
-    info: 'border-slate-200 bg-slate-50 text-slate-800',
-    warning: 'border-amber-200 bg-amber-50 text-amber-900',
-    danger: 'border-red-200 bg-red-50 text-red-900',
-    success: 'border-emerald-200 bg-emerald-50 text-emerald-900',
+    info: 'border-sky-200 bg-sky-50 text-sky-800',
+    warning: 'border-amber-200 bg-amber-50 text-amber-800',
+    danger: 'border-red-200 bg-red-50 text-red-800',
+    success: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+  } as const;
+
+  // The heading sits one step darker than the body it introduces, which is what
+  // separates the two lines without a second type size or a rule between them.
+  const headings = {
+    info: 'text-sky-900',
+    warning: 'text-amber-900',
+    danger: 'text-red-900',
+    success: 'text-emerald-900',
   } as const;
 
   return (
-    <div className={cx('rounded border px-3 py-2 text-sm', tones[tone])} role="alert">
-      {title ? <p className="font-medium">{title}</p> : null}
-      {children ? <div className={title ? 'mt-0.5' : undefined}>{children}</div> : null}
+    <div className={cx('rounded-lg border px-3.5 py-3 text-[13px]', tones[tone])} role="alert">
+      {title ? <p className={cx('font-semibold', headings[tone])}>{title}</p> : null}
+      {children ? (
+        <div className={cx('text-pretty', title ? 'mt-[5px]' : null)}>{children}</div>
+      ) : null}
     </div>
   );
 }
@@ -159,9 +199,12 @@ export function Badge({ tone = 'neutral', children }: { tone?: BadgeTone; childr
   };
 
   return (
+    // A small rounded rectangle, not a pill. Badges sit inside table cells
+    // beside monospaced codes, and a fully rounded capsule reads as a button
+    // somebody can press.
     <span
       className={cx(
-        'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium whitespace-nowrap',
+        'inline-flex items-center rounded border px-1.5 py-px text-[11px] font-medium whitespace-nowrap',
         tones[tone],
       )}
     >
@@ -208,17 +251,20 @@ export function Table({ children }: { children: ReactNode }) {
   // whole document scroll sideways.
   return (
     <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-      <table className="w-full min-w-full border-collapse text-sm">{children}</table>
+      <table className="w-full min-w-full border-collapse text-[13px]">{children}</table>
     </div>
   );
 }
 
 export function Th({ children, className, ...rest }: ComponentProps<'th'>) {
   return (
+    // 10px uppercase with wide tracking. The header is a label for the column,
+    // not content: shrinking it is what lets the rows below stay the thing the
+    // eye lands on.
     <th
       scope="col"
       className={cx(
-        'border-b border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600 whitespace-nowrap',
+        'border-b border-slate-200 bg-slate-50 px-2.5 py-[7px] text-left text-[10px] font-semibold uppercase tracking-[0.06em] text-slate-600 whitespace-nowrap',
         className,
       )}
       {...rest}
@@ -230,7 +276,13 @@ export function Th({ children, className, ...rest }: ComponentProps<'th'>) {
 
 export function Td({ children, className, ...rest }: ComponentProps<'td'>) {
   return (
-    <td className={cx('border-b border-slate-100 px-3 py-2 align-top text-slate-800', className)} {...rest}>
+    <td
+      className={cx(
+        'border-b border-slate-100 px-2.5 py-[9px] align-top text-slate-800',
+        className,
+      )}
+      {...rest}
+    >
       {children}
     </td>
   );
@@ -239,11 +291,14 @@ export function Td({ children, className, ...rest }: ComponentProps<'td'>) {
 /** Definition row for detail panes — label left, value right. */
 export function DetailRow({ label, children }: { label: ReactNode; children: ReactNode }) {
   return (
-    <div className="flex flex-wrap gap-x-4 gap-y-0.5 border-b border-slate-100 py-2 last:border-b-0">
-      <dt className="w-48 shrink-0 text-xs font-medium uppercase tracking-wide text-slate-500">
+    <div className="flex flex-wrap gap-x-3 gap-y-0.5 border-b border-slate-100 py-1.5 last:border-b-0">
+      {/* 112px, not 192px: these panes are laid out two columns to a card, and a
+          label rail wide enough for the longest field name in the system leaves
+          the value it describes with nowhere to go. */}
+      <dt className="w-28 shrink-0 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.06em] text-slate-500">
         {label}
       </dt>
-      <dd className="min-w-0 flex-1 text-sm text-slate-900">{children}</dd>
+      <dd className="min-w-0 flex-1 text-[13px] text-slate-900">{children}</dd>
     </div>
   );
 }
@@ -251,7 +306,7 @@ export function DetailRow({ label, children }: { label: ReactNode; children: Rea
 /* ------------------------------------------------------------------ inputs */
 
 const CONTROL =
-  'w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-slate-500 focus:ring-1 focus:ring-slate-500 disabled:bg-slate-50 disabled:text-slate-500';
+  'w-full rounded-md border border-slate-300 bg-white px-2.5 py-[7px] text-[13px] text-slate-900 outline-none placeholder:text-slate-400 focus:border-slate-500 focus:ring-1 focus:ring-slate-500 disabled:bg-slate-50 disabled:text-slate-500';
 
 export function Field({
   label,
@@ -271,18 +326,18 @@ export function Field({
   const messages = error ? (Array.isArray(error) ? error : [error]) : [];
   return (
     <div className="space-y-1.5">
-      <label htmlFor={htmlFor} className="block text-sm font-medium text-slate-700">
+      <label htmlFor={htmlFor} className="block text-[13px] font-medium text-slate-700">
         {label}
         {required ? (
-          <span className="ml-0.5 text-red-600" aria-hidden="true">
+          <span className="ml-0.5 text-red-700" aria-hidden="true">
             *
           </span>
         ) : null}
       </label>
       {children}
-      {hint ? <p className="text-xs text-slate-500">{hint}</p> : null}
+      {hint ? <p className="text-[11px] text-slate-500">{hint}</p> : null}
       {messages.map((m) => (
-        <p key={m} className="text-xs text-red-700">
+        <p key={m} className="text-[12px] text-red-700">
           {m}
         </p>
       ))}
@@ -295,7 +350,7 @@ export function Input({ className, ...rest }: ComponentProps<'input'>) {
 }
 
 export function Textarea({ className, ...rest }: ComponentProps<'textarea'>) {
-  return <textarea className={cx(CONTROL, 'min-h-24', className)} {...rest} />;
+  return <textarea className={cx(CONTROL, 'min-h-[82px] resize-y py-2', className)} {...rest} />;
 }
 
 export function Select({ className, children, ...rest }: ComponentProps<'select'>) {
@@ -308,15 +363,21 @@ export function Select({ className, children, ...rest }: ComponentProps<'select'
 
 export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost';
 
+// 12px on a 29px-high control. The design's buttons sit inline with table rows
+// and filter bars, so a 40px default-height button would set the rhythm of every
+// toolbar it appears in.
+//
+// The border is in the base, not the variants: a filled button without one and
+// an outlined button with one differ by 2px of height, which is visible the
+// moment they sit side by side in a toolbar — as they always do.
 const BUTTON_BASE =
-  'inline-flex items-center justify-center gap-1.5 rounded px-3 py-2 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60';
+  'inline-flex items-center justify-center gap-1.5 rounded-md border px-[11px] py-1.5 text-[12px] font-medium no-underline transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-60';
 
 export const BUTTON_VARIANTS: Record<ButtonVariant, string> = {
-  primary: 'bg-slate-900 text-white hover:bg-slate-800 focus:ring-slate-500',
-  secondary:
-    'border border-slate-300 bg-white text-slate-800 hover:bg-slate-50 focus:ring-slate-400',
-  danger: 'bg-red-700 text-white hover:bg-red-800 focus:ring-red-500',
-  ghost: 'text-slate-700 hover:bg-slate-100 focus:ring-slate-400',
+  primary: 'border-slate-900 bg-slate-900 text-white hover:border-slate-800 hover:bg-slate-800 focus:ring-slate-500',
+  secondary: 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50 focus:ring-slate-400',
+  danger: 'border-red-700 bg-red-700 text-white hover:border-red-800 hover:bg-red-800 focus:ring-red-500',
+  ghost: 'border-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-900 focus:ring-slate-400',
 };
 
 export function buttonClass(variant: ButtonVariant = 'primary', className?: string): string {
@@ -369,7 +430,7 @@ export function Skeleton({
   return (
     <span
       aria-hidden="true"
-      className={cx('block rounded bg-slate-200 motion-safe:animate-pulse', className)}
+      className={cx('block rounded-[3px] bg-slate-200 motion-safe:animate-pulse', className)}
       style={{ width, height }}
     />
   );
@@ -402,18 +463,18 @@ export function LoadingScreen({ label, children }: { label: string; children: Re
  */
 const SKELETON_WIDTHS = ['72%', '45%', '88%', '58%', '36%', '66%'];
 
-/** Mirrors {@link PageHeader}, down to its `mb-6`, so nothing shifts on swap. */
+/** Mirrors {@link PageHeader}, down to its `mb-4`, so nothing shifts on swap. */
 export function SkeletonPageHeader({ actions = 0 }: { actions?: number }) {
   return (
-    <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+    <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
       <div className="min-w-0">
-        <Skeleton width="16rem" height="1.5rem" className="max-w-full" />
-        <Skeleton width="28rem" height="0.875rem" className="mt-2 max-w-full" />
+        <Skeleton width="17.5rem" height="1.625rem" className="max-w-full" />
+        <Skeleton width="26rem" height="0.8125rem" className="mt-[9px] max-w-full" />
       </div>
       {actions > 0 ? (
         <div className="flex shrink-0 items-center gap-2">
           {Array.from({ length: actions }, (_, i) => (
-            <Skeleton key={i} width="7rem" height="2.375rem" />
+            <Skeleton key={i} width="6.5rem" height="1.8125rem" />
           ))}
         </div>
       ) : null}
@@ -432,10 +493,10 @@ export function SkeletonStatCards({
   return (
     <div className={cx('grid gap-4 sm:grid-cols-2 xl:grid-cols-4', className)}>
       {Array.from({ length: count }, (_, i) => (
-        <div key={i} className="rounded-lg border border-slate-200 bg-white p-4">
-          <Skeleton width="45%" height="0.75rem" />
-          <Skeleton width="30%" height="1.75rem" className="mt-1.5" />
-          <Skeleton width="60%" height="0.75rem" className="mt-1.5" />
+        <div key={i} className="rounded-lg border border-slate-200 bg-white px-3.5 py-3">
+          <Skeleton width="45%" height="0.625rem" />
+          <Skeleton width="30%" height="1.9375rem" className="mt-1" />
+          <Skeleton width="60%" height="0.6875rem" className="mt-1" />
         </div>
       ))}
     </div>
@@ -482,13 +543,13 @@ export function SkeletonDetailRows({ rows = 6 }: { rows?: number }) {
       {Array.from({ length: rows }, (_, i) => (
         <div
           key={i}
-          className="flex flex-wrap gap-x-4 gap-y-0.5 border-b border-slate-100 py-2 last:border-b-0"
+          className="flex flex-wrap gap-x-3 gap-y-0.5 border-b border-slate-100 py-1.5 last:border-b-0"
         >
-          <div className="w-48 shrink-0">
-            <Skeleton width="70%" height="0.75rem" />
+          <div className="w-28 shrink-0 pt-0.5">
+            <Skeleton width="80%" height="0.625rem" />
           </div>
           <div className="min-w-0 flex-1">
-            <Skeleton width={SKELETON_WIDTHS[i % SKELETON_WIDTHS.length]} height="0.875rem" />
+            <Skeleton width={SKELETON_WIDTHS[i % SKELETON_WIDTHS.length]} height="0.8125rem" />
           </div>
         </div>
       ))}
@@ -502,8 +563,8 @@ export function SkeletonFields({ count = 4 }: { count?: number }) {
     <div className="space-y-5">
       {Array.from({ length: count }, (_, i) => (
         <div key={i} className="space-y-1.5">
-          <Skeleton width="8rem" height="0.875rem" />
-          <Skeleton height="2.375rem" />
+          <Skeleton width="8rem" height="0.8125rem" />
+          <Skeleton height="2.0625rem" />
         </div>
       ))}
     </div>
@@ -560,14 +621,22 @@ export function Pagination({
 }) {
   if (totalRows === 0) return null;
 
+  const step = 'px-2.5 py-1';
+  // Spelled out rather than `buttonClass(...) + 'opacity-50'`: two border-colour
+  // utilities on one element leave which wins to stylesheet order, and a washed
+  // -out copy of an enabled control reads as "loading", not "there is no page
+  // before this one".
+  const exhausted =
+    'inline-flex items-center justify-center rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[12px] font-medium text-slate-400';
+
   return (
     <nav
       aria-label="Pagination"
-      className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm"
+      className="mt-2.5 flex flex-wrap items-center justify-between gap-2 text-[12px] text-slate-600"
     >
-      <p className="text-slate-600">
-        Page <span className="font-medium tabular-nums">{page}</span> of{' '}
-        <span className="font-medium tabular-nums">{total}</span>
+      <p>
+        Page <span className="font-semibold tabular-nums">{page}</span> of{' '}
+        <span className="font-semibold tabular-nums">{total}</span>
         <span className="px-1.5 text-slate-300" aria-hidden="true">
           |
         </span>
@@ -575,22 +644,22 @@ export function Pagination({
         {totalRows === 1 ? '' : 's'}
       </p>
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1.5">
         {page > 1 ? (
-          <Link href={hrefFor(page - 1)} className={buttonClass('secondary', 'px-2.5 py-1.5')}>
+          <Link href={hrefFor(page - 1)} className={buttonClass('secondary', step)}>
             Previous
           </Link>
         ) : (
-          <span className={cx(buttonClass('secondary', 'px-2.5 py-1.5'), 'opacity-50')} aria-disabled>
+          <span className={exhausted} aria-disabled>
             Previous
           </span>
         )}
         {page < total ? (
-          <Link href={hrefFor(page + 1)} className={buttonClass('secondary', 'px-2.5 py-1.5')}>
+          <Link href={hrefFor(page + 1)} className={buttonClass('secondary', step)}>
             Next
           </Link>
         ) : (
-          <span className={cx(buttonClass('secondary', 'px-2.5 py-1.5'), 'opacity-50')} aria-disabled>
+          <span className={exhausted} aria-disabled>
             Next
           </span>
         )}

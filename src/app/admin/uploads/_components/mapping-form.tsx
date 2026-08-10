@@ -5,7 +5,24 @@ import { useRouter } from 'next/navigation';
 import { CANONICAL_FIELDS } from '@/lib/fields';
 import { setColumnMappingAction, validateBatchAction } from '@/lib/import/actions';
 import type { ColumnMapping, MappingSuggestion, SourceColumn } from '@/lib/import/types';
+import type { MatchReason } from '@/lib/import/types';
 import { Alert, Badge, Button, Select, Table, Td, Th } from '@/components/ui';
+
+/**
+ * Why the scorer picked a column, in words.
+ *
+ * The reason was already computed and passed to this screen; until now it only
+ * lit an "auto" badge, which says a machine chose without saying on what
+ * evidence. An alias hit is near-certain and a substring hit is a guess — and
+ * that difference is exactly what decides whether the admin reads the sample
+ * values before moving on.
+ */
+const REASON_LABELS: Record<MatchReason, string> = {
+  ALIAS: 'header is a known alias of this field',
+  LABEL: 'header matches the field name',
+  PREFIX: 'header starts with the field name',
+  CONTAINS: 'field name appears inside the header',
+};
 
 /**
  * The human gate of spec section 6: the admin confirms the mapping, sees real
@@ -66,6 +83,7 @@ export function MappingForm({
           <tr>
             <Th>Canonical field</Th>
             <Th>Source column</Th>
+            <Th>Why</Th>
             <Th>Sample values from this file</Th>
           </tr>
         </thead>
@@ -84,11 +102,6 @@ export function MappingForm({
                       <Badge tone="danger">required</Badge>
                     </span>
                   ) : null}
-                  {reason && reason.columnKey === selected ? (
-                    <span className="ml-1.5 align-middle">
-                      <Badge tone="info">auto</Badge>
-                    </span>
-                  ) : null}
                   {errors?.map((message) => (
                     <p key={message} className="mt-1 text-xs text-red-700">
                       {message}
@@ -96,8 +109,11 @@ export function MappingForm({
                   ))}
                 </Td>
                 <Td>
+                  {/* Monospaced: these are the workbook's own header strings,
+                      compared against each other down the column. */}
                   <Select
                     aria-label={`Source column for ${field.label}`}
+                    className="font-mono text-[12px]"
                     value={selected}
                     disabled={pending}
                     onChange={(e) =>
@@ -118,7 +134,21 @@ export function MappingForm({
                     ))}
                   </Select>
                 </Td>
-                <Td className="font-mono text-xs text-slate-600">
+                <Td className="text-[12px] text-slate-500">
+                  {!selected ? (
+                    '—'
+                  ) : reason && reason.columnKey === selected ? (
+                    <>
+                      <Badge tone="info">auto</Badge>{' '}
+                      <span className="align-middle">{REASON_LABELS[reason.reason]}</span>
+                    </>
+                  ) : (
+                    // Said out loud, because an override that silently looks like
+                    // a suggestion is how a wrong column survives this screen.
+                    'chosen by hand'
+                  )}
+                </Td>
+                <Td className="font-mono text-[12px] text-slate-600">
                   {selected ? (samples[selected] ?? []).join(' · ') || '—' : '—'}
                 </Td>
               </tr>

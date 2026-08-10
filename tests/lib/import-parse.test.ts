@@ -153,7 +153,21 @@ describe.each(FORMATS)('mapping auto-suggestion (%s) — spec 6.2', (format) => 
 
   it('leaves columns with no canonical home unmapped rather than forcing them', () => {
     const suggestion = suggestMapping(loginSheet(format).columns);
-    expect(suggestion.unmappedColumns).toEqual(expect.arrayContaining(['FY', 'Source']));
+    expect(suggestion.unmappedColumns).toEqual(expect.arrayContaining(['FY']));
+  });
+
+  /**
+   * `Source` stopped being unmapped when BAU_TO_BFL arrived — 2026-08-06 spec §3.
+   *
+   * It is the column that says which channel a policy was booked under, and it is
+   * what classifies a BAU-to-BFL correction. Before that category existed nothing
+   * read it, so it sat in `extra` with the rest of the unmapped columns; asserting
+   * it stays there would now assert that the one field the new chain targets
+   * cannot be imported.
+   */
+  it('maps Source to the BAU/BFL channel the new category targets', () => {
+    const { mapping } = suggestMapping(loginSheet(format).columns);
+    expect(mapping.sourceChannel).toBe('Source');
   });
 
   it('never maps two fields to the same column', () => {

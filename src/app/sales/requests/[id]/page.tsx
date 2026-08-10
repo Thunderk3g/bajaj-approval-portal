@@ -13,11 +13,14 @@ import { formatDateTime, orDash } from '@/lib/format';
 import { ACCEPT_ATTRIBUTE, MAX_PROOFS_PER_REQUEST } from '@/lib/storage/files';
 import { ResubmitForm, WithdrawButton } from '@/components/corrections/request-actions';
 import { ProofList, RequestTimeline } from '@/components/corrections/request-detail-parts';
-import { Alert, Card, DetailRow, PageHeader, StatusBadge } from '@/components/ui';
+import { Alert, Badge, Card, StatusBadge } from '@/components/ui';
 
 export const metadata: Metadata = {
   title: 'Correction request · Sales Data Review Portal',
 };
+
+/** 10px uppercase, matching the reviewer screens. */
+const LABEL = 'text-[10px] font-semibold uppercase tracking-[0.07em]';
 
 export default async function RequestDetailPage({
   params,
@@ -36,29 +39,41 @@ export default async function RequestDetailPage({
   const { request, events, attachments } = detail;
   const shown = request.status;
   const category = request.category as CorrectionCategory;
+  const withdrawable = shown === 'PENDING' || shown === 'RETURNED';
 
   return (
     <section>
-      <PageHeader
-        title={`Application ${request.appsNo}`}
-        description={
-          <>
+      {/*
+        The application number is the title, monospaced and large: a rep arrives
+        here from a list of ten-digit codes and the first thing they have to
+        confirm is that they opened the right one.
+      */}
+      <div className="mb-4">
+        <Link
+          href="/sales/requests"
+          className="text-[12px] text-slate-600 underline underline-offset-2 hover:text-slate-900"
+        >
+          ← My requests
+        </Link>
+
+        <div className="mt-2.5 flex flex-wrap items-center gap-2">
+          <h1 className="font-mono text-[23px] font-semibold leading-none tracking-tight text-slate-900">
+            {request.appsNo}
+          </h1>
+          <Badge tone={category === 'MAPPING' ? 'warning' : 'neutral'}>
             {CATEGORY_LABELS[category] ?? request.category}
-            <span className="px-1.5 text-slate-300" aria-hidden="true">
-              |
-            </span>
-            raised {formatDateTime(request.submittedAt)}
-          </>
-        }
-        actions={
-          <>
-            <StatusBadge status={shown} />
-            {shown === 'PENDING' || shown === 'RETURNED' ? (
-              <WithdrawButton requestId={request.id} />
-            ) : null}
-          </>
-        }
-      />
+          </Badge>
+          <StatusBadge status={shown} />
+        </div>
+
+        <p className="mt-2 max-w-4xl text-[13px] leading-relaxed text-slate-600">
+          {request.fieldLabel} · raised {formatDateTime(request.submittedAt)}
+          {request.resubmissionCount > 0
+            ? ` · resubmitted ${request.resubmissionCount}×, last ${formatDateTime(request.lastResubmittedAt)}`
+            : ''}
+          .
+        </p>
+      </div>
 
       {shown === 'RETURNED' && request.approverRemarks ? (
         <div className="mb-4">
@@ -76,40 +91,10 @@ export default async function RequestDetailPage({
         </div>
       ) : null}
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div className="space-y-4 lg:col-span-2">
-          <Card title="The correction">
-            <dl>
-              <DetailRow label="Field">{request.fieldLabel}</DetailRow>
-              <DetailRow label="Current value">
-                <span className="text-slate-600">{orDash(request.originalValue)}</span>
-              </DetailRow>
-              <DetailRow label="Proposed value">
-                <span className="font-medium">{orDash(request.proposedValue)}</span>
-              </DetailRow>
-              <DetailRow label="Description">{orDash(request.description)}</DetailRow>
-              {request.resubmissionCount > 0 ? (
-                <DetailRow label="Resubmitted">
-                  {request.resubmissionCount}× — last {formatDateTime(request.lastResubmittedAt)}
-                </DetailRow>
-              ) : null}
-              {category === 'MAPPING' ? (
-                <DetailRow label="Note">
-                  {request.direction === 'TRANSFER_OUT'
-                    ? `If this is approved the sale leaves your book and moves to ${request.proposedValue}, whose SM name is resolved from the Manpower roster. That rep has already been told it is coming; they cannot refuse it, and they are not asked to accept it — the verifier and the approver decide.`
-                    : 'If this is approved the sale moves to your SM ID and the SM name is resolved from the Manpower roster. The rep who currently holds it is told, not asked.'}
-                </DetailRow>
-              ) : null}
-            </dl>
-          </Card>
-
-          <Card
-            title="Proof"
-            description={`${attachments.length} of ${MAX_PROOFS_PER_REQUEST} documents. Every view is logged.`}
-          >
-            <ProofList attachments={attachments} />
-          </Card>
-
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
+        <div className="min-w-0 space-y-4">
+          {/* The one thing a returned request needs is the form that fixes it,
+              so it sits above the history rather than under it. */}
           {shown === 'RETURNED' ? (
             <ResubmitForm
               requestId={request.id}
@@ -124,20 +109,79 @@ export default async function RequestDetailPage({
               attachmentsRemaining={Math.max(0, MAX_PROOFS_PER_REQUEST - attachments.length)}
             />
           ) : null}
-        </div>
 
-        <div className="lg:col-span-1">
-          <Card title="History">
+          <Card
+            title="Where it has got to"
+            description="Every step this request has been through, and what was said at each."
+          >
             <RequestTimeline events={events} />
           </Card>
         </div>
-      </div>
 
-      <p className="mt-4 text-sm">
-        <Link href="/sales/requests" className="text-slate-600 underline underline-offset-2">
-          Back to my requests
-        </Link>
-      </p>
+        <div className="space-y-4">
+          <Card title="The change">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                <p className={`${LABEL} text-slate-500`}>Now</p>
+                <p className="mt-1.5 break-words font-mono text-[18px] font-semibold leading-tight text-slate-900">
+                  {orDash(request.originalValue)}
+                </p>
+              </div>
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3">
+                <p className={`${LABEL} text-emerald-700`}>Asked for</p>
+                <p className="mt-1.5 break-words font-mono text-[18px] font-semibold leading-tight text-emerald-900">
+                  {orDash(request.proposedValue)}
+                </p>
+              </div>
+            </div>
+
+            {request.description ? (
+              <div className="mt-3 border-t border-slate-100 pt-3">
+                <p className={`${LABEL} text-slate-500`}>Your note</p>
+                <p className="mt-1.5 whitespace-pre-wrap text-[13px] leading-relaxed text-slate-800">
+                  {request.description}
+                </p>
+              </div>
+            ) : null}
+
+            {category === 'MAPPING' ? (
+              <p className="mt-3 border-t border-slate-100 pt-3 text-[12px] leading-relaxed text-slate-500">
+                {request.direction === 'TRANSFER_OUT'
+                  ? `If this is approved the sale leaves your book and moves to ${request.proposedValue}, whose SM name is resolved from the Manpower roster. That rep has already been told it is coming; they cannot refuse it, and they are not asked to accept it — the reviewers decide.`
+                  : 'If this is approved the sale moves to your SM ID and the SM name is resolved from the Manpower roster. The rep who currently holds it is told, not asked.'}
+              </p>
+            ) : null}
+          </Card>
+
+          <Card
+            title="Proof you attached"
+            description={`${attachments.length} of ${MAX_PROOFS_PER_REQUEST} documents. Every view is logged.`}
+          >
+            <ProofList attachments={attachments} />
+          </Card>
+
+          <Card title="If it comes back to you">
+            <p className="text-[13px] leading-relaxed text-slate-600">
+              A return at any step sends it to you with remarks and a form prefilled with these
+              values. Resubmitting restarts the review from the first step — never from the middle.
+            </p>
+
+            {withdrawable ? (
+              <div className="mt-3">
+                <WithdrawButton requestId={request.id} />
+                <p className="mt-2 text-[11px] leading-snug text-slate-500">
+                  Available until the final decision. Withdrawing releases the field so you can
+                  raise a corrected request against it.
+                </p>
+              </div>
+            ) : (
+              <p className="mt-2 text-[11px] leading-snug text-slate-500">
+                This request is {shown.toLowerCase()}, so there is nothing left to withdraw.
+              </p>
+            )}
+          </Card>
+        </div>
+      </div>
     </section>
   );
 }

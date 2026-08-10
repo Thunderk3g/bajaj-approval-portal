@@ -82,15 +82,18 @@ export default async function UploadsPage() {
           <tbody>
             {batches.map((batch) => (
               <tr key={batch.id}>
+                {/* Monospaced, like every other identifier in the portal. A
+                    column of workbook names is scanned for the one differing
+                    date or suffix, and proportional digits hide exactly that. */}
                 <Td>
                   <Link
                     href={`/admin/uploads/${batch.id}`}
-                    className="font-medium text-slate-900 underline underline-offset-2 hover:text-slate-700"
+                    className="font-mono text-[13px] font-medium text-slate-900 underline underline-offset-2 hover:text-slate-700"
                   >
                     {batch.originalFileName}
                   </Link>
                 </Td>
-                <Td className="text-slate-600">{batch.sheetName ?? '—'}</Td>
+                <Td className="font-mono text-[12px] text-slate-600">{batch.sheetName ?? '—'}</Td>
                 <Td>
                   <StatusBadge status={batch.status} />
                 </Td>
@@ -102,9 +105,11 @@ export default async function UploadsPage() {
                 <Td className="text-right tabular-nums text-amber-700">
                   {batch.duplicateRows === 0 ? '—' : batch.duplicateRows.toLocaleString('en-IN')}
                 </Td>
-                <Td className="whitespace-nowrap text-slate-600">
+                <Td className="whitespace-nowrap text-[12px] text-slate-600">
                   {formatDateTime(batch.uploadedAt)}
-                  <span className="block text-xs text-slate-400">{batch.uploadedByName ?? '—'}</span>
+                  <span className="block text-[11px] text-slate-400">
+                    {batch.uploadedByName ?? '—'}
+                  </span>
                 </Td>
                 {/* A committed batch renders no control at all rather than a
                     disabled one: its rows are the provenance of live records, so

@@ -15,7 +15,7 @@ import {
   uploadBatchRow,
 } from '@/db/schema';
 import type { SessionUser } from '@/lib/auth/rbac';
-import { commitBatch, insertPayload } from '@/lib/import/commit';
+import { commitBatch, commitRoster, insertPayload } from '@/lib/import/commit';
 import { CANONICAL_FIELDS } from '@/lib/fields';
 import { suggestMapping } from '@/lib/import/mapping';
 import { readSheet } from '@/lib/import/parse';
@@ -106,6 +106,15 @@ async function createValidatedBatch(
       validationReport: report,
     })
     .where(eq(uploadBatch.id, batch.id));
+
+  // The roster is a SEPARATE, EARLIER step now, and `commitBatch` refuses while
+  // none exists — the policies are mapped against the hierarchy it writes. The
+  // fixture workbook carries a Manpower sheet, so this is the same call the
+  // admin makes on screen before committing the policies, not a test shortcut.
+  await commitRoster({
+    batchId: batch.id,
+    actor: { id: adminId, email: 'import-admin@example.test', role: 'admin' },
+  });
 
   return { batchId: batch.id, report };
 }

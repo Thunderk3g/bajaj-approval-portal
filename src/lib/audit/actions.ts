@@ -30,6 +30,15 @@ export const AUDIT_ACTIONS = [
    */
   'UPLOAD_LEADS_IMPORT',
   /**
+   * The Manpower sheet was committed to the roster — step one of an import.
+   *
+   * Its own action, not folded into UPLOAD_COMMIT, because it is a separate
+   * decision with separate consequences: this one rewrites who approves whose
+   * corrections, and an auditor asking "when did the reporting line change" must
+   * not have to infer it from a policy import that happened to carry the sheet.
+   */
+  'UPLOAD_ROSTER_COMMIT',
+  /**
    * The upload row, its staged rows and its stored file are gone.
    *
    * Distinct from UPLOAD_ABORT, which keeps all three. This entry is the ONLY
@@ -68,9 +77,46 @@ export const AUDIT_ACTIONS = [
   'EXPORT_GENERATE',
   'EXPORT_DOWNLOAD',
 
+  /**
+   * A non-final stage passed the request on — 2026-08-06 spec section 4.
+   *
+   * Distinct from CORRECTION_VERIFY, which keeps meaning "stage 0 of a chain
+   * whose stage 0 is a verifier". An ACM handing a mapping request to the second
+   * ACM verified nothing, and recording it as a verification would make the one
+   * number that says whether the verification gate is doing work meaningless.
+   */
+  'CORRECTION_ADVANCE',
+
   /** The monthly cycle — 2026-07-28 spec section 4.4. */
   'PERIOD_OPEN',
   'PERIOD_CLOSE',
+
+  /**
+   * The approval chain an admin edits — 2026-08-06 spec section 7.
+   *
+   * Three actions rather than one CHAIN_UPDATE, because the three answer
+   * different questions after the fact: a removed stage is a control that stopped
+   * running, a reorder is the same controls in a different order, and only the
+   * first is worth waking somebody for. All three carry the full before/after
+   * stage list, so the audit log IS the version history — no separate table.
+   */
+  'WORKFLOW_CHAIN_STAGE_ADD',
+  'WORKFLOW_CHAIN_STAGE_REMOVE',
+  'WORKFLOW_CHAIN_STAGE_REORDER',
+
+  /** An admin overriding, or releasing, the roster's own hierarchy — spec §5. */
+  'HIERARCHY_REASSIGN',
+  'HIERARCHY_OVERRIDE_REVERT',
+  /**
+   * A row was struck off the Manpower roster by hand.
+   *
+   * Its own action rather than a HIERARCHY_* one: those two move a person
+   * between managers and are reversible from the screen that made them, while
+   * this one destroys the roster's only row for a code. The entry carries the
+   * whole row in `before` and how many imported records were left without an
+   * owner in `metadata`, because after the fact there is nothing left to join to.
+   */
+  'ROSTER_ENTRY_DELETE',
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

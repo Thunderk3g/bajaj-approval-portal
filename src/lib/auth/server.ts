@@ -58,6 +58,11 @@ export const auth = betterAuth({
       // self-assign admin through sign-up or a profile update.
       role: { type: 'string', required: false, input: false, defaultValue: 'sales' },
       smId: { type: 'string', required: false, input: false },
+      // Same `input: false` reasoning as `role` and `smId`, and it matters more
+      // here, not less: a self-assigned tlCode would make an account the approver
+      // for a team it has nothing to do with.
+      tlCode: { type: 'string', required: false, input: false },
+      acmCode: { type: 'string', required: false, input: false },
       isActive: { type: 'boolean', required: false, input: false, defaultValue: true },
     },
   },

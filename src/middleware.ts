@@ -30,5 +30,12 @@ export function middleware(request: NextRequest) {
 // to be statically analysable, so it cannot be derived from that map at build
 // time; tests/lib/nav.test.ts asserts the two stay in step instead.
 export const config = {
-  matcher: ['/admin/:path*', '/sales/:path*', '/approver/:path*', '/verifier/:path*'],
+  matcher: [
+    '/admin/:path*',
+    '/sales/:path*',
+    '/approver/:path*',
+    '/verifier/:path*',
+    '/tl/:path*',
+    '/acm/:path*',
+  ],
 };

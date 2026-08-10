@@ -225,6 +225,35 @@ export const CANONICAL_FIELDS: readonly CanonicalField[] = [
     required: false,
     aliases: ['autopay', 'auto', 'autodebit', 'standinginstruction', 'si', 'nach'],
   },
+  {
+    // The channel a policy was booked under — BAU or BFL — and the field a
+    // BAU_TO_BFL correction targets (2026-08-06 spec section 3).
+    //
+    // `required: false` for the same reason `agentId` is: the column arrives with
+    // this release, so every workbook already committed lacks it, and a required
+    // field would block the commit of any file that predates it.
+    //
+    // NO BARE `source` ALIAS. Six characters clears the noise floor in
+    // `scoreColumn`, and `Lead Dump` already ships a `Source` column with an
+    // entirely different meaning (lead origin, not booking channel) — a bare
+    // alias would win that header on any workbook whose sheets get mapped
+    // together, which is the silent mis-mapping the guard on `agentId` exists to
+    // prevent. `sourcechannel` and the explicit BAU/BFL spellings are the ones
+    // that actually appear.
+    key: 'sourceChannel',
+    label: 'Source channel',
+    kind: 'text',
+    required: false,
+    aliases: [
+      'sourcechannel',
+      'channel',
+      'businesschannel',
+      'businesstype',
+      'baubfl',
+      'bflbau',
+      'bookingchannel',
+    ],
+  },
 ] as const;
 
 export const FIELD_BY_KEY: ReadonlyMap<string, CanonicalField> = new Map(
@@ -261,5 +290,6 @@ export const CATEGORY_FIELDS: Record<string, readonly string[]> = {
   MAPPING: ['smId'],
   ISSUANCE_DATE: ['issuedDate'],
   AGENT_ID: ['agentId'],
+  BAU_TO_BFL: ['sourceChannel'],
   OTHERS: CANONICAL_FIELDS.map((f) => f.key),
 };

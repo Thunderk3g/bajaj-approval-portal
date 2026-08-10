@@ -177,11 +177,14 @@ export function NotificationBell() {
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label={bellLabel(feed.unread)}
-        className="relative rounded border border-slate-300 bg-white px-2.5 py-1.5 text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
+        className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 py-[5px] text-[12px] text-slate-800 transition-colors hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
       >
-        <BellIcon />
+        <span>Notifications</span>
+        {/* Inline beside the word, not floated over a glyph. A count that
+            overhangs the control clips against the header's sticky edge, and
+            the header has room for the word. */}
         {badge ? (
-          <span className="absolute -right-1.5 -top-1.5 inline-flex min-w-5 items-center justify-center rounded-full bg-red-600 px-1 py-0.5 text-[10px] font-semibold leading-none text-white tabular-nums">
+          <span className="inline-flex h-[17px] min-w-[17px] items-center justify-center rounded-full bg-red-700 px-1 text-[10px] font-semibold leading-none text-white tabular-nums">
             {badge}
           </span>
         ) : null}
@@ -193,13 +196,13 @@ export function NotificationBell() {
           aria-label="Notifications"
           className="absolute right-0 z-30 mt-2 w-80 max-w-[calc(100vw-2rem)] rounded-lg border border-slate-200 bg-white shadow-lg"
         >
-          <div className="flex items-center justify-between gap-2 border-b border-slate-200 px-3 py-2">
-            <p className="text-sm font-semibold text-slate-900">Notifications</p>
+          <div className="flex items-center justify-between gap-2 border-b border-slate-200 px-3.5 py-[9px]">
+            <p className="text-[13px] font-semibold text-slate-900">Notifications</p>
             {feed.unread > 0 ? (
               <button
                 type="button"
                 onClick={() => void markAll()}
-                className="rounded px-1.5 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                className="rounded px-1.5 py-0.5 text-[11px] font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900"
               >
                 Mark all read
               </button>
@@ -208,11 +211,11 @@ export function NotificationBell() {
 
           <ul className="max-h-96 divide-y divide-slate-100 overflow-y-auto">
             {failed ? (
-              <li className="px-3 py-6 text-center text-sm text-slate-500">
+              <li className="px-3.5 py-7 text-center text-[13px] text-slate-500">
                 Could not load notifications. Retrying shortly.
               </li>
             ) : feed.items.length === 0 ? (
-              <li className="px-3 py-6 text-center text-sm text-slate-500">Nothing yet.</li>
+              <li className="px-3.5 py-7 text-center text-[13px] text-slate-500">Nothing yet.</li>
             ) : (
               feed.items.map((item) => (
                 <li key={item.id}>
@@ -241,21 +244,21 @@ function FeedRow({ item, onOpen }: { item: FeedItem; onOpen: () => void }) {
         className={
           item.isRead
             ? 'mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-transparent'
-            : 'mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-sky-600'
+            : 'mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-sky-700'
         }
       />
       <span className="min-w-0 flex-1">
         <span
           className={
             item.isRead
-              ? 'block text-sm text-slate-700'
-              : 'block text-sm font-semibold text-slate-900'
+              ? 'block text-[13px] text-slate-700'
+              : 'block text-[13px] font-semibold text-slate-900'
           }
         >
           {item.title}
         </span>
         {item.body ? (
-          <span className="mt-0.5 block text-xs text-slate-500">{item.body}</span>
+          <span className="mt-0.5 block text-[12px] text-pretty text-slate-500">{item.body}</span>
         ) : null}
         <span className="mt-0.5 block text-[11px] text-slate-400">
           {relativeTime(item.createdAt)}
@@ -264,7 +267,7 @@ function FeedRow({ item, onOpen }: { item: FeedItem; onOpen: () => void }) {
     </span>
   );
 
-  const className = 'block w-full px-3 py-2.5 text-left hover:bg-slate-50';
+  const className = 'block w-full px-3.5 py-2.5 text-left no-underline hover:bg-slate-50';
 
   return item.link ? (
     <Link href={item.link} onClick={onOpen} className={className}>
@@ -277,16 +280,3 @@ function FeedRow({ item, onOpen }: { item: FeedItem; onOpen: () => void }) {
   );
 }
 
-function BellIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      viewBox="0 0 20 20"
-      fill="currentColor"
-      width="18"
-      height="18"
-    >
-      <path d="M10 2a5 5 0 0 0-5 5v2.6l-1.2 2.4A1 1 0 0 0 4.7 13.5h10.6a1 1 0 0 0 .9-1.5L15 9.6V7a5 5 0 0 0-5-5Zm0 15a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 10 17Z" />
-    </svg>
-  );
-}

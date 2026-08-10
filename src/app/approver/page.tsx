@@ -53,7 +53,7 @@ export default async function ApproverDashboardPage() {
       />
 
       {stale > 0 ? (
-        <div className="mb-6">
+        <div className="mb-4">
           <Alert
             tone="warning"
             title={`${n(stale)} request${stale === 1 ? ' has' : 's have'} been waiting 8 days or more`}
@@ -69,7 +69,7 @@ export default async function ApproverDashboardPage() {
         </div>
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           label="Queue depth"
           value={n(queue.pending)}
@@ -105,7 +105,7 @@ export default async function ApproverDashboardPage() {
         />
       </div>
 
-      <div className="mt-6 grid gap-6 lg:grid-cols-2">
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <Card
           title="Queue ageing"
           description="Every pending request falls in exactly one band, so these sum to the queue depth."

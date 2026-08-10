@@ -4,6 +4,7 @@ import { db } from '@/db/client';
 import { auditLog, manpower, salesRecord, uploadBatch, user } from '@/db/schema';
 import { createUser, setUserActive, updateUser } from '@/lib/users/service';
 import { listRoster, listUsers, rosterStatus, userCounts } from '@/lib/users/queries';
+import { rosterKey } from '@/lib/roster/entries';
 import { createUserSchema } from '@/lib/users/schema';
 import { expectDbError, makeUser, truncateAll } from '../helpers/db';
 
@@ -17,11 +18,31 @@ async function auditFor(entityId: string) {
   return db.select().from(auditLog).where(eq(auditLog.entityId, entityId));
 }
 
+/**
+ * Places a rep on the roster under a real team leader and area manager.
+ *
+ * Creating a Sales account now REQUIRES this: the chain resolves a rep's
+ * approvers by following `tl_id` and then that team's `ccm_id`, so an account
+ * whose code the roster does not place resolves to nobody at both manager rungs
+ * and is refused rather than created and flagged. Most tests here only need the
+ * account to exist, so they call this first.
+ */
+async function placeOnRoster(smId: string, smName: string | null = null) {
+  await db
+    .insert(manpower)
+    .values({ smId, smName, tlId: 'TL001', ccmId: 'CCM001', isOrphan: false })
+    .onConflictDoUpdate({
+      target: manpower.smId,
+      set: { tlId: 'TL001', ccmId: 'CCM001', isOrphan: false },
+    });
+}
+
 describe('creating accounts (spec 4.2)', () => {
   beforeEach(truncateAll);
 
   it('creates a sales account and records USER_CREATE', async () => {
     const admin = actorFrom(await makeUser({ role: 'admin', smId: null }));
+    await placeOnRoster('C2CM21350', 'Ravi Kumar');
 
     const result = await createUser(admin, {
       name: 'Ravi Kumar',
@@ -92,6 +113,7 @@ describe('creating accounts (spec 4.2)', () => {
 
   it('rejects a duplicate email without writing an audit row', async () => {
     const admin = actorFrom(await makeUser({ role: 'admin', smId: null }));
+    await placeOnRoster('C2CM21350', 'Ravi Kumar');
     const input = {
       name: 'Ravi Kumar',
       email: 'ravi@example.test',
@@ -124,9 +146,20 @@ describe('creating accounts (spec 4.2)', () => {
     if (parsed.success) expect(parsed.data.smId).toBe('512454');
   });
 
-  it('flags an SM_ID that is not on the roster for review', async () => {
+  /**
+   * Reverses spec 13.2 note 7, deliberately.
+   *
+   * That rule made an off-roster SM_ID creatable and merely flagged, on the
+   * reasoning that the leads are real and the roster sheet lags. It held while an
+   * account only scoped a rep to their own records. It stopped holding when the
+   * roster also became what ROUTES a correction: such an account resolves to
+   * nobody at both manager rungs, so its mapping requests skip the team leader
+   * and the area manager and reach the approver signed off by fewer people, with
+   * nothing on any screen saying so.
+   */
+  it('refuses an SM_ID the roster does not carry', async () => {
     const admin = actorFrom(await makeUser({ role: 'admin', smId: null }));
-    await db.insert(manpower).values({ smId: 'C2CM21350', smName: 'Ravi Kumar' });
+    await placeOnRoster('C2CM21350', 'Ravi Kumar');
 
     const onRoster = await createUser(admin, {
       name: 'Ravi Kumar',
@@ -143,14 +176,60 @@ describe('creating accounts (spec 4.2)', () => {
       smId: '512454',
     });
 
-    expect(onRoster.ok && orphan.ok).toBe(true);
-    if (!onRoster.ok || !orphan.ok) return;
+    expect(onRoster.ok).toBe(true);
+    expect(orphan.ok).toBe(false);
+    if (!onRoster.ok || orphan.ok) return;
+
+    // The refusal lands on the field the admin has to change, not as a banner.
+    expect(orphan.fieldErrors?.smId?.[0]).toMatch(/not on the Manpower roster/i);
+    expect(await db.select().from(user).where(eq(user.smId, '512454'))).toHaveLength(0);
 
     const [known] = await auditFor(onRoster.data.id);
-    const [unknown] = await auditFor(orphan.data.id);
-
     expect(known.metadata).toMatchObject({ roster: 'roster', needsRosterReview: false });
-    expect(unknown.metadata).toMatchObject({ roster: 'absent', needsRosterReview: true });
+  });
+
+  it('refuses a rep the roster carries but places under no team leader', async () => {
+    const admin = actorFrom(await makeUser({ role: 'admin', smId: null }));
+    // The shape `flagOrphans` writes for a code seen in transaction data and
+    // absent from the sheet: a row exists, but it places the rep nowhere.
+    await db.insert(manpower).values({ smId: 'C2CM99999', isOrphan: true });
+
+    const result = await createUser(admin, {
+      name: 'Unplaced Rep',
+      email: 'unplaced@example.test',
+      password: PASSWORD,
+      role: 'sales',
+      smId: 'C2CM99999',
+    });
+
+    expect(result.ok).toBe(false);
+  });
+
+  it('refuses a team leader code nobody reports to', async () => {
+    const admin = actorFrom(await makeUser({ role: 'admin', smId: null }));
+    await placeOnRoster('C2CM21350', 'Ravi Kumar');
+
+    const result = await createUser(admin, {
+      name: 'Ghost Leader',
+      email: 'ghost@example.test',
+      password: PASSWORD,
+      role: 'tl',
+      tlCode: 'TL999',
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.fieldErrors?.tlCode?.[0]).toMatch(/no rep on the roster reports/i);
+
+    // TL001 is what placeOnRoster puts everyone under, so it does exist.
+    const real = await createUser(admin, {
+      name: 'Real Leader',
+      email: 'real@example.test',
+      password: PASSWORD,
+      role: 'tl',
+      tlCode: 'TL001',
+    });
+    expect(real.ok).toBe(true);
   });
 });
 
@@ -159,6 +238,7 @@ describe('deactivation, never deletion (spec 4.2)', () => {
 
   it('deactivates without removing the row or its audit references', async () => {
     const admin = actorFrom(await makeUser({ role: 'admin', smId: null }));
+    await placeOnRoster('C2CM21350', 'Ravi Kumar');
     const created = await createUser(admin, {
       name: 'Ravi Kumar',
       email: 'ravi@example.test',
@@ -186,6 +266,7 @@ describe('deactivation, never deletion (spec 4.2)', () => {
 
   it('cannot be hard-deleted once the account has audit history', async () => {
     const admin = await makeUser({ role: 'admin', smId: null });
+    await placeOnRoster('C2CM21350', 'Ravi Kumar');
     const created = await createUser(actorFrom(admin), {
       name: 'Ravi Kumar',
       email: 'ravi@example.test',
@@ -327,9 +408,12 @@ describe('roster-assisted provisioning (spec 13.2 note 7)', () => {
       })
       .returning();
 
+    // Placed under a real team leader and area manager: an unplaced rep can no
+    // longer be given an account at all, so a worklist fixture that left them
+    // unplaced would be testing a row nobody can action.
     await db.insert(manpower).values([
-      { smId: 'C2CM21350', smName: 'Ravi Kumar', location: 'Pune' },
-      { smId: 'ICCSP90766', smName: 'Asha Rao', location: 'Nagpur' },
+      { smId: 'C2CM21350', smName: 'Ravi Kumar', location: 'Pune', tlId: 'TL001', ccmId: 'CCM001' },
+      { smId: 'ICCSP90766', smName: 'Asha Rao', location: 'Nagpur', tlId: 'TL001', ccmId: 'CCM001' },
     ]);
 
     // An SM_ID that appears in transaction data but nowhere on the roster.
@@ -345,19 +429,44 @@ describe('roster-assisted provisioning (spec 13.2 note 7)', () => {
     return { uploader };
   }
 
-  it('lists roster IDs and folds in orphans found only in records', async () => {
+  /**
+   * The worklist is the Manpower sheet and nothing else, at every rung.
+   *
+   * It used to fold in SM_IDs found only in `sales_record`, per spec 13.2 note 7.
+   * Every reason for that is gone: `flagOrphans` already writes a `manpower` row
+   * for such a code at commit, and an account can no longer be created for one
+   * that the roster does not place — so those entries were rows whose only button
+   * was guaranteed to fail. Roster gaps are named on /admin/hierarchy instead.
+   *
+   * TL001 and CCM001 are on the list even though the sheet gives them no row of
+   * their own: they are the codes it names as the two reps' approvers, and until
+   * somebody holds them every mapping correction from this team falls to the
+   * administrators.
+   */
+  it('lists everybody the sheet names, at the rung it puts them on', async () => {
     await seedRosterAndRecords();
+    // Both a bucket the sheet carries a row for, and an orphan written by an
+    // import: neither can hold a login, so neither belongs on a worklist.
+    await db.insert(manpower).values([
+      { smId: '111222-UN', smName: 'DIY', tlId: '111222-UN', ccmId: '111222-UN' },
+      { smId: 'DIY', smName: 'DIY', tlId: 'DIY', ccmId: 'DIY' },
+    ]);
 
     const roster = await listRoster();
-    const bySmId = new Map(roster.map((r) => [r.smId, r]));
 
-    expect([...bySmId.keys()].sort()).toEqual(['512454', 'C2CM21350', 'ICCSP90766']);
-    expect(bySmId.get('512454')?.isOrphan).toBe(true);
-    expect(bySmId.get('512454')?.smName).toBe('Unknown Rep');
-    expect(bySmId.get('C2CM21350')?.isOrphan).toBe(false);
+    expect(roster.map(rosterKey)).toEqual([
+      'acm:CCM001',
+      'tl:TL001',
+      'sales:C2CM21350',
+      'sales:ICCSP90766',
+    ]);
+    // 512454 appears only in sales_record; the buckets have roster rows and are
+    // excluded by name, at every rung.
+    expect(roster.some((r) => r.code === '512454')).toBe(false);
+    expect(roster.some((r) => r.code === 'DIY' || r.code === '111222-UN')).toBe(false);
   });
 
-  it('marks which SM_IDs already have an account and sorts those last', async () => {
+  it('marks which roster codes already have an account and sorts those last', async () => {
     const { uploader } = await seedRosterAndRecords();
 
     const created = await createUser(actorFrom(uploader), {
@@ -370,15 +479,22 @@ describe('roster-assisted provisioning (spec 13.2 note 7)', () => {
     expect(created.ok).toBe(true);
 
     const roster = await listRoster();
-    const provisioned = roster.find((r) => r.smId === 'C2CM21350');
+    const provisioned = roster.find((r) => rosterKey(r) === 'sales:C2CM21350');
 
     expect(provisioned?.accountEmail).toBe('ravi@example.test');
     expect(provisioned?.accountIsActive).toBe(true);
-    // Unprovisioned first, and the orphan ahead of the roster entry.
-    expect(roster.map((r) => r.smId)).toEqual(['512454', 'ICCSP90766', 'C2CM21350']);
+    // Unprovisioned first, then top of the hierarchy down.
+    expect(roster.map(rosterKey)).toEqual([
+      'acm:CCM001',
+      'tl:TL001',
+      'sales:ICCSP90766',
+      'sales:C2CM21350',
+    ]);
 
     const counts = await userCounts();
-    expect(counts.unprovisioned).toBe(2);
+    // The two manager codes and Asha Rao. The record-only 512454 is not counted:
+    // there is nothing an admin could do with it from this screen.
+    expect(counts.unprovisioned).toBe(3);
     expect(counts.sales).toBe(1);
   });
 

@@ -5,10 +5,18 @@ import { readFile, unlink, writeFile } from 'node:fs/promises';
 import { extname } from 'node:path';
 import { revalidatePath } from 'next/cache';
 import { headers } from 'next/headers';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/db/client';
-import { ingestJob, lead, uploadBatch } from '@/db/schema';
+import {
+  correctionRequest,
+  ingestJob,
+  lead,
+  manpower,
+  salesRecord,
+  salesRecordVersion,
+  uploadBatch,
+} from '@/db/schema';
 import { writeAudit } from '@/lib/audit/log';
 import { requireRole } from '@/lib/auth/rbac';
 import { fail, ok, zodFieldErrors, type ActionResult } from '@/lib/result';
@@ -17,7 +25,8 @@ import { isPeriodCode, periodCodeFor } from '@/lib/periods/service';
 import { IngestError, startLeadsJob, startParseJob, toSourceColumns } from '@/lib/ingest/client';
 import { latestParseJob, parseResultOf } from '@/lib/ingest/queries';
 import { DATE_FORMATS, DEFAULT_DATE_FORMAT, type DateFormat } from './dates';
-import { commitBatch } from './commit';
+import { commitBatch, commitRoster, type RosterCommitOutcome } from './commit';
+import { ImportPreconditionError } from './roster-gate';
 import { validateMapping } from './mapping';
 import { listSheets, readSheet, MANPOWER_SHEET, MAPPING_CHANGES_SHEET } from './parse';
 import { loadMasterSnapshots, stageRows } from './stage';
@@ -720,11 +729,46 @@ export async function abortBatchAction(input: unknown): Promise<ActionResult<voi
  * live records. The check here exists to say WHY in a sentence rather than
  * letting Postgres say it in a constraint name.
  */
-const deleteSchema = z.object({ batchId: z.string().uuid() });
+const deleteSchema = z.object({
+  batchId: z.string().uuid(),
+  /** Take the committed records with it. Ignored on a batch that never committed. */
+  purge: z.boolean().optional(),
+  /** The record count, typed back, for a purge. */
+  confirm: z.string().optional(),
+});
+
+const rosterSchema = z.object({ batchId: z.string().uuid() });
+
+/**
+ * Step one of an import: commit this workbook's Manpower sheet to the roster.
+ *
+ * Separate action, separate button, separate audit row. The policies are then
+ * mapped against the hierarchy this writes, which is the whole reason it is not
+ * folded into the policy commit.
+ */
+export async function commitRosterAction(
+  input: unknown,
+): Promise<ActionResult<RosterCommitOutcome>> {
+  const actor = await requireRole('admin');
+
+  const parsed = rosterSchema.safeParse(input);
+  if (!parsed.success) return fail('Unknown batch.');
+
+  try {
+    const outcome = await commitRoster({ batchId: parsed.data.batchId, actor });
+    revalidatePath(`/admin/uploads/${parsed.data.batchId}`);
+    revalidatePath('/admin/hierarchy');
+    revalidatePath('/admin/users');
+    return ok(outcome);
+  } catch (error) {
+    if (error instanceof ImportPreconditionError) return fail(error.message);
+    throw error;
+  }
+}
 
 export async function deleteBatchAction(
   input: unknown,
-): Promise<ActionResult<{ leadsRemoved: number; fileRemoved: boolean }>> {
+): Promise<ActionResult<{ leadsRemoved: number; fileRemoved: boolean; recordsRemoved: number }>> {
   const actor = await requireRole('admin');
   const context = await requestContext();
 
@@ -734,12 +778,63 @@ export async function deleteBatchAction(
   const [batch] = await db.select().from(uploadBatch).where(eq(uploadBatch.id, parsed.data.batchId));
   if (!batch) return fail('That upload no longer exists.');
 
-  if (batch.status === 'COMMITTED') {
+  /**
+   * A committed upload can be removed, but only by taking its records with it.
+   *
+   * Every record the commit created points back at this batch, as does every
+   * version snapshot, so the row cannot simply be dropped — the database refuses
+   * it. The honest reading of "delete this committed upload" is therefore a
+   * PURGE: the batch and everything traceable to it go together.
+   *
+   * Gated behind an explicit flag and a typed count rather than offered beside
+   * the ordinary delete, because the two are not the same act. Deleting a draft
+   * throws away a file nobody has acted on; this throws away live customer
+   * records, their history, and any correction raised against them.
+   */
+  if (batch.status === 'COMMITTED' && !parsed.data.purge) {
     return fail(
-      'A committed upload cannot be deleted. Its rows are the provenance of live records — ' +
-        'every record it created points back at it, as does every version snapshot. ' +
-        'Correct the data through a correction request instead.',
+      'This upload is committed, so deleting it would take its records with it. ' +
+        'Every record it created points back at it, as does every version snapshot. ' +
+        'Use "Delete the upload and its records" if that is genuinely what you want, ' +
+        'or correct the data through a correction request instead.',
     );
+  }
+
+  if (batch.status === 'COMMITTED') {
+    const [counts] = await db
+      .select({
+        records: sql<number>`count(*) filter (where ${salesRecord.sourceBatchId} = ${batch.id})::int`,
+      })
+      .from(salesRecord);
+
+    const recordCount = Number(counts?.records ?? 0);
+
+    /**
+     * An approved correction is an audited business decision about a record.
+     * Deleting the record destroys it along with the version it produced, so the
+     * purge stops here rather than quietly erasing somebody's approval.
+     */
+    const [decided] = await db
+      .select({ value: count() })
+      .from(correctionRequest)
+      .innerJoin(salesRecord, eq(salesRecord.id, correctionRequest.recordId))
+      .where(
+        and(eq(salesRecord.sourceBatchId, batch.id), eq(correctionRequest.status, 'APPROVED')),
+      );
+
+    if (Number(decided?.value ?? 0) > 0) {
+      return fail(
+        `${decided.value} approved correction${decided.value === 1 ? '' : 's'} have been applied to records from this upload. ` +
+          'Deleting it would erase those decisions and the versions they produced, so it is refused. ' +
+          'Withdraw or reject them first if this really has to go.',
+      );
+    }
+
+    if (parsed.data.confirm !== String(recordCount)) {
+      return fail(
+        `This will permanently delete ${recordCount} record${recordCount === 1 ? '' : 's'} and everything attached to them. Type ${recordCount} to confirm.`,
+      );
+    }
   }
 
   // A job still in flight has a worker holding this batch's id. Deleting the row
@@ -787,6 +882,7 @@ export async function deleteBatchAction(
   });
 
   let leadsRemoved = 0;
+  let recordsRemoved = 0;
 
   try {
     await db.transaction(async (tx) => {
@@ -806,6 +902,46 @@ export async function deleteBatchAction(
         .where(eq(lead.sourceBatchId, batch.id))
         .returning({ id: lead.id });
       leadsRemoved = removed.length;
+
+      /**
+       * The roster this upload wrote goes with it — clean in, clean out.
+       *
+       * Outside the COMMITTED branch, and that is the whole point: the roster
+       * step runs BEFORE the policy commit and writes `manpower.source_batch_id`
+       * while the batch is still DRAFT, MAPPED or VALIDATED. Cleaning it up only
+       * for a committed batch left every roster-committed draft undeletable —
+       * `manpower_source_batch_id_upload_batch_id_fk` refused the delete below,
+       * and the admin was told "other data still refers to it" about a step the
+       * same screen had just walked them through.
+       *
+       * Deliberately reversed from the earlier behaviour, which cleared the
+       * reference and kept the placements. Keeping them left a reporting line
+       * whose source file no longer existed, so re-importing a corrected sheet
+       * merged into stale rows nobody could account for. Deleting the upload now
+       * removes exactly what it created, and a re-import rebuilds it.
+       *
+       * Admin overrides are NOT deleted. `manpower_override` keys on `sm_id` and
+       * carries no batch reference — a pinned assignment is somebody's decision
+       * about a person, not a row this file produced, and it applies again the
+       * moment that rep is re-imported.
+       */
+      await tx.delete(manpower).where(eq(manpower.sourceBatchId, batch.id));
+
+      if (batch.status === 'COMMITTED') {
+        // The records this commit created, and by cascade their version history
+        // and any correction raised against them. Guarded above: no APPROVED
+        // correction can be among them.
+        const gone = await tx
+          .delete(salesRecord)
+          .where(eq(salesRecord.sourceBatchId, batch.id))
+          .returning({ id: salesRecord.id });
+        recordsRemoved = gone.length;
+
+        await tx
+          .update(salesRecordVersion)
+          .set({ batchId: null })
+          .where(eq(salesRecordVersion.batchId, batch.id));
+      }
 
       // `upload_batch_row` and `ingest_job` are ON DELETE CASCADE and go with it.
       await tx.delete(uploadBatch).where(eq(uploadBatch.id, batch.id));
@@ -839,7 +975,8 @@ export async function deleteBatchAction(
 
   revalidatePath('/admin/uploads');
   revalidatePath('/admin/leads');
-  return ok({ leadsRemoved, fileRemoved });
+  revalidatePath('/admin/records');
+  return ok({ leadsRemoved, fileRemoved, recordsRemoved });
 }
 
 /* ------------------------------------------------------------------ shared */

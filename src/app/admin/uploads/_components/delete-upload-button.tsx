@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { deleteBatchAction } from '@/lib/import/actions';
-import { Alert, Button } from '@/components/ui';
+import { Alert, Button, Input } from '@/components/ui';
 
 /**
  * Deletes an upload, behind an inline confirmation.
@@ -16,9 +16,11 @@ import { Alert, Button } from '@/components/ui';
  * because none of them is recoverable — the stored workbook is deleted from disk
  * and the only remaining trace is the audit entry.
  *
- * `committed` is passed in so a committed batch shows the reason it cannot be
- * deleted instead of a button that always fails. The server refuses it anyway;
- * this is the explanation, not the control.
+ * A COMMITTED batch can also be removed, but only by taking its records with it —
+ * every record it created points back at it. That is a different act from
+ * deleting a draft, so it gets different words, a red panel that names the record
+ * count, and a typed confirmation. The server re-checks all of it; this is the
+ * explanation, not the control.
  */
 export function DeleteUploadButton({
   batchId,
@@ -40,18 +42,23 @@ export function DeleteUploadButton({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
-
-  if (committed) return null;
+  const [typed, setTyped] = useState('');
 
   async function run() {
     setPending(true);
     setError(null);
 
-    const result = await deleteBatchAction({ batchId });
+    const result = await deleteBatchAction({
+      batchId,
+      purge: committed,
+      confirm: committed ? typed.trim() : undefined,
+    });
 
     if (!result.ok) {
       setPending(false);
-      setConfirming(false);
+      // The confirmation panel STAYS open on failure. The first attempt is
+      // expected to fail — it is what asks for the record count — and closing
+      // the panel would make the admin start again to read the number.
       setError(result.error);
       return;
     }
@@ -90,7 +97,7 @@ export function DeleteUploadButton({
           </button>
         ) : (
           <Button type="button" variant="danger" onClick={() => setConfirming(true)}>
-            Delete upload
+            {committed ? 'Delete the upload and its records' : 'Delete upload'}
           </Button>
         )}
         {error ? <Alert tone="danger">{error}</Alert> : null}
@@ -101,13 +108,42 @@ export function DeleteUploadButton({
 
   return (
     <div className="space-y-2 rounded-md border border-red-200 bg-red-50 p-3">
-      <p className="text-sm text-red-900">
+      <p className="text-[13px] leading-relaxed text-red-900">
         Delete <span className="font-medium">{fileName}</span>? This removes the stored workbook from
-        disk, every row staged from it, and any leads it imported. It cannot be undone.
+        disk, every row staged from it, any leads it imported, and the Manpower rows it wrote to the
+        roster. Admin overrides on those people are kept and apply again on the next import.
+        {committed ? (
+          <>
+            {' '}
+            Because it was committed, <strong>every record it created goes with it</strong>, along
+            with their version history and any open correction against them. It cannot be undone.
+          </>
+        ) : (
+          ' It cannot be undone.'
+        )}
       </p>
+
+      {committed ? (
+        <label className="block text-[13px] font-medium text-red-900">
+          Type the record count shown below to confirm
+          {/* The shared control, so the confirmation box is the same height and
+              type size as every other input in the portal — only its border
+              carries the warning. */}
+          <Input
+            value={typed}
+            onChange={(event) => setTyped(event.target.value)}
+            className="mt-1.5 w-32 border-red-300 font-mono focus:border-red-500 focus:ring-red-500"
+            autoComplete="off"
+            inputMode="numeric"
+          />
+        </label>
+      ) : null}
+
+      {error ? <Alert tone="danger">{error}</Alert> : null}
+
       <div className="flex flex-wrap gap-2">
         <Button type="button" variant="danger" onClick={() => void run()} disabled={pending}>
-          {pending ? 'Deleting…' : 'Delete permanently'}
+          {pending ? 'Deleting…' : committed ? 'Delete permanently, with its records' : 'Delete permanently'}
         </Button>
         <Button type="button" variant="ghost" onClick={() => setConfirming(false)} disabled={pending}>
           Cancel

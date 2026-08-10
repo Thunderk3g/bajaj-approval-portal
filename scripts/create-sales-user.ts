@@ -4,12 +4,16 @@
  *   npx tsx scripts/create-sales-user.ts ICCS427343 "Shikha Singh"
  *   npx tsx scripts/create-sales-user.ts C2CM24850 "Iqra Sartaj Khan" iqra.khan@bajajlife.com
  *
- * Deliberately separate from `provision-sales-users.ts`, which is the bulk path.
- * That one is DATA-driven: it reads `lead` and gives an account to every SM code
- * that owns leads, so it can only run after a Lead Dump import. This one is
- * ROSTER-driven and takes the identifier straight from the caller, which is what
- * you need before any data exists — to walk the pipeline as a specific rep, or to
- * add somebody the imported file does not happen to mention.
+ * Deliberately separate from the bulk paths — Admin > Users > Provisioning
+ * worklist, and `provision-managers.ts` for the two manager rungs. Both of those
+ * are ROSTER-driven and will only touch codes the Manpower sheet places. This one
+ * takes the identifier straight from the caller, which is what you need to walk
+ * the pipeline as a specific rep before any sheet has been imported.
+ *
+ * There is no longer a path that derives people from transaction data. The old
+ * `provision-sales-users.ts` read `lead` and gave an account to every SM code
+ * that owned rows, which is how codes like `DIY` — a bucket for unclaimed
+ * business, not a person — ended up being offered logins.
  *
  * Module load order matters. `src/lib/env.ts` validates process.env at import
  * time and throws when a variable is missing, and `@/lib/auth/server` pulls it in
@@ -32,12 +36,11 @@ config({ path: '.env.local' });
  */
 const SM_ID_PATTERN = /^[A-Z0-9][A-Z0-9-]{2,31}$/;
 
-/**
- * The sheet's placeholder owners. Neither is a person, and an account for either
- * would be a login nobody can be held to — `111222-UN` carries 1,453 leads in the
- * real file and `DIY` is the digital channel.
- */
-const NOT_PEOPLE = new Set(['111222-UN', 'DIY']);
+// The sheet's placeholder owners, shared with the worklist and both bulk
+// provisioning paths — see src/lib/roster/placeholders.ts. It is imported rather
+// than restated because a "not a person" list that disagrees between the screen
+// and this script is how one of them creates a login for a bucket.
+import { isPlaceholderCode, PLACEHOLDER_REASON } from '@/lib/roster/placeholders';
 
 /** 24 characters, no glyphs that are ambiguous read aloud or over a call. */
 function generatePassword(): string {
@@ -68,8 +71,8 @@ export function emailFor(name: string, smId: string): string {
 }
 
 export function refusalFor(smId: string): string | null {
-  if (NOT_PEOPLE.has(smId)) {
-    return `${smId} is a placeholder in the source data, not a person. It owns leads that have not been given to anyone; an account for it would be a login with no owner.`;
+  if (isPlaceholderCode(smId)) {
+    return `${smId} is ${PLACEHOLDER_REASON}. An account for it would be a login with no owner.`;
   }
   if (!SM_ID_PATTERN.test(smId)) {
     return `"${smId}" is not a usable SM_ID. It is uppercased before the check, and the database CHECK constraint requires 3-32 characters of A-Z, 0-9 and hyphen.`;

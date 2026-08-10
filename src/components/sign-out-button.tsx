@@ -39,7 +39,7 @@ export function SignOutButton() {
         onClick={onClick}
         disabled={pending}
         aria-busy={pending}
-        className="inline-flex items-center gap-1.5 rounded border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:text-slate-400"
+        className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 py-[5px] text-[12px] font-medium text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:text-slate-400"
       >
         {pending ? <Spinner /> : null}
         {pending ? 'Signing out…' : 'Sign out'}

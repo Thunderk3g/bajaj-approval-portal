@@ -7,6 +7,9 @@ export type CreateUserInput = {
   password: string;
   role: Role;
   smId?: string | null;
+  /** The roster code a TL or ACM account is scoped by — 2026-08-06 spec §5. */
+  tlCode?: string | null;
+  acmCode?: string | null;
 };
 
 export type CreatedUser = {
@@ -14,6 +17,25 @@ export type CreatedUser = {
   email: string;
   role: Role;
   smId: string | null;
+  tlCode: string | null;
+  acmCode: string | null;
+};
+
+/**
+ * Which column scopes each role, or null for the roles that read everything.
+ *
+ * Mirrors `ROLE_SCOPE_FIELD` in src/lib/users/schema.ts, which is the same table
+ * for the admin form. Restated rather than imported so this module — reached by
+ * the CLI provisioning scripts, which load nothing that touches `zod` or the
+ * request layer — keeps its narrow import surface.
+ */
+const REQUIRED_CODE: Record<Role, 'smId' | 'tlCode' | 'acmCode' | null> = {
+  admin: null,
+  approver: null,
+  verifier: null,
+  sales: 'smId',
+  tl: 'tlCode',
+  acm: 'acmCode',
 };
 
 /**
@@ -24,17 +46,27 @@ export type CreatedUser = {
  * therefore goes through the internal adapter, using Better Auth's own
  * password hasher so credentials stay compatible with the sign-in path.
  *
- * SM_ID is uppercased here to match the database CHECK constraint; a lowercase
- * value would otherwise be rejected at insert time with an opaque error.
+ * Every scoping code is uppercased here to match the database CHECK constraints;
+ * a lowercase value would otherwise be rejected at insert time with an opaque
+ * error, and a TL whose code was stored lowercase would resolve as nobody's
+ * manager while looking perfectly correct in the admin list.
  */
 export async function createUserAccount(input: CreateUserInput): Promise<CreatedUser> {
   const ctx = await auth.$context;
 
   const email = input.email.trim().toLowerCase();
-  const smId = input.smId ? input.smId.trim().toUpperCase() : null;
+  const upper = (value: string | null | undefined) =>
+    value ? value.trim().toUpperCase() : null;
 
-  if (input.role === 'sales' && !smId) {
-    throw new Error('A sales user requires an SM_ID');
+  const smId = upper(input.smId);
+  const tlCode = upper(input.tlCode);
+  const acmCode = upper(input.acmCode);
+
+  const required = REQUIRED_CODE[input.role];
+  const codes = { smId, tlCode, acmCode };
+  if (required && !codes[required]) {
+    const label = { smId: 'an SM_ID', tlCode: 'a TL code', acmCode: 'an ACM code' }[required];
+    throw new Error(`A ${input.role} user requires ${label}`);
   }
   if (input.password.length < 12) {
     throw new Error('Password must be at least 12 characters');
@@ -51,6 +83,8 @@ export async function createUserAccount(input: CreateUserInput): Promise<Created
     emailVerified: true,
     role: input.role,
     smId,
+    tlCode,
+    acmCode,
     isActive: true,
   });
 
@@ -63,5 +97,5 @@ export async function createUserAccount(input: CreateUserInput): Promise<Created
     password: hashed,
   });
 
-  return { id: created.id, email, role: input.role, smId };
+  return { id: created.id, email, role: input.role, smId, tlCode, acmCode };
 }

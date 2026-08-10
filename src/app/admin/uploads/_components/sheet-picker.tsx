@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { setBatchSheetAction } from '@/lib/import/actions';
 import { DATE_FORMATS, type DateFormat } from '@/lib/import/dates';
+import { isTransactionSheet, sheetExclusionReason } from '@/lib/import/sheets';
 import { Alert, Button, Field, Input, Select } from '@/components/ui';
 
 /**
@@ -16,26 +17,15 @@ import { Alert, Button, Field, Input, Select } from '@/components/ui';
  * described as 893 million cells on the screen the admin uses to choose.
  */
 
-/**
- * The one sheet this picker must not offer.
+/*
+ * The predicate is shared with the server, not restated here.
  *
- * It is not a transaction sheet — it carries leads, has no `Apps_No`, and has
- * its own import on the card below this one. Offering it here was a real
- * failure, not a tidiness problem: choosing it queued a parse that the service
- * refuses outright, because reading it through the sheet reader materialises a
- * 54,508 x 16,383 declared range and asks for roughly 28 GB. The admin got a
- * FAILED job quoting that number and no way to tell that the sheet was simply
- * the wrong choice.
- *
- * Matched case-insensitively against the trimmed name, the same comparison
- * `resolve_sheet` makes in the service — which already skipped this sheet when
- * choosing one automatically. Only the explicit choice was unguarded.
+ * This file used to carry its own, excluding `Lead Dump` and nothing else, while
+ * `suggestSheet` excluded four presentation tabs and nothing else. Neither
+ * excluded `Manpower`, so it was offered — and choosing it repointed the batch
+ * at a seven-column roster sheet that was then scored against `CANONICAL_FIELDS`,
+ * producing a column-mapping error for a sheet nobody maps by hand.
  */
-const LEAD_SHEET = 'lead dump';
-
-export function isTransactionSheet(name: string): boolean {
-  return name.trim().toLowerCase() !== LEAD_SHEET;
-}
 
 export function SheetPicker({
   batchId,
@@ -57,7 +47,8 @@ export function SheetPicker({
   const [values, setValues] = useState({ sheetName, headerRow: String(headerRow), dateFormat });
 
   const selectable = sheets.filter(isTransactionSheet);
-  const excluded = sheets.length - selectable.length;
+  const skipped = sheets.filter((s) => !isTransactionSheet(s));
+  const excluded = skipped.length;
 
   function submit() {
     setError(null);
@@ -107,6 +98,7 @@ export function SheetPicker({
             id="headerRow"
             type="number"
             min={1}
+            className="font-mono"
             value={values.headerRow}
             disabled={pending}
             onChange={(e) => setValues((v) => ({ ...v, headerRow: e.target.value }))}
@@ -141,13 +133,25 @@ export function SheetPicker({
         <Button type="button" onClick={submit} disabled={pending}>
           {pending ? 'Queueing…' : 'Use this sheet'}
         </Button>
-        <p className="text-xs text-slate-500">
+        <p className="text-[12px] leading-relaxed text-slate-500">
           Changing the sheet clears any column mapping made against the previous one and re-reads
           the workbook.
-          {excluded > 0
-            ? ' Lead Dump is not listed: it carries leads rather than transactions and is imported separately below.'
-            : null}
         </p>
+
+        {/*
+          Names every sheet that was withheld and why. The count alone read as
+          "some sheets are missing" and sent the admin looking for the one they
+          expected — usually Manpower, which has its own step above.
+        */}
+        {excluded > 0 ? (
+          <ul className="mt-1.5 space-y-0.5 text-[11px] text-slate-500">
+            {skipped.map((name) => (
+              <li key={name}>
+                <span className="font-mono">{name}</span> — {sheetExclusionReason(name)}
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </div>
     </div>
   );

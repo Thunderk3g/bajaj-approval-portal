@@ -16,7 +16,7 @@
     "db:custom:test": "tsx scripts/apply-custom-sql.ts --test",
     "db:migrate:test": "tsx scripts/migrate-test.ts",
     "setup:admin": "tsx scripts/setup-admin.ts",
-    "setup:sales": "tsx scripts/provision-sales-users.ts"
+    "setup:managers": "tsx scripts/provision-managers.ts"
   },
   "dependencies": {
     "better-auth": "^1.6.24",

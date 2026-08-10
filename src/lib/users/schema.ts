@@ -11,9 +11,34 @@ import { z } from 'zod';
  * to type instead. The constraint is the guarantee; this is the explanation.
  */
 
-export const ROLES = ['admin', 'sales', 'approver', 'verifier'] as const;
+export const ROLES = ['admin', 'sales', 'approver', 'verifier', 'tl', 'acm'] as const;
 
 export type UserRole = (typeof ROLES)[number];
+
+/**
+ * Which column scopes each role, or null for the roles that read everything.
+ *
+ * One table rather than a chain of `if (role === ...)` in three places: the form
+ * renders the right field from it, the validator below enforces exactly one code
+ * per account from it, and adding a seventh role is a line here rather than three
+ * edits that can disagree.
+ */
+export const ROLE_SCOPE_FIELD: Record<UserRole, 'smId' | 'tlCode' | 'acmCode' | null> = {
+  admin: null,
+  approver: null,
+  verifier: null,
+  sales: 'smId',
+  tl: 'tlCode',
+  // The ACM's code IS the CCM code off the Manpower sheet — one rung, two names
+  // (2026-08-06 spec §2).
+  acm: 'acmCode',
+};
+
+export const SCOPE_FIELD_LABELS: Record<'smId' | 'tlCode' | 'acmCode', string> = {
+  smId: 'an SM_ID',
+  tlCode: 'a TL code',
+  acmCode: 'an ACM (CCM) code',
+};
 
 /**
  * Shown beside each option on the create-user form.
@@ -28,6 +53,8 @@ export const ROLE_DESCRIPTIONS: Record<UserRole, string> = {
   sales: 'Sees only their own SM_ID and raises correction requests. Requires an SM_ID.',
   verifier: 'First review. Checks a submitted request against its proof, then passes it to an approver or returns it to the rep.',
   approver: 'Second review. Applies the correction to the record, or rejects or returns it.',
+  tl: 'Team leader. Sees the reps reporting to them, raises requests on their behalf, and signs off mapping changes. Requires a TL code from the Manpower sheet.',
+  acm: 'Area manager. Signs off mapping changes for every team at their locations. Requires the CCM code the Manpower sheet carries for them.',
 };
 
 /**
@@ -57,6 +84,26 @@ const optionalSmId = z
   .transform((value) => (value ? value : null))
   .refine((value) => value === null || SM_ID_PATTERN.test(value), { message: SM_ID_MESSAGE });
 
+/**
+ * TL and ACM codes take the same shape as an SM_ID, and for the same reasons.
+ *
+ * They come off the same Manpower sheet, in the same identifier family, and the
+ * purely-numeric case that forced `SM_ID_PATTERN` to admit digits alone applies
+ * to a manager's code exactly as it does to a rep's. Reusing the pattern rather
+ * than restating it is what keeps `/admin/users` and the provisioning scripts
+ * accepting the same set of codes.
+ */
+const optionalOrgCode = (label: string) =>
+  z
+    .string()
+    .trim()
+    .toUpperCase()
+    .optional()
+    .transform((value) => (value ? value : null))
+    .refine((value) => value === null || SM_ID_PATTERN.test(value), {
+      message: `${label} must be 3–32 letters or digits, with no spaces.`,
+    });
+
 const emailSchema = z.string().trim().toLowerCase().pipe(z.email('Enter a valid email address.'));
 
 const nameSchema = z.string().trim().min(2, 'Enter the full name.').max(120, 'Name is too long.');
@@ -69,30 +116,57 @@ type SmIdIssueCtx = {
   addIssue: (issue: { code: 'custom'; path: (string | number)[]; message: string }) => void;
 };
 
+type ScopedFields = {
+  role: UserRole;
+  smId: string | null;
+  tlCode: string | null;
+  acmCode: string | null;
+};
+
+const SCOPE_REQUIRED_MESSAGE: Record<'smId' | 'tlCode' | 'acmCode', string> = {
+  smId: 'A Sales account must have an SM_ID — it is what scopes them to their own records.',
+  tlCode: 'A Team leader account must have a TL code — it is what resolves their reps and their approval stages.',
+  acmCode: 'An Area manager account must have an ACM (CCM) code — it is what resolves the teams they sign off for.',
+};
+
 /**
- * A non-sales account carrying an SM_ID is rejected rather than silently
- * cleared. An approver with an SM_ID looks like a scoped account without being
- * one, and the next person to read the row cannot tell which was intended.
+ * Exactly one scoping code, and it must be the one the role actually reads.
+ *
+ * Both halves matter. A missing code leaves an account that resolves to nobody:
+ * a TL with no `tl_code` owns no reps, so every stage routed to them silently
+ * finds no assignee. A code on the WRONG field — or on a role that has none — is
+ * the subtler failure, because the row looks scoped without being scoped, and the
+ * next person to read it cannot tell which was intended. Both are rejected here
+ * rather than cleared, so the admin is told what to type instead.
  */
-function checkSmIdAgainstRole(
-  value: { role: UserRole; smId: string | null },
-  ctx: SmIdIssueCtx,
-): void {
-  if (value.role === 'sales' && !value.smId) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['smId'],
-      message: 'A Sales account must have an SM_ID — it is what scopes them to their own records.',
-    });
+function checkScopeAgainstRole(value: ScopedFields, ctx: SmIdIssueCtx): void {
+  const expected = ROLE_SCOPE_FIELD[value.role];
+
+  if (expected && !value[expected]) {
+    ctx.addIssue({ code: 'custom', path: [expected], message: SCOPE_REQUIRED_MESSAGE[expected] });
   }
-  if (value.role !== 'sales' && value.smId) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['smId'],
-      message: 'Only a Sales account has an SM_ID.',
-    });
+
+  for (const field of ['smId', 'tlCode', 'acmCode'] as const) {
+    if (field !== expected && value[field]) {
+      // Named by the role that DOES carry the field, not by the role that does
+      // not. "Only a Sales account has an SM_ID" tells the admin where the value
+      // belongs; "an Approver account does not carry an SM_ID" only tells them
+      // where it does not, and leaves them guessing.
+      ctx.addIssue({
+        code: 'custom',
+        path: [field],
+        message: `Only a ${OWNING_ROLE_LABEL[field]} account has ${SCOPE_FIELD_LABELS[field]}.`,
+      });
+    }
   }
 }
+
+const OWNING_ROLE_LABEL: Record<'smId' | 'tlCode' | 'acmCode', string> = {
+  smId: 'Sales',
+  tlCode: 'Team leader',
+  acmCode: 'Area manager',
+};
+
 
 export const createUserSchema = z
   .object({
@@ -101,8 +175,10 @@ export const createUserSchema = z
     password: passwordSchema,
     role: z.enum(ROLES),
     smId: optionalSmId,
+    tlCode: optionalOrgCode('TL code'),
+    acmCode: optionalOrgCode('ACM code'),
   })
-  .superRefine(checkSmIdAgainstRole);
+  .superRefine(checkScopeAgainstRole);
 
 export type CreateUserFields = z.infer<typeof createUserSchema>;
 
@@ -120,7 +196,9 @@ export const updateUserSchema = z
     name: nameSchema,
     role: z.enum(ROLES),
     smId: optionalSmId,
+    tlCode: optionalOrgCode('TL code'),
+    acmCode: optionalOrgCode('ACM code'),
   })
-  .superRefine(checkSmIdAgainstRole);
+  .superRefine(checkScopeAgainstRole);
 
 export type UpdateUserFields = z.infer<typeof updateUserSchema>;

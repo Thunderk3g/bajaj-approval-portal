@@ -4,6 +4,7 @@ import {
   Button,
   Card,
   EmptyState,
+  Field,
   Input,
   LinkButton,
   PageHeader,
@@ -114,7 +115,7 @@ export default async function AdminLeadsPage({
             <tbody>
               {orphans.map((row) => (
                 <tr key={row.smCode} className="hover:bg-slate-50">
-                  <Td className="font-mono text-xs font-medium">{row.smCode}</Td>
+                  <Td className="font-mono text-[12px] font-medium">{row.smCode}</Td>
                   {/* The name the Lead Dump carried, not one from the roster —
                       there is no roster row, and that is the whole finding. */}
                   <Td>{orDash(row.smName)}</Td>
@@ -128,55 +129,65 @@ export default async function AdminLeadsPage({
       </Card>
 
       <Card>
+        {/* Field, not hand-rolled labels: the label/control/hint spacing is the
+            one thing every filter bar in the portal shares, and a second
+            spelling of it here made this bar sit a few pixels off the ones on
+            Records and Corrections. */}
         <form method="get" className="grid gap-3 sm:grid-cols-3">
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">Search</span>
+          <Field label="Search" htmlFor="q">
             <Input
+              id="q"
               name="q"
               defaultValue={values.q}
               placeholder="Lead number, rep name or location"
             />
-          </label>
+          </Field>
 
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">SM code</span>
-            {/* Free text rather than a dropdown: the roster runs to hundreds of
-                codes, and a select rebuilt from fifty thousand rows on every
-                page load would cost more than the filter is worth. */}
-            <Input name="smCode" defaultValue={values.smCode} placeholder="e.g. ICCS427343" />
-          </label>
+          {/* Free text rather than a dropdown: the roster runs to hundreds of
+              codes, and a select rebuilt from fifty thousand rows on every
+              page load would cost more than the filter is worth. */}
+          <Field label="SM code" htmlFor="smCode">
+            <Input
+              id="smCode"
+              name="smCode"
+              defaultValue={values.smCode}
+              placeholder="e.g. ICCS427343"
+              className="font-mono"
+            />
+          </Field>
 
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">Ownership</span>
-            <Select name="ownership" defaultValue={values.ownership}>
+          <Field label="Ownership" htmlFor="ownership">
+            <Select id="ownership" name="ownership" defaultValue={values.ownership}>
               {LEAD_OWNERSHIPS.map((o) => (
                 <option key={o} value={o}>
                   {LEAD_OWNERSHIP_LABELS[o]}
                 </option>
               ))}
             </Select>
-          </label>
+          </Field>
 
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">Registered from</span>
-            <Input type="date" name="registerFrom" defaultValue={values.registerFrom} />
-          </label>
+          <Field label="Registered from" htmlFor="registerFrom">
+            <Input
+              id="registerFrom"
+              type="date"
+              name="registerFrom"
+              defaultValue={values.registerFrom}
+            />
+          </Field>
 
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">Registered to</span>
-            <Input type="date" name="registerTo" defaultValue={values.registerTo} />
-          </label>
+          <Field label="Registered to" htmlFor="registerTo">
+            <Input id="registerTo" type="date" name="registerTo" defaultValue={values.registerTo} />
+          </Field>
 
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">Per page</span>
-            <Select name="pageSize" defaultValue={String(page.pageSize)}>
+          <Field label="Per page" htmlFor="pageSize">
+            <Select id="pageSize" name="pageSize" defaultValue={String(page.pageSize)}>
               {PAGE_SIZES.map((s) => (
                 <option key={s} value={s}>
                   {s}
                 </option>
               ))}
             </Select>
-          </label>
+          </Field>
 
           <div className="flex items-center gap-2 sm:col-span-3">
             <Button type="submit" variant="secondary">

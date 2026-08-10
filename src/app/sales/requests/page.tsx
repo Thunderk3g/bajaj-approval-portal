@@ -80,7 +80,10 @@ export default async function MyRequestsPage({
         actions={<LinkButton href="/sales/requests/new" variant="primary">New request</LinkButton>}
       />
 
-      <nav aria-label="Filter by status" className="mb-4 flex flex-wrap gap-1.5">
+      {/* Square chips, not capsules. A fully rounded pill beside a table reads as
+          a button somebody can press rather than as the filter it is — the same
+          rule the shared Badge follows. */}
+      <nav aria-label="Filter by status" className="mb-3 flex flex-wrap gap-1.5">
         {STATUS_FILTERS.map((filter) => {
           const active = (status ?? '') === filter.value;
           return (
@@ -90,8 +93,8 @@ export default async function MyRequestsPage({
               aria-current={active ? 'page' : undefined}
               className={
                 active
-                  ? 'rounded-full border border-slate-900 bg-slate-900 px-3 py-1 text-xs font-medium text-white'
-                  : 'rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50'
+                  ? 'rounded-md border border-slate-900 bg-slate-900 px-2.5 py-1 text-[12px] font-medium text-white'
+                  : 'rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[12px] font-medium text-slate-700 hover:bg-slate-50'
               }
             >
               {filter.label}
@@ -134,22 +137,27 @@ export default async function MyRequestsPage({
                     <Td>
                       <Link
                         href={`/sales/requests/${row.id}`}
-                        className="font-mono text-sm font-medium text-slate-900 underline-offset-2 hover:underline"
+                        className="font-mono font-medium text-slate-900 underline underline-offset-2 hover:text-slate-600"
                       >
                         {row.appsNo}
                       </Link>
                     </Td>
                     <Td>{CATEGORY_LABELS[row.category as CorrectionCategory] ?? row.category}</Td>
                     <Td>
-                      <span className="text-xs uppercase tracking-wide text-slate-500">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.07em] text-slate-500">
                         {row.fieldLabel}
-                      </span>
-                      <br />
-                      <span className="text-slate-500">{orDash(row.originalValue)}</span>
-                      <span className="px-1.5 text-slate-400" aria-hidden="true">
-                        →
-                      </span>
-                      <span className="font-medium">{orDash(row.proposedValue)}</span>
+                      </div>
+                      <div className="mt-0.5">
+                        <span className="font-mono text-xs text-slate-500">
+                          {orDash(row.originalValue)}
+                        </span>
+                        <span className="px-1 text-slate-400" aria-hidden="true">
+                          →
+                        </span>
+                        <span className="font-mono text-xs font-medium text-slate-900">
+                          {orDash(row.proposedValue)}
+                        </span>
+                      </div>
                     </Td>
                     <Td>
                       <StatusBadge status={shown} />
@@ -221,19 +229,15 @@ export default async function MyRequestsPage({
               {counterparty.map((row) => (
                 <tr key={row.id} className="hover:bg-slate-50">
                   <Td>
-                    <span className="font-mono text-sm font-medium text-slate-900">
-                      {row.appsNo}
-                    </span>
-                    <br />
-                    <span className="text-xs text-slate-500">
+                    <span className="font-mono font-medium text-slate-900">{row.appsNo}</span>
+                    <div className="mt-0.5 text-xs text-slate-500">
                       issued {formatDate(row.issuedDate)}
-                    </span>
+                    </div>
                   </Td>
-                  <Td className="font-mono">{orDash(row.policyNo)}</Td>
+                  <Td className="font-mono text-xs">{orDash(row.policyNo)}</Td>
                   <Td>
                     {orDash(row.clientName)}
-                    <br />
-                    <span className="text-xs text-slate-500">{orDash(row.productName)}</span>
+                    <div className="mt-0.5 text-xs text-slate-500">{orDash(row.productName)}</div>
                   </Td>
                   {/* Phrased off `role`, not `direction`: direction says who asked,
                       and a rep reading this wants to know what becomes of their

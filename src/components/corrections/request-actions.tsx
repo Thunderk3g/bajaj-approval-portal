@@ -144,7 +144,7 @@ export function ResubmitForm({
             multiple
             accept={accept}
             disabled={attachmentsRemaining === 0}
-            className="block w-full text-sm text-slate-700 file:mr-3 file:rounded file:border-0 file:bg-slate-900 file:px-3 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-slate-800 disabled:opacity-60"
+            className="block w-full text-[13px] text-slate-700 file:mr-3 file:rounded-md file:border-0 file:bg-slate-900 file:px-3 file:py-1.5 file:text-[13px] file:font-medium file:text-white hover:file:bg-slate-800 disabled:opacity-60"
           />
         </Field>
 
@@ -183,14 +183,14 @@ export function WithdrawButton({ requestId }: { requestId: string }) {
 
   if (!confirming) {
     return (
-      <Button type="button" variant="secondary" onClick={() => setConfirming(true)}>
-        Withdraw
+      <Button type="button" variant="secondary" className="w-full" onClick={() => setConfirming(true)}>
+        Withdraw this request
       </Button>
     );
   }
 
   return (
-    <form onSubmit={onSubmit} className="w-full space-y-2 rounded border border-slate-200 bg-slate-50 p-3">
+    <form onSubmit={onSubmit} className="w-full space-y-2 rounded-md border border-slate-200 bg-slate-50 p-3">
       {error ? <Alert tone="danger">{error}</Alert> : null}
       <input type="hidden" name="requestId" value={requestId} />
 
@@ -198,7 +198,7 @@ export function WithdrawButton({ requestId }: { requestId: string }) {
         <Input id="reason" name="reason" placeholder="Optional" maxLength={2000} />
       </Field>
 
-      <p className="text-xs text-slate-600">
+      <p className="text-[11px] leading-snug text-slate-600">
         Withdrawing closes the request and releases the field, so you can raise a corrected one.
         The request and its history stay on the record.
       </p>

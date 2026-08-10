@@ -1,5 +1,6 @@
 import { requireRole } from '@/lib/auth/rbac';
-import { Card, PageHeader, Pagination, Select, Input, Button, StatCard } from '@/components/ui';
+import { PageHeader, Pagination, Select, Input, Button, StatCard } from '@/components/ui';
+import { FilterBar, FilterField } from '@/components/approvals/filter-bar';
 import { buildQuery, parsePageParams, PAGE_SIZES } from '@/lib/pagination';
 import { listQueue, queueCounts } from '@/lib/approvals/queries';
 import {
@@ -44,7 +45,7 @@ export default async function QueuePage({
         description="Verified requests only, oldest first. Approving applies the change to the record and writes a new version; returning sends the request back to the submitter without destroying its history."
       />
 
-      <div className="mb-6 grid gap-3 sm:grid-cols-4">
+      <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           label="Awaiting decision"
           value={counts.awaitingDecision}
@@ -75,58 +76,50 @@ export default async function QueuePage({
         />
       </div>
 
-      <Card className="mb-4">
-        <form method="get" className="grid gap-3 sm:grid-cols-4">
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">Scope</span>
-            <Select name="scope" defaultValue={filters.scope}>
-              {QUEUE_SCOPES.map((s) => (
-                <option key={s} value={s}>
-                  {QUEUE_SCOPE_LABELS[s]}
-                </option>
-              ))}
-            </Select>
-          </label>
+      <FilterBar className="mb-3">
+        <FilterField label="Scope">
+          <Select name="scope" defaultValue={filters.scope}>
+            {QUEUE_SCOPES.map((s) => (
+              <option key={s} value={s}>
+                {QUEUE_SCOPE_LABELS[s]}
+              </option>
+            ))}
+          </Select>
+        </FilterField>
 
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">Category</span>
-            <Select name="category" defaultValue={filters.category ?? ''}>
-              <option value="">All categories</option>
-              {CORRECTION_CATEGORIES.map((c) => (
-                <option key={c} value={c}>
-                  {CATEGORY_LABELS[c]}
-                </option>
-              ))}
-            </Select>
-          </label>
+        <FilterField label="Category">
+          <Select name="category" defaultValue={filters.category ?? ''}>
+            <option value="">All categories</option>
+            {CORRECTION_CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {CATEGORY_LABELS[c]}
+              </option>
+            ))}
+          </Select>
+        </FilterField>
 
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">Search</span>
-            <Input
-              name="q"
-              defaultValue={filters.q ?? ''}
-              placeholder="Apps_No, SM_ID, client or submitter"
-            />
-          </label>
+        <FilterField label="Search">
+          <Input
+            name="q"
+            defaultValue={filters.q ?? ''}
+            placeholder="Apps_No, SM_ID, client or submitter"
+          />
+        </FilterField>
 
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">Per page</span>
-            <Select name="pageSize" defaultValue={String(page.pageSize)}>
-              {PAGE_SIZES.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </Select>
-          </label>
+        <FilterField label="Per page">
+          <Select name="pageSize" defaultValue={String(page.pageSize)}>
+            {PAGE_SIZES.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </Select>
+        </FilterField>
 
-          <div className="sm:col-span-4">
-            <Button type="submit" variant="secondary">
-              Apply filters
-            </Button>
-          </div>
-        </form>
-      </Card>
+        <Button type="submit" variant="secondary">
+          Apply
+        </Button>
+      </FilterBar>
 
       {/*
         Only the rows the approver may actually decide are offered for batching,

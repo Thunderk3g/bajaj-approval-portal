@@ -5,7 +5,63 @@ import { pgEnum } from 'drizzle-orm/pg-core';
  * section 3. It carries no SM_ID and sees every record, exactly like `approver`;
  * what separates them is which status each may act on, not what each can read.
  */
-export const roleEnum = pgEnum('role', ['admin', 'sales', 'approver', 'verifier']);
+/**
+ * `tl` and `acm` are appended for the 2026-08-06 multi-stage approval design.
+ *
+ * They are real logins, not labels: `correction_request.submitted_by`,
+ * `correction_event.actor_id` and `notification.user_id` are all hard FKs to
+ * `user.id`, so there is no column anywhere a non-account could be recorded as
+ * having acted or been notified — and the requirement has a TL raising requests
+ * and an ACM approving them.
+ *
+ * `acm` resolves off `manpower.ccm_id`, not off a new column. The Manpower sheet
+ * carries exactly SM/TL/CCM triples; a genuinely separate rung between TL and CCM
+ * would resolve to nobody for every SM on day one.
+ */
+export const roleEnum = pgEnum('role', ['admin', 'sales', 'approver', 'verifier', 'tl', 'acm']);
+
+/**
+ * Which approval chain a request runs — 2026-08-06 spec section 3.
+ *
+ * One level finer than `correctionCategoryEnum`, because MAPPING is one category
+ * carrying three structurally different chains: a transfer inside one team needs
+ * one TL and one ACM, a transfer between teams needs the ACM of both sides with a
+ * verifier between them, and a claim on a policy nobody owns has no team to route
+ * through at all. A single list keyed by category cannot express that, and the
+ * alternative — branching inside the engine — would put business rules back
+ * inside the thing whose whole purpose is not to have any.
+ *
+ * Computed by the routing layer at submission and frozen on the request, exactly
+ * as `period_id` and `direction` already are.
+ */
+export const chainKeyEnum = pgEnum('chain_key', [
+  'AUTOPAY',
+  'MAPPING_WITHIN_TEAM',
+  'MAPPING_BETWEEN_TEAMS',
+  'MAPPING_DIY',
+  'ISSUANCE_DATE',
+  'BAU_TO_BFL',
+  'OTHERS',
+  'AGENT_ID',
+]);
+
+/**
+ * Where one request sits in one stage of its chain.
+ *
+ * Deliberately NOT `correctionStatusEnum`. The two answer different questions —
+ * "has this stage been decided" against "what is the state of the whole request"
+ * — and a request at stage 3 of 5 is simultaneously PASSED on two stages, ACTIVE
+ * on one and PENDING on two more. Reusing the request-level enum would make
+ * `status` mean something different depending on which table you read it from.
+ */
+export const stageStatusEnum = pgEnum('stage_status', [
+  'PENDING',
+  'ACTIVE',
+  'PASSED',
+  'RETURNED',
+  'REJECTED',
+  'WITHDRAWN',
+]);
 
 /**
  * A reconciliation cycle — one calendar month.
@@ -76,12 +132,26 @@ export const correctionStatusEnum = pgEnum('correction_status', [
  * it beside the other named categories would need the type rebuilt, which means
  * dropping every default and constraint that references it.
  */
+/**
+ * BAU_TO_BFL is the fifth named category — 2026-08-06 spec section 3.
+ *
+ * Added for the same reason AGENT_ID was, and appended for the same reason: the
+ * enum pins the target field where `field_name` is free text, and Postgres
+ * assigns enum values their sort order at creation, so slotting it beside the
+ * others would need the type rebuilt.
+ *
+ * It targets `source_channel`, the Business Dashboard column that says whether a
+ * policy was booked as BAU or BFL. That column is new to this release — see
+ * `CANONICAL_FIELDS` in src/lib/fields.ts; every workbook imported before it
+ * lacks the column entirely, which is why the field is not required.
+ */
 export const correctionCategoryEnum = pgEnum('correction_category', [
   'AUTOPAY',
   'MAPPING',
   'ISSUANCE_DATE',
   'OTHERS',
   'AGENT_ID',
+  'BAU_TO_BFL',
 ]);
 
 /**
@@ -129,6 +199,16 @@ export const changeTypeEnum = pgEnum('change_type', [
  * actor's role on the event row, so the timeline reads correctly without a
  * fifth action whose only job is to name the sender.
  */
+/**
+ * ADVANCED is the generic "a non-final stage passed this on" — 2026-08-06 spec.
+ *
+ * VERIFIED is kept and keeps its exact meaning for every row already written, and
+ * for stage 0 of a chain whose stage 0 is a verifier. What it cannot describe is
+ * an ACM passing a mapping request to a second ACM: nothing was verified, and the
+ * timeline would claim a stage that never ran. Which stage ADVANCED refers to is
+ * on the event row itself (`stage_sequence`/`stage_key`), so one action serves a
+ * chain of any length rather than needing a value per rung.
+ */
 export const eventActionEnum = pgEnum('event_action', [
   'SUBMITTED',
   'RESUBMITTED',
@@ -137,6 +217,7 @@ export const eventActionEnum = pgEnum('event_action', [
   'REJECTED',
   'RETURNED',
   'WITHDRAWN',
+  'ADVANCED',
 ]);
 
 export const rowStatusEnum = pgEnum('row_status', [

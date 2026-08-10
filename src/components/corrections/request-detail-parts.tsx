@@ -71,12 +71,12 @@ export function RequestTimeline({ events }: { events: RequestEvent[] }) {
           </div>
 
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium text-slate-900">
+            <p className="text-[13px] font-medium text-slate-900">
               {EVENT_LABELS[event.action] ?? event.action}
             </p>
-            <p className="text-xs text-slate-500">{formatDateTime(event.createdAt)}</p>
+            <p className="text-[11px] text-slate-500">{formatDateTime(event.createdAt)}</p>
             {event.remarks ? (
-              <p className="mt-1 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-sm text-slate-700">
+              <p className="mt-1.5 whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-[12px] leading-relaxed text-slate-700">
                 {event.remarks}
               </p>
             ) : null}
@@ -106,9 +106,13 @@ export function ProofList({ attachments }: { attachments: RequestAttachment[] })
   }
 
   return (
-    <ul className="grid gap-3 sm:grid-cols-2">
+    // A row per document rather than a grid of tall tiles. This list sits in the
+    // narrow column beside the request's progress, where a two-up grid of 128px
+    // previews reduces each one to a thumbnail too small to read anyway — and
+    // the filename is what a rep actually scans for.
+    <ul className="space-y-2">
       {attachments.map((file) => (
-        <li key={file.id} className="rounded border border-slate-200 p-2">
+        <li key={file.id} className="rounded-md border border-slate-200">
           {/* A plain anchor, not next/link. The response is a file, so there is
               no route for the client router to navigate to and nothing to
               prefetch — and it puts the proof link on the same footing as the
@@ -119,7 +123,7 @@ export function ProofList({ attachments }: { attachments: RequestAttachment[] })
             href={apiPath(`/api/proofs/${file.id}`)}
             target="_blank"
             rel="noopener noreferrer"
-            className="block"
+            className="flex items-center gap-2.5 p-2 hover:bg-slate-50"
           >
             {file.previewable ? (
               // A plain <img>, not next/image. The optimizer fetches and caches
@@ -131,29 +135,36 @@ export function ProofList({ attachments }: { attachments: RequestAttachment[] })
               <img
                 src={apiPath(`/api/proofs/${file.id}`)}
                 alt={file.originalName}
-                className="h-32 w-full rounded border border-slate-100 bg-slate-50 object-contain"
+                className="size-11 shrink-0 rounded border border-slate-200 bg-slate-50 object-cover"
               />
             ) : (
-              <div className="flex h-32 items-center justify-center rounded border border-slate-100 bg-slate-50">
+              <span className="flex size-11 shrink-0 items-center justify-center rounded border border-slate-200 bg-slate-50">
                 <Badge tone="neutral">PDF</Badge>
-              </div>
+              </span>
             )}
 
-            <p className="mt-2 truncate text-sm font-medium text-slate-800" title={file.originalName}>
-              {file.originalName}
-            </p>
-          </a>
-
-          <p className="text-xs text-slate-500">
-            {formatBytes(file.sizeBytes)}
-            <span className="px-1.5 text-slate-300" aria-hidden="true">
-              |
+            <span className="min-w-0 flex-1">
+              <span
+                className="block truncate text-[12px] font-medium text-slate-900"
+                title={file.originalName}
+              >
+                {file.originalName}
+              </span>
+              <span className="block text-[11px] text-slate-500">
+                {formatBytes(file.sizeBytes)}
+                <span className="px-1.5 text-slate-300" aria-hidden="true">
+                  |
+                </span>
+                {formatDateTime(file.uploadedAt)}
+              </span>
+              <span
+                className="block truncate font-mono text-[10px] text-slate-400"
+                title={file.sha256}
+              >
+                sha256 {file.sha256.slice(0, 16)}…
+              </span>
             </span>
-            {formatDateTime(file.uploadedAt)}
-          </p>
-          <p className="truncate font-mono text-[10px] text-slate-400" title={file.sha256}>
-            sha256 {file.sha256.slice(0, 16)}…
-          </p>
+          </a>
         </li>
       ))}
     </ul>

@@ -8,6 +8,7 @@ import { formatDateTime } from '@/lib/format';
 import { apiPath } from '@/lib/nav';
 import { DEFAULT_DATE_FORMAT, type DateFormat } from '@/lib/import/dates';
 import { suggestMapping } from '@/lib/import/mapping';
+import { MANPOWER_SHEET } from '@/lib/import/parse';
 import type { ColumnMapping, SourceColumn, ValidationReport } from '@/lib/import/types';
 import { toSourceColumns } from '@/lib/ingest/client';
 import {
@@ -28,11 +29,14 @@ import {
   StatusBadge,
   buttonClass,
 } from '@/components/ui';
+import { loadBatchCoverage } from '@/lib/hierarchy/coverage';
 import { DeleteUploadButton } from '../_components/delete-upload-button';
+import { HierarchyBubbles } from '../_components/hierarchy-bubbles';
 import { ImportLeadsButton } from '../_components/leads-import';
 import { MappingForm } from '../_components/mapping-form';
 import { ParseProgress, ReparseButton } from '../_components/parse-status';
 import { ReviewPanel } from '../_components/review-panel';
+import { RosterStep } from '../_components/roster-step';
 import { SheetPicker } from '../_components/sheet-picker';
 
 /**
@@ -123,14 +127,37 @@ export default async function UploadDetailPage({
   const columns = parse ? toSourceColumns(parse.columns) : [];
   const suggestion = columns.length > 0 ? suggestMapping(columns) : null;
 
+  // Only once the rows exist. Before the commit there is nothing in
+  // `sales_record` carrying this batch id, so the chart would draw an empty
+  // hierarchy and read as "this file covers nobody".
+  const coverage = record.status === 'COMMITTED' ? await loadBatchCoverage(record.id) : null;
+
   return (
-    <section className="space-y-6">
+    // Capped: the steps below are a sequence of forms and reports read top to
+    // bottom, and a 1500px column turns the mapping table into a row of controls
+    // an arm's length from the field they belong to.
+    <section className="max-w-[1120px] space-y-4">
       <PageHeader
         title={record.originalFileName}
         description={
-          <span className="inline-flex flex-wrap items-center gap-2">
+          // One line of provenance under the file name — status, who, when, and
+          // which month it is claimed for. The period is the one of those an
+          // admin can get wrong, and it decides where the rows land.
+          <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]">
             <StatusBadge status={record.status} />
-            <span>Uploaded {formatDateTime(record.uploadedAt)} by {batch.uploadedByName ?? '—'}</span>
+            <span>
+              Uploaded {formatDateTime(record.uploadedAt)} by {batch.uploadedByName ?? '—'}
+            </span>
+            {record.periodCode ? (
+              <>
+                <span aria-hidden="true" className="text-slate-300">
+                  ·
+                </span>
+                <span>
+                  period <span className="font-mono">{record.periodCode}</span>
+                </span>
+              </>
+            ) : null}
           </span>
         }
         actions={
@@ -182,9 +209,31 @@ export default async function UploadDetailPage({
         <ParseStep batchId={record.id} job={job} parse={parse} />
       ) : null}
 
+      {/*
+        The roster before the mapping, on screen as well as in the pipeline.
+        Putting it after would suggest the two are independent, when in fact the
+        policies below are matched against the hierarchy this writes — and the
+        commit at the bottom refuses until it has been run.
+      */}
+      {isOpen && parse ? (
+        <RosterStep
+          batchId={record.id}
+          committedAt={record.rosterCommittedAt}
+          rowCount={record.rosterRowCount}
+          hasManpowerSheet={parse.sheets.some(
+            (s) => s.name.trim().toLowerCase() === MANPOWER_SHEET.toLowerCase(),
+          )}
+          sheetName={
+            parse.sheets.find(
+              (s) => s.name.trim().toLowerCase() === MANPOWER_SHEET.toLowerCase(),
+            )?.name ?? null
+          }
+        />
+      ) : null}
+
       {isOpen && parse && parse.sheets.length > 0 ? (
         <Card
-          title="1 · Sheet and parsing options"
+          title="2 · Sheet and parsing options"
           description="Parsing happens in the ingestion service, one sheet at a time. Choosing a different sheet queues a fresh read rather than blocking this page on one."
         >
           <SheetPicker
@@ -199,7 +248,7 @@ export default async function UploadDetailPage({
 
       {isOpen && parse && suggestion ? (
         <Card
-          title="2 · Column mapping"
+          title="3 · Column mapping"
           description={`${columns.length} columns found on row ${parse.header_row} of "${parse.chosen_sheet}", across ${parse.total_rows.toLocaleString('en-IN')} rows. Suggestions are matched on meaning, not spelling — override any of them.`}
         >
           <MappingForm
@@ -227,7 +276,7 @@ export default async function UploadDetailPage({
 
       {report ? (
         <Card
-          title={isOpen ? '3 · Validation report' : 'Validation report'}
+          title={isOpen ? '4 · Validation report' : 'Validation report'}
           description={`Validated against ${report.sheetName} using ${report.dateFormat}.`}
         >
           <ReviewPanel
@@ -243,6 +292,15 @@ export default async function UploadDetailPage({
           {record.validRows.toLocaleString('en-IN')} rows were written to the master records. The
           stored workbook above is unchanged and remains the original of record.
         </Alert>
+      ) : null}
+
+      {coverage ? (
+        <Card
+          title="Hierarchy coverage"
+          description="This upload's policies placed on the Manpower hierarchy — area manager, then team leader, then rep. Bubble area is the policy count; open a group to see its teams. Overrides applied, so a rep moved on the Hierarchy screen counts towards the team they are actually on."
+        >
+          <HierarchyBubbles coverage={coverage} />
+        </Card>
       ) : null}
 
       {/* Last on the page and nowhere near the header, deliberately: this is the
@@ -385,7 +443,11 @@ function LeadStat({
 }) {
   return (
     <div>
-      <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</dt>
+      {/* 10px uppercase with the house tracking, same as every other stat label
+          on the portal — the number is the content, the label is its caption. */}
+      <dt className="text-[10px] font-semibold uppercase tracking-[0.07em] text-slate-500">
+        {label}
+      </dt>
       <dd
         className={
           tone === 'warning'

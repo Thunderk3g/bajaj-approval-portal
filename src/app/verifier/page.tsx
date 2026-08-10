@@ -40,7 +40,7 @@ export default async function VerifierDashboardPage() {
           verifier has to return it — so it gets its own banner rather than
           being buried as a column in the table. */}
       {summary.missingProof > 0 ? (
-        <div className="mb-6">
+        <div className="mb-4">
           <Alert
             tone="warning"
             title={`${n(summary.missingProof)} request${summary.missingProof === 1 ? ' has' : 's have'} no proof attached`}
@@ -56,7 +56,7 @@ export default async function VerifierDashboardPage() {
       ) : null}
 
       {oldestDays !== null && oldestDays >= 8 ? (
-        <div className="mb-6">
+        <div className="mb-4">
           <Alert tone="warning" title={`The oldest request has been waiting ${n(oldestDays)} days`}>
             A rep cannot raise another correction on the same field while one is open, so a request
             sitting here blocks them. The queue is ordered oldest first.
@@ -64,7 +64,7 @@ export default async function VerifierDashboardPage() {
         </div>
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           label="Awaiting verification"
           value={n(summary.pending)}
@@ -99,12 +99,12 @@ export default async function VerifierDashboardPage() {
         />
       </div>
 
-      <div className="mt-6">
+      <div className="mt-4">
         <Card
           title="What verification is for"
           description="The stage exists so a correction is checked against its evidence by someone other than the person who raised it and the person who applies it."
         >
-          <ul className="space-y-2 text-sm text-slate-600">
+          <ul className="space-y-1.5 text-[13px] leading-relaxed text-slate-600">
             <li>
               <strong className="text-slate-800">Verify</strong> — the proof supports the proposed
               value and the request targets the right record. The request moves to the approver

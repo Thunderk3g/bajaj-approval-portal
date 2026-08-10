@@ -15,10 +15,11 @@ export const DEFAULT_SHEET_NAME = 'Login Data';
 export const MAPPING_CHANGES_SHEET = 'Mapping Changes Latest';
 export const MANPOWER_SHEET = 'Manpower';
 
-/** Presentation sheets that are never a sensible import target (13.1). */
-const NON_DATA_SHEETS = new Set(
-  ['Jan Target', 'BFL & BAU', 'Overall Dashboard', 'Dash'].map((s) => s.toLowerCase()),
-);
+// Which sheets are candidates lives in ./sheets, imported by the picker too —
+// see the note there on why the two used to disagree.
+import { isTransactionSheet } from './sheets';
+
+export { isTransactionSheet };
 
 export type WorkbookInput = ArrayBuffer | Uint8Array | Buffer;
 
@@ -84,10 +85,14 @@ export function suggestSheet(sheets: SheetInfo[]): string | null {
   if (known) return known.name;
 
   const candidates = sheets
-    .filter((s) => !NON_DATA_SHEETS.has(s.name.toLowerCase()) && s.rowCount > 1)
+    .filter((s) => isTransactionSheet(s.name) && s.rowCount > 1)
     .sort((a, b) => b.rowCount - a.rowCount);
 
-  return candidates[0]?.name ?? sheets[0]?.name ?? null;
+  // Falls back to nothing rather than to `sheets[0]`, which was reliably the
+  // wrong answer: sheet zero of the real workbook is `Jan Target`, a
+  // presentation tab. A null tells the screen to ask, where a bad default sends
+  // the admin into a mapping form for a sheet with no policies in it.
+  return candidates[0]?.name ?? null;
 }
 
 export function findSheet(sheets: SheetInfo[], wanted: string): SheetInfo | null {

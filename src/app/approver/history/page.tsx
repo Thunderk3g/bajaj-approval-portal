@@ -1,5 +1,6 @@
 import { requireRole } from '@/lib/auth/rbac';
-import { Button, Card, Input, PageHeader, Pagination, Select } from '@/components/ui';
+import { Button, Input, PageHeader, Pagination, Select } from '@/components/ui';
+import { FilterBar, FilterField } from '@/components/approvals/filter-bar';
 import { buildQuery, parsePageParams, PAGE_SIZES } from '@/lib/pagination';
 import { listHistory } from '@/lib/approvals/queries';
 import {
@@ -33,75 +34,66 @@ export default async function HistoryPage({
         description="Every approval, rejection and return — including returns that were later resubmitted, which the request's own status no longer remembers."
       />
 
-      <Card className="mb-4">
-        <form method="get" className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">Decision</span>
-            <Select name="action" defaultValue={filters.action ?? ''}>
-              <option value="">All decisions</option>
-              {HISTORY_ACTIONS.map((a) => (
-                <option key={a} value={a}>
-                  {a}
-                </option>
-              ))}
-            </Select>
-          </label>
+      <FilterBar className="mb-3">
+        <FilterField label="Decision">
+          <Select name="action" defaultValue={filters.action ?? ''}>
+            <option value="">All decisions</option>
+            {HISTORY_ACTIONS.map((a) => (
+              <option key={a} value={a}>
+                {a}
+              </option>
+            ))}
+          </Select>
+        </FilterField>
 
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">Category</span>
-            <Select name="category" defaultValue={filters.category ?? ''}>
-              <option value="">All categories</option>
-              {CORRECTION_CATEGORIES.map((c) => (
-                <option key={c} value={c}>
-                  {CATEGORY_LABELS[c]}
-                </option>
-              ))}
-            </Select>
-          </label>
+        <FilterField label="Category">
+          <Select name="category" defaultValue={filters.category ?? ''}>
+            <option value="">All categories</option>
+            {CORRECTION_CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {CATEGORY_LABELS[c]}
+              </option>
+            ))}
+          </Select>
+        </FilterField>
 
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">From</span>
-            <Input type="date" name="from" defaultValue={filters.from ?? ''} />
-          </label>
+        <FilterField label="From">
+          <Input type="date" name="from" defaultValue={filters.from ?? ''} />
+        </FilterField>
 
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">To</span>
-            <Input type="date" name="to" defaultValue={filters.to ?? ''} />
-          </label>
+        <FilterField label="To">
+          <Input type="date" name="to" defaultValue={filters.to ?? ''} />
+        </FilterField>
 
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">Search</span>
-            <Input name="q" defaultValue={filters.q ?? ''} placeholder="Apps_No or SM_ID" />
-          </label>
+        <FilterField label="Search">
+          <Input name="q" defaultValue={filters.q ?? ''} placeholder="Apps_No or SM_ID" />
+        </FilterField>
 
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">Per page</span>
-            <Select name="pageSize" defaultValue={String(page.pageSize)}>
-              {PAGE_SIZES.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </Select>
-          </label>
+        <FilterField label="Per page">
+          <Select name="pageSize" defaultValue={String(page.pageSize)}>
+            {PAGE_SIZES.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </Select>
+        </FilterField>
 
-          <div className="flex items-center gap-3 sm:col-span-3 lg:col-span-6">
-            <label className="flex items-center gap-2 text-sm text-slate-700">
-              <input
-                type="checkbox"
-                name="mine"
-                value="1"
-                defaultChecked={filters.mine}
-                className="h-4 w-4 rounded border-slate-300"
-              />
-              Only my decisions
-            </label>
-            <Button type="submit" variant="secondary">
-              Apply filters
-            </Button>
-          </div>
-        </form>
-      </Card>
+        <label className="flex h-[30px] items-center gap-2 text-[12px] text-slate-700">
+          <input
+            type="checkbox"
+            name="mine"
+            value="1"
+            defaultChecked={filters.mine}
+            className="size-4 rounded border-slate-300 accent-slate-900"
+          />
+          Only mine
+        </label>
+
+        <Button type="submit" variant="secondary">
+          Apply
+        </Button>
+      </FilterBar>
 
       <HistoryTable rows={history.rows} />
 

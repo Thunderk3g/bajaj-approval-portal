@@ -52,7 +52,7 @@ export default async function PeriodsPage() {
         </Alert>
       ) : (
         <>
-          <div className="mb-6 grid gap-4 sm:grid-cols-3">
+          <div className="mb-4 grid gap-3 sm:grid-cols-3">
             <StatCard
               label="Current period"
               value={open ? open.label : '—'}
@@ -73,7 +73,7 @@ export default async function PeriodsPage() {
               with no upload yet — and it silently blocks every new correction in
               the portal. Nothing else on any screen would explain why. */}
           {!open ? (
-            <div className="mb-6">
+            <div className="mb-4">
               <Alert tone="warning" title="No period is open">
                 Salespeople cannot raise new corrections against any record that belongs to a
                 period. Commit the next month&apos;s workbook to open a new cycle, or reopen the
@@ -82,7 +82,10 @@ export default async function PeriodsPage() {
             </div>
           ) : null}
 
-          <Card className="mb-6">
+          {/* The table stands on its own — it already draws a bordered, rounded
+              panel, and wrapping it in a titleless Card drew that box twice with
+              16px of dead space between the two rules. */}
+          <div className="mb-4">
             <Table>
               <thead>
                 <tr>
@@ -100,8 +103,8 @@ export default async function PeriodsPage() {
                 {periods.map((p) => (
                   <tr key={p.id} className="hover:bg-slate-50">
                     <Td>
-                      <span className="font-medium text-slate-900">{p.label}</span>
-                      <div className="mt-0.5 font-mono text-xs text-slate-500">
+                      <span className="font-medium whitespace-nowrap text-slate-900">{p.label}</span>
+                      <div className="mt-0.5 font-mono text-[11px] whitespace-nowrap text-slate-500">
                         {p.startsOn} → {p.endsOn}
                       </div>
                     </Td>
@@ -121,10 +124,10 @@ export default async function PeriodsPage() {
                     <Td>
                       {p.closedAt ? (
                         <>
-                          <span className="text-xs text-slate-600">
+                          <span className="text-[12px] whitespace-nowrap text-slate-600">
                             {formatDateTime(p.closedAt)}
                           </span>
-                          <div className="text-xs text-slate-500">{orDash(p.closedByName)}</div>
+                          <div className="text-[11px] text-slate-500">{orDash(p.closedByName)}</div>
                         </>
                       ) : (
                         <span className="text-slate-400">—</span>
@@ -142,7 +145,7 @@ export default async function PeriodsPage() {
                 ))}
               </tbody>
             </Table>
-          </Card>
+          </div>
         </>
       )}
 
@@ -150,7 +153,7 @@ export default async function PeriodsPage() {
         title="What closing a period does"
         description="Closing is narrow on purpose — it stops new claims and nothing else."
       >
-        <ul className="space-y-2 text-sm text-slate-600">
+        <ul className="space-y-2 text-[13px] leading-relaxed text-slate-600">
           <li>
             <strong className="text-slate-800">Blocked:</strong> raising a new correction request
             against a record that belongs to the closed period.

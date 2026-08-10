@@ -12,6 +12,19 @@ export const ROLE_PREFIXES: Record<Role, string> = {
   sales: '/sales',
   approver: '/approver',
   verifier: '/verifier',
+  /**
+   * One prefix each, even though a TL and an ACM do the same shape of work.
+   *
+   * Sharing a single `/team` space was the tempting version and is wrong here:
+   * `roleForPath` answers by scanning this map for the first prefix that matches,
+   * so two roles behind one prefix makes it a coin flip that always lands on the
+   * earlier key — an ACM would be told `/team` belongs to a TL, and the guard
+   * would bounce them off their own dashboard. tests/lib/redirects.test.ts
+   * asserts the round trip for every role precisely so this cannot be introduced
+   * quietly.
+   */
+  tl: '/tl',
+  acm: '/acm',
 };
 
 /** Landing page for a role immediately after sign-in. */

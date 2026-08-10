@@ -26,6 +26,7 @@ import {
   type ManpowerRow,
 } from './parse';
 import { loadMasterSnapshots, loadStagedRows, markRowsCommitted } from './stage';
+import { ImportPreconditionError, ROSTER_REQUIRED_MESSAGE, rosterState } from './roster-gate';
 import { extraFromRaw } from './validate';
 import type { ColumnMapping, CommitOutcome, ConflictAcceptance } from './types';
 
@@ -140,6 +141,96 @@ async function readSecondarySheets(storedPath: string): Promise<{
   };
 }
 
+export type RosterCommitOutcome = {
+  upserted: number;
+  sheetName: string;
+  /** Distinct TL and ACM codes the sheet places people under. */
+  teamLeaders: number;
+  areaManagers: number;
+  /** Rows the sheet carries that name no team leader — they route nowhere. */
+  unplaced: number;
+};
+
+/**
+ * Step one of an import: write the reporting line, and nothing else.
+ *
+ * Separate from `commitBatch` on purpose. The roster decides who approves what,
+ * so it is reviewed and committed on its own before a single policy is mapped
+ * against it — rather than arriving as a side effect of importing a transaction
+ * sheet, which is what happened when both lived in one commit.
+ *
+ * Re-runnable. The upsert is keyed on `sm_id`, so importing a corrected sheet
+ * updates the placements rather than duplicating them, and `manpower_override`
+ * is untouched either way — an administrator's pinned assignment outlives every
+ * re-import until they release it.
+ */
+export async function commitRoster(input: {
+  batchId: string;
+  actor: Pick<SessionUser, 'id' | 'email' | 'role'>;
+}): Promise<RosterCommitOutcome> {
+  const [batch] = await db.select().from(uploadBatch).where(eq(uploadBatch.id, input.batchId));
+  if (!batch) throw new Error('Batch not found');
+
+  const secondary = await readSecondarySheets(batch.storedPath);
+
+  if (secondary.manpowerRows.length === 0) {
+    throw new ImportPreconditionError(
+      `This workbook has no ${MANPOWER_SHEET} sheet, so there is no reporting line to import from it. Upload a workbook that carries one.`,
+    );
+  }
+
+  const outcome = await db.transaction(async (tx) => {
+    const names = await upsertManpower(tx, secondary.manpowerRows, input.batchId);
+
+    const placements = secondary.manpowerRows.filter((r) => normalizeString(r.tlId));
+    const tls = new Set(
+      secondary.manpowerRows.map((r) => normalizeString(r.tlId)).filter(Boolean),
+    );
+    const acms = new Set(
+      secondary.manpowerRows.map((r) => normalizeString(r.ccmId)).filter(Boolean),
+    );
+
+    await tx
+      .update(uploadBatch)
+      .set({
+        rosterCommittedAt: new Date(),
+        rosterCommittedBy: input.actor.id,
+        rosterRowCount: names.size,
+      })
+      .where(eq(uploadBatch.id, input.batchId));
+
+    await writeAudit(
+      {
+        actor: input.actor,
+        action: 'UPLOAD_ROSTER_COMMIT',
+        entityType: 'upload_batch',
+        entityId: input.batchId,
+        after: { rosterRows: names.size },
+        metadata: {
+          sheetName: secondary.sheetNames.manpower,
+          teamLeaders: tls.size,
+          areaManagers: acms.size,
+          // Rows naming no TL are the ones that will silently skip both manager
+          // rungs on every mapping correction, so the count is recorded rather
+          // than left to be discovered a request at a time.
+          unplaced: secondary.manpowerRows.length - placements.length,
+        },
+      },
+      tx,
+    );
+
+    return {
+      upserted: names.size,
+      sheetName: secondary.sheetNames.manpower ?? MANPOWER_SHEET,
+      teamLeaders: tls.size,
+      areaManagers: acms.size,
+      unplaced: secondary.manpowerRows.length - placements.length,
+    };
+  });
+
+  return outcome;
+}
+
 export async function commitBatch(input: CommitInput): Promise<CommitOutcome> {
   const [batch] = await db.select().from(uploadBatch).where(eq(uploadBatch.id, input.batchId));
   if (!batch) throw new Error('Batch not found');
@@ -150,6 +241,30 @@ export async function commitBatch(input: CommitInput): Promise<CommitOutcome> {
   const secondary = await readSecondarySheets(batch.storedPath);
   const mapping = (batch.columnMapping ?? {}) as ColumnMapping;
   const accepted = input.acceptedConflicts ?? {};
+
+  /**
+   * The roster comes first, and it is a SEPARATE step — 2026-08-06 spec §5.
+   *
+   * No same-file bypass any more. A workbook carrying both sheets used to import
+   * both in one pass, which meant the reporting line every approval routes through
+   * was written as a side effect of importing policies, from a sheet nobody had
+   * looked at. Now `commitRoster` runs first and on its own, and this refuses
+   * until a roster exists.
+   *
+   * Refused rather than warned about, because the failure it prevents is silent:
+   * records import perfectly, and then every mapping correction skips its
+   * team-leader and area-manager steps because there is nobody to route to. The
+   * first sign is a request that reached the approver without the two people who
+   * were supposed to see it, which nobody notices by looking.
+   *
+   * Checked before the transaction opens: this is a precondition on the whole
+   * commit, not a row-level rule, and failing early keeps the batch VALIDATED so
+   * the admin can import the roster and press Commit again.
+   */
+  const roster = await rosterState();
+  if (!roster.ready) {
+    throw new ImportPreconditionError(ROSTER_REQUIRED_MESSAGE);
+  }
 
   return db.transaction(async (tx) => {
     // FOR UPDATE, re-reading status inside the transaction: two admins pressing
@@ -358,8 +473,12 @@ export async function commitBatch(input: CommitInput): Promise<CommitOutcome> {
 
     /* -------------------------------------------- Manpower roster (13.2 n.7) */
 
-    const rosterNames = await upsertManpower(tx, secondary.manpowerRows, input.batchId);
-    outcome.manpowerUpserted = rosterNames.size;
+    // NOT written here any more — `commitRoster` owns it, and ran before this.
+    // What still happens is the reverse direction: recording which SM_IDs the
+    // transaction sheet mentions that the roster has never heard of. That is a
+    // fact about THIS file, discovered while importing it, and it is what tells
+    // the admin the roster is behind the data.
+    outcome.manpowerUpserted = 0;
     outcome.orphanSmIds = await flagOrphans(tx, smIdsSeen, input.batchId);
 
     /* ------------------------------------- Mapping Changes Latest (6.7) */

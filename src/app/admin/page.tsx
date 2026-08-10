@@ -13,9 +13,6 @@ import {
   PageHeader,
   StatCard,
   StatusBadge,
-  Table,
-  Td,
-  Th,
 } from '@/components/ui';
 
 export const metadata: Metadata = {
@@ -49,16 +46,19 @@ export default async function AdminDashboardPage() {
         description="Import health, the reconciliation workload, and what the portal has been doing."
         actions={
           <>
-            <LinkButton href="/admin/uploads">Uploads</LinkButton>
-            <LinkButton href="/admin/records" variant="primary">
-              Browse records
+            {/* The upload is the act that starts a month, so it leads. Export is
+                the other thing an admin comes to this page to do and everything
+                else on it is a link out of a figure. */}
+            <LinkButton href="/admin/uploads/new" variant="primary">
+              New upload
             </LinkButton>
+            <LinkButton href="/admin/exports">Export</LinkButton>
           </>
         }
       />
 
       {records.anomalies > 0 ? (
-        <div className="mb-6">
+        <div className="mb-4">
           <Alert
             tone="danger"
             title={`${n(records.anomalies)} issued ${
@@ -76,7 +76,9 @@ export default async function AdminDashboardPage() {
         </div>
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      {/* 12px gutters, not 16: five figures across one band read as one row of
+          numbers only while the gaps stay smaller than the cards' own padding. */}
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           label="Records"
           value={n(records.total)}
@@ -115,35 +117,34 @@ export default async function AdminDashboardPage() {
         />
       </div>
 
-      <div className="mt-6 grid gap-6 lg:grid-cols-2">
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <Card
           title="Reconciliation workload"
           description="Counted only on ISSUED rows — a blank on a pending application is correct, not broken."
         >
-          <Table>
-            <thead>
-              <tr>
-                <Th>Gap</Th>
-                <Th className="text-right">Rows</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {GAP_TYPES.map((type) => (
-                <tr key={type}>
-                  <Td>
-                    <Link href={gapHref(type)} className="font-medium text-slate-900 hover:underline">
-                      {GAP_LABELS[type]}
-                    </Link>
-                  </Td>
-                  <Td className="text-right tabular-nums">{n(records.byGap[type])}</Td>
-                </tr>
-              ))}
-              <tr>
-                <Td className="font-medium">At least one gap</Td>
-                <Td className="text-right font-medium tabular-nums">{n(records.withGap)}</Td>
-              </tr>
-            </tbody>
-          </Table>
+          {/* A list, not a table. Two columns of label-and-count carry no header
+              worth a row of their own, and a bordered <Table> inside a bordered
+              Card draws the same box twice. `-m-4` cancels the card's body
+              padding so the dividers run edge to edge, the way every panel in
+              the design does. */}
+          <ul className="-m-4 divide-y divide-slate-100">
+            {GAP_TYPES.map((type) => (
+              <li key={type} className="flex items-baseline justify-between gap-4 px-4 py-[9px]">
+                <Link href={gapHref(type)} className="text-[13px] text-slate-800 hover:underline">
+                  {GAP_LABELS[type]}
+                </Link>
+                <span className="text-[13px] tabular-nums text-slate-900">
+                  {n(records.byGap[type])}
+                </span>
+              </li>
+            ))}
+            <li className="flex items-baseline justify-between gap-4 px-4 py-[9px]">
+              <span className="text-[13px] font-medium text-slate-900">At least one gap</span>
+              <span className="text-[13px] font-medium tabular-nums text-slate-900">
+                {n(records.withGap)}
+              </span>
+            </li>
+          </ul>
         </Card>
 
         <Card
@@ -161,29 +162,22 @@ export default async function AdminDashboardPage() {
               description="Import the master workbook to populate every figure on this page."
             />
           ) : (
-            <Table>
-              <thead>
-                <tr>
-                  <Th>Status</Th>
-                  <Th className="text-right">Batches</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {batches.byStatus.map((row) => (
-                  <tr key={row.status}>
-                    <Td>
-                      <StatusBadge status={row.status} />
-                    </Td>
-                    <Td className="text-right tabular-nums">{n(row.count)}</Td>
-                  </tr>
-                ))}
-              </tbody>
-            </Table>
+            <ul className="-m-4 divide-y divide-slate-100">
+              {batches.byStatus.map((row) => (
+                <li
+                  key={row.status}
+                  className="flex items-center justify-between gap-4 px-4 py-[9px]"
+                >
+                  <StatusBadge status={row.status} />
+                  <span className="text-[13px] tabular-nums text-slate-900">{n(row.count)}</span>
+                </li>
+              ))}
+            </ul>
           )}
         </Card>
       </div>
 
-      <div className="mt-6">
+      <div className="mt-4">
         <Card
           title="Recent activity"
           description="From the append-only audit log."
@@ -192,30 +186,29 @@ export default async function AdminDashboardPage() {
           {data.activity.length === 0 ? (
             <EmptyState title="No activity recorded yet" />
           ) : (
-            <Table>
-              <thead>
-                <tr>
-                  <Th>When</Th>
-                  <Th>Action</Th>
-                  <Th>Entity</Th>
-                  <Th>Actor</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.activity.map((entry) => (
-                  <tr key={entry.id}>
-                    <Td className="whitespace-nowrap text-slate-600">
-                      {formatDateTime(entry.createdAt)}
-                    </Td>
-                    <Td>
-                      <Badge>{entry.action}</Badge>
-                    </Td>
-                    <Td className="text-slate-600">{entry.entityType}</Td>
-                    <Td className="text-slate-600">{orDash(entry.actorEmail)}</Td>
-                  </tr>
-                ))}
-              </tbody>
-            </Table>
+            // A fixed-width monospaced timestamp column, so eight entries read as
+            // a chronology down one edge rather than a ragged left margin.
+            <ul className="-m-4 divide-y divide-slate-100">
+              {data.activity.map((entry) => (
+                <li key={entry.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-[9px]">
+                  <span className="w-28 shrink-0 font-mono text-[11px] text-slate-500">
+                    {formatDateTime(entry.createdAt)}
+                  </span>
+                  <Badge>{entry.action}</Badge>
+                  <span className="min-w-0 text-[13px] text-slate-700">
+                    {entry.entityType}
+                    {entry.entityId ? (
+                      <span className="ml-1.5 font-mono text-[12px] text-slate-500">
+                        {entry.entityId}
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="ml-auto text-[12px] text-slate-500">
+                    {orDash(entry.actorEmail)}
+                  </span>
+                </li>
+              ))}
+            </ul>
           )}
         </Card>
       </div>

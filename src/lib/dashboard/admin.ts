@@ -11,10 +11,11 @@
  * sorting and search into a screen that uses none of them.
  */
 
-import { desc, eq, sql } from 'drizzle-orm';
+import { desc, eq, notInArray, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { auditLog, correctionRequest, salesRecord, uploadBatch, uploadBatchRow } from '@/db/schema';
 import type { GapType } from '@/lib/records/gaps';
+import { PLACEHOLDER_CODE_LIST } from '@/lib/roster/placeholders';
 import {
   ANOMALY_CONDITION,
   ANY_GAP_CONDITION,
@@ -27,6 +28,15 @@ import {
 
 /** How many audit rows the activity panel shows. Enough to see a session's work, not a log viewer. */
 const ACTIVITY_LIMIT = 8;
+
+/**
+ * Gapped rows that belong to a person — the denominator of "reps to chase".
+ *
+ * `count(distinct sm_id)` over the login dump counts `DIY` and `111222-UN` as
+ * two more reps, and the tile reads as a headcount an admin can go and talk to.
+ * Nobody can be chased for the digital channel's paperwork.
+ */
+const REP_GAP_CONDITION = sql`(${ANY_GAP_CONDITION} and ${notInArray(salesRecord.smId, PLACEHOLDER_CODE_LIST)})`;
 
 export type ActivityEntry = {
   id: number;
@@ -87,7 +97,7 @@ export async function getAdminDashboard(): Promise<AdminDashboard> {
           total: countAll,
           issued: countFiltered(ISSUED_CONDITION),
           withGap: countFiltered(ANY_GAP_CONDITION),
-          repsWithGap: countDistinctFiltered(salesRecord.smId, ANY_GAP_CONDITION),
+          repsWithGap: countDistinctFiltered(salesRecord.smId, REP_GAP_CONDITION),
           anomalies: countFiltered(ANOMALY_CONDITION),
           missingIssuedDate: countFiltered(gapCondition('MISSING_ISSUED_DATE')),
           missingPolicyNo: countFiltered(gapCondition('MISSING_POLICY_NO')),

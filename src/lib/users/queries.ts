@@ -1,6 +1,7 @@
-import { and, asc, count, desc, eq, ilike, notExists, or, sql, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, ilike, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db/client';
-import { manpower, roleEnum, salesRecord, user } from '@/db/schema';
+import { manpower, manpowerOverride, roleEnum, user } from '@/db/schema';
+import { buildRoster, byRungThenCode, type RosterEntry } from '@/lib/roster/entries';
 import type { UserRole } from './schema';
 
 /** Reads for /admin/users — spec sections 4.2 and 13.2 note 7. */
@@ -11,6 +12,8 @@ export type UserRow = {
   email: string;
   role: UserRole;
   smId: string | null;
+  tlCode: string | null;
+  acmCode: string | null;
   isActive: boolean;
   createdAt: Date;
 };
@@ -71,6 +74,8 @@ export async function listUsers(
         email: user.email,
         role: user.role,
         smId: user.smId,
+        tlCode: user.tlCode,
+        acmCode: user.acmCode,
         isActive: user.isActive,
         createdAt: user.createdAt,
       })
@@ -95,6 +100,8 @@ export async function findUserById(id: string): Promise<UserRow | null> {
       email: user.email,
       role: user.role,
       smId: user.smId,
+      tlCode: user.tlCode,
+      acmCode: user.acmCode,
       isActive: user.isActive,
       createdAt: user.createdAt,
     })
@@ -105,112 +112,104 @@ export async function findUserById(id: string): Promise<UserRow | null> {
   return row ?? null;
 }
 
-export type RosterEntry = {
-  smId: string;
-  smName: string | null;
-  location: string | null;
-  /** Seen in transaction data but absent from the Manpower roster. */
-  isOrphan: boolean;
+export type RosterWorklistEntry = RosterEntry & {
   accountEmail: string | null;
   accountIsActive: boolean | null;
 };
 
-const ROSTER_LIMIT = 500;
+/**
+ * The Manpower sheet with any admin override applied, in one round trip.
+ *
+ * `coalesce` is the same precedence `resolveHierarchy` uses: a rep an admin has
+ * moved is somebody else's report now, and a worklist built off the raw sheet
+ * would offer the wrong manager an account for a team they no longer hold. The
+ * sheet's own columns come along beside it so team NAMES stay attributable to a
+ * rep the sheet itself places there.
+ */
+async function loadRoster(): Promise<RosterEntry[]> {
+  const rows = await db
+    .select({
+      smId: manpower.smId,
+      smName: manpower.smName,
+      location: manpower.location,
+      isOrphan: manpower.isOrphan,
+      tlId: sql<string | null>`coalesce(${manpowerOverride.tlId}, ${manpower.tlId})`,
+      ccmId: sql<string | null>`coalesce(${manpowerOverride.ccmId}, ${manpower.ccmId})`,
+      sheetTlId: manpower.tlId,
+      tlName: manpower.tlName,
+      sheetCcmId: manpower.ccmId,
+      ccmName: manpower.ccmName,
+    })
+    .from(manpower)
+    .leftJoin(manpowerOverride, eq(manpowerOverride.smId, manpower.smId));
+
+  return buildRoster(rows);
+}
 
 /**
- * The provisioning worklist — every SM_ID that could need a Sales account,
- * annotated with whether one already exists.
+ * The provisioning worklist — everybody the Manpower sheet names, at every rung,
+ * and whether each already has a login.
  *
- * Built from two sources, not one. The `Manpower` roster is the intended source
- * (section 13.1), but seven SM_IDs in the June `Login Data` have no roster row
- * at all (section 13.2 note 7). Listing only the roster would leave those reps
- * permanently invisible to the admin who has to provision them, so IDs found in
- * `sales_record` with no roster entry are folded in and flagged as orphans —
- * the roster is treated as incomplete rather than as the truth.
+ * The sheet is the only source; see the header of src/lib/roster/entries.ts for
+ * why nothing here consults imported transaction data, and how a manager is
+ * recognised when the sheet gives them no row of their own.
  *
- * Merged in the application rather than in one UNION query on purpose: the
- * roster is ~180 rows and the orphan set is single digits, so the cost is
- * nothing and the join semantics stay legible.
+ * The account lookup is per RUNG, not per code. A code can legitimately hold two
+ * of them — one person who leads a team inside the cluster they head — and
+ * matching on the code alone would report the area manager's account as covering
+ * the team-leader rung, hiding the one gap that still routes to nobody.
  */
-export async function listRoster(): Promise<RosterEntry[]> {
-  const [rosterRows, orphanRows, salesAccounts] = await Promise.all([
+export async function listRoster(): Promise<RosterWorklistEntry[]> {
+  const [entries, accounts] = await Promise.all([
+    loadRoster(),
     db
       .select({
-        smId: manpower.smId,
-        smName: manpower.smName,
-        location: manpower.location,
-        isOrphan: manpower.isOrphan,
+        smId: user.smId,
+        tlCode: user.tlCode,
+        acmCode: user.acmCode,
+        email: user.email,
+        isActive: user.isActive,
       })
-      .from(manpower)
-      .orderBy(asc(manpower.smId))
-      .limit(ROSTER_LIMIT),
-
-    db
-      .select({
-        smId: salesRecord.smId,
-        smName: sql<string | null>`max(${salesRecord.smName})`,
-        location: sql<string | null>`max(${salesRecord.location})`,
-      })
-      .from(salesRecord)
-      .where(
-        notExists(
-          db
-            .select({ one: sql`1` })
-            .from(manpower)
-            .where(eq(manpower.smId, salesRecord.smId)),
-        ),
-      )
-      .groupBy(salesRecord.smId)
-      .orderBy(asc(salesRecord.smId))
-      .limit(ROSTER_LIMIT),
-
-    db
-      .select({ smId: user.smId, email: user.email, isActive: user.isActive })
-      .from(user)
-      .where(eq(user.role, 'sales')),
+      .from(user),
   ]);
 
-  const accounts = new Map(
-    salesAccounts
-      .filter((a): a is { smId: string; email: string; isActive: boolean } => a.smId !== null)
-      .map((a) => [a.smId, a]),
-  );
+  /**
+   * By CODE, not by rung.
+   *
+   * A code is one person now — `buildRoster` collapses a multi-rung code to its
+   * highest rung — so an account carrying it at any rung is that person's
+   * account. Keying per rung, as this did, would report the area manager as
+   * having no team-leader login and offer a second one in his name, which is
+   * exactly the duplicate identity the collapse exists to remove.
+   *
+   * Not filtered to a role either: the CHECK constraints permit any role to
+   * carry a code, and whatever holds it, a second account for the same code is a
+   * second login onto one person's book.
+   */
+  const held = new Map<string, { email: string; isActive: boolean }>();
 
-  const entries: RosterEntry[] = [
-    ...rosterRows.map((r) => ({
-      smId: r.smId,
-      smName: r.smName,
-      location: r.location,
-      isOrphan: r.isOrphan,
-      accountEmail: null as string | null,
-      accountIsActive: null as boolean | null,
-    })),
-    ...orphanRows.map((r) => ({
-      smId: r.smId,
-      smName: r.smName,
-      location: r.location,
-      isOrphan: true,
-      accountEmail: null as string | null,
-      accountIsActive: null as boolean | null,
-    })),
-  ];
-
-  for (const entry of entries) {
-    const account = accounts.get(entry.smId);
-    if (!account) continue;
-    entry.accountEmail = account.email;
-    entry.accountIsActive = account.isActive;
+  for (const account of accounts) {
+    const value = { email: account.email, isActive: account.isActive };
+    for (const code of [account.smId, account.tlCode, account.acmCode]) {
+      if (code) held.set(code, value);
+    }
   }
 
-  // Unprovisioned first, orphans ahead of roster entries within that: those are
-  // the two facts the admin is on this page to act on.
-  return entries.sort((a, b) => {
-    const provisioned = Number(a.accountEmail !== null) - Number(b.accountEmail !== null);
-    if (provisioned !== 0) return provisioned;
-    const orphan = Number(b.isOrphan) - Number(a.isOrphan);
-    if (orphan !== 0) return orphan;
-    return a.smId.localeCompare(b.smId);
-  });
+  return entries
+    .map((entry) => {
+      const account = held.get(entry.code) ?? null;
+      return {
+        ...entry,
+        accountEmail: account?.email ?? null,
+        accountIsActive: account?.isActive ?? null,
+      };
+    })
+    .sort((a, b) => {
+      // Unprovisioned first, then top of the hierarchy down: a rep's account is
+      // worth little until somebody exists to approve their corrections.
+      const provisioned = Number(a.accountEmail !== null) - Number(b.accountEmail !== null);
+      return provisioned !== 0 ? provisioned : byRungThenCode(a, b);
+    });
 }
 
 /** Whether an SM_ID is on the roster, and whether the roster itself flags it. */

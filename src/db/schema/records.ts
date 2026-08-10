@@ -66,6 +66,22 @@ export const uploadBatch = pgTable(
     uploadedAt: timestamp('uploaded_at', { withTimezone: true }).notNull().defaultNow(),
     committedBy: text('committed_by').references(() => user.id),
     committedAt: timestamp('committed_at', { withTimezone: true }),
+    /**
+     * When this upload's `Manpower` sheet was committed to the roster.
+     *
+     * A separate step from committing the policies, and it comes first. The roster
+     * is what places every rep under a team leader and that leader under an area
+     * manager; the transaction sheet is then mapped AGAINST that hierarchy. Doing
+     * both in one pass — which is what this used to do — meant the roster was
+     * written from whatever Manpower sheet happened to be in the same workbook, as
+     * a side effect of importing policies, with nobody having looked at it.
+     *
+     * Null means the roster step has not been run for this upload. The policy
+     * commit refuses while a roster does not exist at all.
+     */
+    rosterCommittedAt: timestamp('roster_committed_at', { withTimezone: true }),
+    rosterCommittedBy: text('roster_committed_by').references(() => user.id),
+    rosterRowCount: integer('roster_row_count').notNull().default(0),
   },
   (t) => [
     index('upload_batch_status_idx').on(t.status),
@@ -135,6 +151,18 @@ export const salesRecord = pgTable(
     status: text('status'),
     status2: text('status_2'),
     autopay: text('autopay'),
+    /**
+     * Whether the policy was booked as BAU or BFL — the Business Dashboard's own
+     * source-channel column, and the field a BAU_TO_BFL correction targets
+     * (2026-08-06 spec section 3).
+     *
+     * Text and nullable like every other descriptive column here: the workbook
+     * spells the two values itself and the portal has no reason to constrain them
+     * to an enum it would then have to migrate every time the business adds a
+     * third channel. Nullable because the column post-dates every workbook
+     * already imported.
+     */
+    sourceChannel: text('source_channel'),
     extra: jsonb('extra').$type<Record<string, unknown>>().notNull().default({}),
     /**
      * The most recent cycle whose file carried this record — spec section 4.3.
@@ -202,6 +230,55 @@ export const manpower = pgTable(
     // SM_ID would never join to the records it is supposed to name.
     check('manpower_sm_id_uppercase', sql`${t.smId} = upper(${t.smId})`),
     index('manpower_orphan_idx').on(t.isOrphan),
+  ],
+);
+
+/**
+ * An admin's correction to the roster, layered ON TOP of the sheet — 2026-08-06
+ * spec section 3.
+ *
+ * Never written by import. `upsertManpower` keeps overwriting `manpower` from
+ * whatever the latest workbook says, exactly as it does today, and this table is
+ * consulted only by `resolveHierarchy`. That separation is the whole design: a
+ * re-import cannot silently clobber an admin's fix, and an admin's fix cannot
+ * silently hide what the sheet actually said — both remain readable, separately,
+ * which is what lets the admin screen show the drift between them without a
+ * single extra column.
+ *
+ * The override is sticky until an admin clears it, never auto-expiring on the
+ * next import. A self-clearing override is the trap this codebase's enum comments
+ * already argue against elsewhere: an admin fixes a wrong TL, the next upload
+ * un-fixes it, and nothing on any screen says why a request suddenly routed to
+ * somebody else.
+ *
+ * No FK to `manpower.sm_id`, deliberately — an admin may need to stage a
+ * reassignment before the sheet has caught up with it, which is the exact case
+ * the table exists for.
+ */
+export const manpowerOverride = pgTable(
+  'manpower_override',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    smId: text('sm_id').notNull().unique(),
+    /** Null means "no override for this rung, defer to the sheet". */
+    tlId: text('tl_id'),
+    /** The ACM override. Named `ccm_id` because ACM and CCM are one rung (spec §2). */
+    ccmId: text('ccm_id'),
+    reason: text('reason'),
+    overriddenBy: text('overridden_by')
+      .notNull()
+      .references(() => user.id),
+    overriddenAt: timestamp('overridden_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('manpower_override_sm_id_uppercase', sql`${t.smId} = upper(${t.smId})`),
+    // A row overriding neither rung is a row that changes nothing while still
+    // shadowing the sheet in every drift comparison. Clearing an override deletes
+    // the row; it does not null both columns.
+    check(
+      'manpower_override_not_empty',
+      sql`${t.tlId} IS NOT NULL OR ${t.ccmId} IS NOT NULL`,
+    ),
   ],
 );
 

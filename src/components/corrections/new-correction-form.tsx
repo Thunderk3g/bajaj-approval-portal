@@ -242,7 +242,7 @@ export function NewCorrectionForm({
           </Field>
 
           {isClaim && (lookup || lookupMessage) ? (
-            <div className="rounded border border-slate-200 bg-slate-50 p-3 text-sm">
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
               {lookup ? (
                 <dl className="grid gap-x-4 gap-y-1 sm:grid-cols-2">
                   <Pair label="Client" value={lookup.clientName} />
@@ -253,7 +253,7 @@ export function NewCorrectionForm({
                 </dl>
               ) : null}
               {lookupMessage ? (
-                <p className="mt-2 text-xs text-slate-500">{lookupMessage}</p>
+                <p className="mt-2 text-[11px] text-slate-500">{lookupMessage}</p>
               ) : null}
             </div>
           ) : null}
@@ -359,7 +359,7 @@ export function NewCorrectionForm({
             type="file"
             multiple
             accept={accept}
-            className="block w-full text-sm text-slate-700 file:mr-3 file:rounded file:border-0 file:bg-slate-900 file:px-3 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-slate-800"
+            className="block w-full text-[13px] text-slate-700 file:mr-3 file:rounded-md file:border-0 file:bg-slate-900 file:px-3 file:py-1.5 file:text-[13px] file:font-medium file:text-white hover:file:bg-slate-800"
           />
         </Field>
       </Card>
@@ -399,7 +399,7 @@ function DirectionOption({
 }) {
   return (
     <label
-      className={`flex cursor-pointer gap-3 rounded border p-3 ${
+      className={`flex cursor-pointer gap-3 rounded-md border p-3 ${
         checked ? 'border-slate-900 bg-slate-50' : 'border-slate-200 hover:border-slate-300'
       }`}
     >
@@ -409,11 +409,11 @@ function DirectionOption({
         value={value}
         checked={checked}
         onChange={() => onSelect(value)}
-        className="mt-0.5 h-4 w-4 shrink-0 accent-slate-900"
+        className="mt-0.5 size-4 shrink-0 accent-slate-900"
       />
       <span>
-        <span className="block text-sm font-medium text-slate-900">{title}</span>
-        <span className="block text-xs text-slate-500">{detail}</span>
+        <span className="block text-[13px] font-medium text-slate-900">{title}</span>
+        <span className="block text-[12px] leading-snug text-slate-500">{detail}</span>
       </span>
     </label>
   );
@@ -422,8 +422,10 @@ function DirectionOption({
 function Pair({ label, value }: { label: string; value: string | null }) {
   return (
     <div className="flex gap-2">
-      <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</dt>
-      <dd className="text-sm text-slate-900">{value ?? '—'}</dd>
+      <dt className="w-[112px] shrink-0 pt-px text-[10px] font-semibold uppercase tracking-[0.07em] text-slate-500">
+        {label}
+      </dt>
+      <dd className="min-w-0 flex-1 text-[13px] text-slate-900">{value ?? '—'}</dd>
     </div>
   );
 }

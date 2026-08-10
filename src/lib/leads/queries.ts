@@ -20,7 +20,7 @@ import { and, asc, count, eq, gte, lte, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { lead, manpower } from '@/db/schema';
 import { AuthzError } from '@/lib/auth/errors';
-import { GLOBAL_READ_ROLES, type SessionUser } from '@/lib/auth/rbac';
+import { GLOBAL_READ_ROLES, teamSmIds, type SessionUser } from '@/lib/auth/rbac';
 import { pageCount, type PageParams } from '@/lib/pagination';
 import { likePattern } from '@/lib/records/query';
 import { EMPTY_LEAD_FILTERS, type LeadFilters } from './filters';
@@ -32,9 +32,17 @@ import { EMPTY_LEAD_FILTERS, type LeadFilters } from './filters';
  * `scopedRecordCondition`, keyed on `sm_code` instead of `sm_id`.
  *
  * Admins, approvers and verifiers see everything (`GLOBAL_READ_ROLES`). A sales
- * user is confined to their own SM_ID, and one with no SM_ID throws rather than
+ * user is confined to their own SM_ID; a team leader or area manager to the reps
+ * beneath them, through the same `teamSmIds` subquery `scopedRecordCondition`
+ * uses. Every non-global role throws when its scoping code is missing rather than
  * returning undefined: "no condition" means "no filter", which would turn a
  * single misconfigured account into one that reads every rep's leads.
+ *
+ * The two manager rungs are handled here rather than left to fall through to the
+ * SM_ID branch. They have no `sm_id` at all, so the fall-through refused them
+ * with "Sales user has no SM_ID" — a message about a role they do not hold, on a
+ * screen they are entitled to. It went unnoticed while the portal had no manager
+ * accounts; the provisioning worklist now creates them by the dozen.
  *
  * The unassigned pool is excluded here structurally rather than left to the
  * sentinel to exclude itself. `111222-UN` does not collide with any real code
@@ -44,6 +52,23 @@ import { EMPTY_LEAD_FILTERS, type LeadFilters } from './filters';
  */
 export function scopedLeadCondition(viewer: SessionUser): SQL | undefined {
   if (GLOBAL_READ_ROLES.includes(viewer.role)) return undefined;
+
+  if (viewer.role === 'tl') {
+    if (!viewer.tlCode) throw new AuthzError('FORBIDDEN', 'TL user has no TL code');
+    return and(
+      sql`${lead.smCode} in ${teamSmIds('tl_id', viewer.tlCode)}`,
+      eq(lead.isUnassigned, false),
+    );
+  }
+
+  if (viewer.role === 'acm') {
+    if (!viewer.acmCode) throw new AuthzError('FORBIDDEN', 'ACM user has no ACM code');
+    return and(
+      sql`${lead.smCode} in ${teamSmIds('ccm_id', viewer.acmCode)}`,
+      eq(lead.isUnassigned, false),
+    );
+  }
+
   if (!viewer.smId) throw new AuthzError('FORBIDDEN', 'Sales user has no SM_ID');
   return and(eq(lead.smCode, viewer.smId), eq(lead.isUnassigned, false));
 }

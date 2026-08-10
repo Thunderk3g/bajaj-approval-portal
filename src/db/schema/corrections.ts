@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { check, index, integer, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import {
+  chainKeyEnum,
   correctionCategoryEnum,
   correctionStatusEnum,
   eventActionEnum,
@@ -68,6 +69,35 @@ export const correctionRequest = pgTable(
     appliedVersion: integer('applied_version'),
     resubmissionCount: integer('resubmission_count').notNull().default(0),
     lastResubmittedAt: timestamp('last_resubmitted_at', { withTimezone: true }),
+
+    /* ------------------------------ multi-stage chain — 2026-08-06 spec §3/§4 */
+
+    /**
+     * Which chain this request runs, resolved by the routing layer at submission
+     * and never recomputed — the same rule `period_id` and `direction` follow, and
+     * for the same reason: the inputs the classification reads (`record.sm_id`,
+     * the counterparty's roster row) are themselves rewritable, so a chain
+     * re-derived days later could disagree with the stages already decided.
+     *
+     * Null on rows that predate this release; the backfill materialises those
+     * against their bootstrap chain rather than leaving them unroutable.
+     */
+    chainKey: chainKeyEnum('chain_key'),
+    /** Points at the `correction_request_stage` row currently ACTIVE. */
+    currentStageSequence: integer('current_stage_sequence').notNull().default(0),
+    /** Chain length at snapshot time. Denormalised so "step 2 of 5" needs no join. */
+    totalStages: integer('total_stages').notNull().default(2),
+    /**
+     * The other side of a MAPPING request, frozen at submission.
+     *
+     * Derivable at submission — `record.sm_id` for a CLAIM_IN, `proposed_value`
+     * for a TRANSFER_OUT — and NOT derivable afterwards, which is the point:
+     * `sm_id` is the very column this request rewrites, so a between-team chain
+     * resolving its second ACM days later against a re-read record would resolve
+     * against whoever owns it by then. Same reasoning as `direction` above,
+     * computed by the same logic `notifyMappingCounterparty` already uses.
+     */
+    counterpartySmId: text('counterparty_sm_id'),
   },
   (t) => [
     check(
@@ -124,6 +154,16 @@ export const correctionEvent = pgTable(
     fromStatus: text('from_status'),
     toStatus: text('to_status'),
     remarks: text('remarks'),
+    /**
+     * Which rung of the chain produced this event — 2026-08-06 spec §3.
+     *
+     * Null for SUBMITTED, RESUBMITTED and WITHDRAWN, which are the submitter
+     * acting on the request as a whole rather than any one stage. `stage_key` is
+     * denormalised alongside the number so the timeline renders "ACM" without
+     * joining a snapshot table that may since have been re-sequenced.
+     */
+    stageSequence: integer('stage_sequence'),
+    stageKey: text('stage_key'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('correction_event_request_idx').on(t.requestId, t.createdAt)],

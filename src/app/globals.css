@@ -1,26 +1,108 @@
 @import "tailwindcss";
 
+/**
+ * The design system, from the Reconciliation Portal design project.
+ *
+ * A dense, monochrome, data-tool aesthetic: one slate ramp carries every
+ * structural colour, and hue is spent only where it means something — the four
+ * status tones. Reviewers read these screens as tables all day, so the base size
+ * is 13px rather than 16px and the tones are quiet enough that a red badge is
+ * genuinely the loudest thing on a page.
+ *
+ * There is deliberately NO dark-mode block. The previous one came from the Next
+ * starter and inverted `--background` on a UI whose every surface is a hardcoded
+ * light slate, which produced white-on-white text for anyone whose OS was set to
+ * dark. Reinstate it only alongside a full dark palette.
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Structure — the slate ramp. */
+  --c-ink: #0f172a;
+  --c-ink-soft: #1e293b;
+  --c-text: #334155;
+  --c-muted: #475569;
+  --c-subtle: #64748b;
+  --c-faint: #94a3b8;
+  --c-line-strong: #cbd5e1;
+  --c-line: #e2e8f0;
+  --c-surface-sunk: #f1f5f9;
+  --c-canvas: #f8fafc;
+  --c-surface: #ffffff;
+
+  /* Status — the only hues in the system. */
+  --c-danger: #b91c1c;
+  --c-danger-bg: #fef2f2;
+  --c-danger-line: #fecaca;
+
+  --c-warn: #92400e;
+  --c-warn-strong: #b45309;
+  --c-warn-bg: #fffbeb;
+  --c-warn-line: #fde68a;
+
+  --c-ok: #065f46;
+  --c-ok-strong: #047857;
+  --c-ok-bg: #ecfdf5;
+  --c-ok-line: #a7f3d0;
+
+  --c-info: #075985;
+  --c-info-bg: #f0f9ff;
+  --c-info-line: #bae6fd;
+
+  --radius-sm: 5px;
+  --radius: 6px;
+  --radius-lg: 8px;
+
+  --background: var(--c-canvas);
+  --foreground: var(--c-ink);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--c-canvas);
+  color: var(--c-ink);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  /* 13px base. Every size in the design sits at 10-13px; scaling this up would
+     mean a reviewer sees a third fewer rows without gaining any legibility. */
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Identifiers are compared by eye down a column, so they are always monospaced.
+   `font-mono` is applied per cell in the components; this makes the variable
+   resolve to Plex Mono rather than the browser default. */
+code, kbd, samp, pre, .font-mono {
+  font-family: var(--font-mono), ui-monospace, monospace;
+}
+
+a {
+  color: var(--c-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+a:hover {
+  color: var(--c-muted);
+}
+
+/* A visible focus ring on everything reachable by keyboard. The default ring is
+   removed by the reset, and a review queue that cannot be driven from the
+   keyboard is a review queue nobody drives quickly. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--c-ink);
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

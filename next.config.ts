@@ -82,6 +82,13 @@ const nextConfig: NextConfig = {
        */
       bodySizeLimit: '64mb',
     },
+    /**
+     * Separate ceiling from serverActions.bodySizeLimit above, and just as real:
+     * `src/middleware.ts` matches /admin/:path*, so every upload and proof POST
+     * passes through it, and Next caps a body read there at 10 MB by default
+     * regardless of the Server Action limit. Same 64 MB reasoning as above.
+     */
+    middlewareClientMaxBodySize: '64mb',
   },
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];

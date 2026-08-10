@@ -39,7 +39,11 @@ const NAV: Record<Role, readonly NavItem[]> = {
     { href: '/admin/corrections', label: 'Corrections' },
     { href: '/admin/exports', label: 'Exports' },
     { href: '/admin/periods', label: 'Periods' },
-    { href: '/admin/users', label: 'Users' },
+    { href: '/admin/workflows', label: 'Approval chains' },
+    // Hierarchy is reached by a tab on this screen rather than its own nav
+    // entry: the two are halves of one question, and an account and a placement
+    // are each useless without the other.
+    { href: '/admin/users', label: 'People' },
     { href: '/admin/audit', label: 'Audit log' },
   ],
   sales: [
@@ -58,6 +62,16 @@ const NAV: Record<Role, readonly NavItem[]> = {
     { href: '/verifier/queue', label: 'Verification queue' },
     { href: '/verifier/history', label: 'History' },
   ],
+  tl: [
+    { href: '/tl', label: 'Dashboard' },
+    { href: '/tl/queue', label: 'My approvals' },
+    { href: '/tl/team', label: 'My team' },
+  ],
+  acm: [
+    { href: '/acm', label: 'Dashboard' },
+    { href: '/acm/queue', label: 'My approvals' },
+    { href: '/acm/team', label: 'My teams' },
+  ],
 };
 
 export function navForRole(role: Role): NavItem[] {
@@ -69,4 +83,8 @@ export const ROLE_LABELS: Record<Role, string> = {
   sales: 'Sales',
   approver: 'Approver',
   verifier: 'Verifier',
+  tl: 'Team leader',
+  // "ACM" is what the business says; `manpower.ccm_id` is where it resolves from.
+  // The label follows the people, not the column — see the 2026-08-06 spec §2.
+  acm: 'Area manager',
 };

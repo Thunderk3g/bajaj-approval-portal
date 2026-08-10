@@ -11,7 +11,15 @@ import { writeAudit, type DbTransaction } from '@/lib/audit/log';
 import type { SessionUser } from '@/lib/auth/rbac';
 import { fieldLabel } from '@/lib/fields';
 import { normalizeIdentifier } from '@/lib/import/normalize';
-import { findSalesUserBySmId, notify, notifyActiveVerifiers } from '@/lib/notifications/service';
+import { isPlaceholderCode, PLACEHOLDER_REASON } from '@/lib/roster/placeholders';
+import { findSalesUserBySmId, notify } from '@/lib/notifications/service';
+import {
+  chainKeyFor,
+  closeActiveStage,
+  counterpartySmIdFor,
+  materializeStages,
+  resetStages,
+} from '@/lib/workflows';
 import { assertPeriodOpen, PeriodClosedError, periodForRecord } from '@/lib/periods/service';
 import { type ActionResult, fail, ok, zodFieldErrors } from '@/lib/result';
 import {
@@ -22,7 +30,6 @@ import {
   type StoredProof,
 } from '@/lib/storage/files';
 import {
-  CATEGORY_LABELS,
   type CorrectionCategory,
   correctionSubmitSchema,
   type MappingDirection,
@@ -239,6 +246,17 @@ async function checkTransferTarget(
     return { ok: false, message: 'Choose a different SM ID — that one is yours.' };
   }
 
+  // Before the roster is consulted, because the roster answers yes: the sheet
+  // carries a row for each bucket. A transfer INTO `DIY` would take a sale off a
+  // named rep and park it in the digital channel, which is the one direction the
+  // mapping flow exists to undo.
+  if (isPlaceholderCode(targetSmId)) {
+    return {
+      ok: false,
+      message: `${targetSmId} is ${PLACEHOLDER_REASON}. A sale cannot be transferred to it.`,
+    };
+  }
+
   const [roster] = await db
     .select({ smId: manpower.smId })
     .from(manpower)
@@ -437,16 +455,43 @@ export async function submitCorrection(
         remarks: submission.description,
       });
 
-      const notified = await notifyVerifiers(tx, {
-        requestId: created.id,
-        resubmission: false,
-        actorName: actor.name,
-        category: submission.category,
-        label,
-        appsNo,
-        originalValue,
-        proposedValue: proposed.value as string,
+      /**
+       * The chain replaces the fixed "tell every verifier" — 2026-08-06 spec §4.
+       *
+       * `counterpartySmId` is written first because the chain is CHOSEN by it: a
+       * mapping request whose other side sits under a different TL runs the
+       * between-teams chain, and that question cannot be re-asked later once an
+       * approval has rewritten `record.sm_id`.
+       *
+       * `materializeStages` opens the first rung, resolves who it belongs to,
+       * pins them and notifies them — so this one call does what `notifyVerifiers`
+       * used to, and does it for a TL or an ACM just as readily.
+       */
+      const counterpartySmId = counterpartySmIdFor({
+        direction,
+        recordSmId: record.smId,
+        proposedSmId: proposed.value as string,
       });
+
+      if (counterpartySmId) {
+        await tx
+          .update(correctionRequest)
+          .set({ counterpartySmId })
+          .where(eq(correctionRequest.id, created.id));
+      }
+
+      const chainKey = await chainKeyFor(tx, {
+        category: submission.category,
+        direction,
+        submitterSmId: scope.smId,
+        counterpartySmId,
+      });
+
+      const opened = await materializeStages(tx, created.id, chainKey, {
+        actorName: actor.name,
+        resubmission: false,
+      });
+      const notified = opened.notified;
 
       const counterpartyNotified = direction
         ? await notifyMappingCounterparty(tx, {
@@ -488,6 +533,13 @@ export async function submitCorrection(
             // no verifier looks exactly like one that is being worked on, and
             // the only way anyone finds out is if this number is written down.
             verifiersNotified: notified,
+            chainKey,
+            counterpartySmId,
+            // A rung that resolved to nobody, or to nobody with an account. The
+            // request still moves — see `openStage` — but the gap is recorded
+            // here so it is answerable later without re-deriving the roster as it
+            // stood at submission.
+            routingWarnings: opened.warnings,
           },
         },
         tx,
@@ -661,20 +713,19 @@ export async function resubmitCorrection(
         remarks: submission.description,
       });
 
-      // Back to the verifiers, not the approvers: a resubmitted request returns
-      // to PENDING and starts the two stages again from the top. A resubmission
-      // that skipped verification would let a rep bypass the gate by getting
-      // returned once on purpose.
-      const recipients = await notifyVerifiers(tx, {
-        requestId: existing.id,
-        resubmission: true,
+      // Back to the top of the chain, not to whichever rung sent it back: a
+      // resubmitted request starts its stages again from the first. A
+      // resubmission that resumed mid-chain would let a rep bypass every gate
+      // below the one that returned it by getting returned once on purpose.
+      //
+      // `resetStages` walks the request's OWN frozen stages, so a chain an admin
+      // has edited in the meantime does not lengthen the ladder underneath
+      // somebody who is halfway up it.
+      const reopened = await resetStages(tx, existing.id, {
         actorName: actor.name,
-        category: existing.category,
-        label: existing.fieldLabel,
-        appsNo: existing.appsNo,
-        originalValue: existing.originalValue,
-        proposedValue: proposed.value as string,
+        resubmission: true,
       });
+      const recipients = reopened.notified;
 
       // The counterparty is told again, because what they were told about has
       // changed — a returned request is the one place the proposed value moves,
@@ -776,6 +827,12 @@ export async function withdrawCorrection(
       })
       .where(eq(correctionRequest.id, existing.id));
 
+    // The open rung is closed with it. A stage left ACTIVE on a withdrawn request
+    // would keep the request in somebody's queue for a decision that can no
+    // longer be made, and would occupy the partial unique index slot that says
+    // "this request has a rung in progress".
+    await closeActiveStage(tx, existing.id, 'WITHDRAWN');
+
     await tx.insert(correctionEvent).values({
       requestId: existing.id,
       action: 'WITHDRAWN',
@@ -873,45 +930,6 @@ async function insertAttachments(
       tx,
     );
   }
-}
-
-/**
- * Announces a new or resubmitted request to the VERIFIERS — 2026-07-28 spec
- * section 3.7.
- *
- * This used to notify approvers. It must not any more: with the gate in place a
- * request in PENDING is not actionable by an approver, so telling them about it
- * would fill their inbox with links to a screen whose only button refuses.
- *
- * Submissions go to EVERY active verifier, not to one assignee. There is no
- * queue ownership in this design — whoever picks it up first reviews it.
- *
- * Returns the recipient count so the caller can react to zero.
- */
-async function notifyVerifiers(
-  tx: DbTransaction,
-  input: {
-    requestId: string;
-    resubmission: boolean;
-    actorName: string;
-    category: string;
-    label: string;
-    appsNo: string;
-    originalValue: string | null;
-    proposedValue: string;
-  },
-): Promise<number> {
-  const categoryLabel = CATEGORY_LABELS[input.category as CorrectionCategory] ?? input.category;
-
-  return notifyActiveVerifiers(
-    {
-      type: input.resubmission ? 'CORRECTION_RESUBMITTED' : 'CORRECTION_SUBMITTED',
-      title: `${input.resubmission ? 'Resubmitted' : 'New'} ${categoryLabel} correction from ${input.actorName}`,
-      body: `${input.label} on application ${input.appsNo}: ${input.originalValue ?? '(blank)'} → ${input.proposedValue}`,
-      link: `/verifier/requests/${input.requestId}`,
-    },
-    tx,
-  );
 }
 
 /**

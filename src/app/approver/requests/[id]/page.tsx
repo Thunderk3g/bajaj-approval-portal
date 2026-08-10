@@ -1,17 +1,19 @@
 import { notFound } from 'next/navigation';
 import { requireRole } from '@/lib/auth/rbac';
-import { Alert, Card, DetailRow, PageHeader, StatusBadge } from '@/components/ui';
-import { formatDateTime, orDash } from '@/lib/format';
+import { Alert, Badge, Card, DetailRow, StatusBadge } from '@/components/ui';
+import { ageInDays, formatDateTime, orDash } from '@/lib/format';
 import { getRequestDetail } from '@/lib/approvals/queries';
 import { APPROVABLE_STATUS, previewTarget } from '@/lib/approvals/apply';
 import { DecisionForm } from '@/components/approvals/decision-form';
+import { ChainProgress } from '@/components/approvals/chain-progress';
 import {
-  BackLink,
   CategoryBadge,
   Comparison,
   MappingPanel,
   ProofList,
   RecordContext,
+  RequestHero,
+  ReviewLayout,
   Timeline,
   VersionTrail,
 } from '@/components/approvals/request-view';
@@ -21,10 +23,11 @@ export const dynamic = 'force-dynamic';
 /**
  * The decision screen — spec section 9.
  *
- * Everything the approver needs to decide sits on one page: the comparison, the
- * record it lands on, the proof, and the whole event timeline. Splitting the
- * proof onto a second screen would make "did I actually look at it" a matter of
- * discipline rather than of layout.
+ * Everything the approver needs to decide sits on one page, in the order the
+ * question is asked: what is changing, on which record, on what evidence, how
+ * far it has already climbed, and what has been said about it. The decision
+ * itself sits sticky beside all of that, because the reading column is long and
+ * scrolling back up to act is a way to act on the wrong screen.
  */
 export default async function RequestDecisionPage({
   params,
@@ -39,6 +42,7 @@ export default async function RequestDecisionPage({
 
   const { request, record, mapping } = detail;
   const preview = previewTarget(request, record);
+  const age = ageInDays(request.submittedAt);
 
   // APPROVABLE_STATUS, not a literal, and specifically not 'PENDING'.
   //
@@ -66,19 +70,26 @@ export default async function RequestDecisionPage({
 
   return (
     <>
-      <PageHeader
-        title={`Request ${request.appsNo}`}
-        description={
-          <span className="flex flex-wrap items-center gap-2">
+      <RequestHero
+        appsNo={request.appsNo}
+        backHref="/approver/queue"
+        backLabel="Approval queue"
+        badges={
+          <>
             <CategoryBadge category={request.category} />
             <StatusBadge status={request.status} />
-            <span className="text-slate-500">
-              Submitted {formatDateTime(request.submittedAt)} by{' '}
-              {orDash(detail.submitterName)} ({request.smId})
-            </span>
-          </span>
+            <Badge tone={age >= 7 ? 'danger' : age >= 3 ? 'warning' : 'neutral'}>
+              {age} {age === 1 ? 'day' : 'days'} old
+            </Badge>
+          </>
         }
-        actions={<BackLink href="/approver/queue">Back to queue</BackLink>}
+        summary={
+          <>
+            Submitted {formatDateTime(request.submittedAt)} by{' '}
+            <span className="font-medium text-slate-800">{orDash(detail.submitterName)}</span> (
+            <span className="font-mono">{request.smId}</span>).
+          </>
+        }
       />
 
       {preview.problem ? (
@@ -89,7 +100,42 @@ export default async function RequestDecisionPage({
         </div>
       ) : null}
 
-      <div className="space-y-4">
+      <ReviewLayout
+        aside={
+          <Card
+            title="Your decision"
+            description={
+              isOpen ? 'Approving writes the record and closes the chain.' : undefined
+            }
+          >
+            {isOpen ? (
+              <DecisionForm requestId={request.id} caution={caution} />
+            ) : awaitingVerification ? (
+              <Alert tone="info" title="Not yet with you">
+                A verifier has to check this request against its proof before it can be approved. It
+                will appear in your queue once they do. Nothing is required from you until then.
+              </Alert>
+            ) : (
+              <div className="space-y-3">
+                <Alert tone={request.status === 'APPROVED' ? 'success' : 'info'}>
+                  This request is <strong>{request.status}</strong> and cannot be decided again.
+                  {request.status === 'RETURNED'
+                    ? ' It is with the submitter, who can edit and resubmit it on this same request.'
+                    : ''}
+                </Alert>
+                <dl>
+                  <DetailRow label="Decided by">{orDash(detail.reviewerName)}</DetailRow>
+                  <DetailRow label="Decided at">{formatDateTime(request.reviewedAt)}</DetailRow>
+                  <DetailRow label="Remarks">{orDash(request.approverRemarks)}</DetailRow>
+                  {request.appliedVersion ? (
+                    <DetailRow label="Applied as">version {request.appliedVersion}</DetailRow>
+                  ) : null}
+                </dl>
+              </div>
+            )}
+          </Card>
+        }
+      >
         <Comparison
           fieldLabel={preview.label || request.fieldLabel}
           submittedOriginal={request.originalValue}
@@ -100,48 +146,20 @@ export default async function RequestDecisionPage({
 
         {mapping ? <MappingPanel mapping={mapping} direction={request.direction} /> : null}
 
-        <div className="grid gap-4 lg:grid-cols-2">
-          <RecordContext record={record} />
-          <ProofList attachments={detail.attachments} />
-        </div>
+        <RecordContext record={record} />
 
-        <Card title="Decision">
-          {isOpen ? (
-            <DecisionForm requestId={request.id} caution={caution} />
-          ) : awaitingVerification ? (
-            <Alert tone="info" title="Not yet with you">
-              A verifier has to check this request against its proof before it can be approved. It
-              will appear in your queue once they do. Nothing is required from you until then.
-            </Alert>
-          ) : (
-            <div className="space-y-3">
-              <Alert tone={request.status === 'APPROVED' ? 'success' : 'info'}>
-                This request is <strong>{request.status}</strong> and cannot be decided again.
-                {request.status === 'RETURNED'
-                  ? ' It is with the submitter, who can edit and resubmit it on this same request.'
-                  : ''}
-              </Alert>
-              <dl>
-                <DetailRow label="Decided by">{orDash(detail.reviewerName)}</DetailRow>
-                <DetailRow label="Decided at">{formatDateTime(request.reviewedAt)}</DetailRow>
-                <DetailRow label="Remarks">{orDash(request.approverRemarks)}</DetailRow>
-                {request.appliedVersion ? (
-                  <DetailRow label="Applied as">version {request.appliedVersion}</DetailRow>
-                ) : null}
-              </dl>
-            </div>
-          )}
+        <ProofList attachments={detail.attachments} />
+
+        <ChainProgress requestId={request.id} />
+
+        <Card title="Timeline" description="Every transition, resubmissions included.">
+          <Timeline events={detail.events} />
         </Card>
 
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Card title="Timeline" description="Every transition, resubmissions included.">
-            <Timeline events={detail.events} />
-          </Card>
-          <Card title="Record version history">
-            <VersionTrail versions={detail.versions} />
-          </Card>
-        </div>
-      </div>
+        <Card title="Record version history">
+          <VersionTrail versions={detail.versions} />
+        </Card>
+      </ReviewLayout>
     </>
   );
 }
