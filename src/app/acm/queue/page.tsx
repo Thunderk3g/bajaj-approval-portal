@@ -1,7 +1,7 @@
-import { requireRole } from '@/lib/auth/rbac';
+import { requireRoleOrRedirect } from '@/lib/auth/page';
 import { ManagerQueue } from '@/components/managers/manager-screens';
 
 export default async function AreaManagerQueuePage() {
-  const user = await requireRole('acm');
+  const user = await requireRoleOrRedirect('acm');
   return <ManagerQueue user={user} role="acm" />;
 }

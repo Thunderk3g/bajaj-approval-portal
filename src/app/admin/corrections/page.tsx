@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { requireRole } from '@/lib/auth/rbac';
+import { requireRoleOrRedirect } from '@/lib/auth/page';
 import { formatDateTime, orDash } from '@/lib/format';
 import { buildQuery, pageCount, parsePageParams } from '@/lib/pagination';
 import {
@@ -46,7 +46,7 @@ export default async function AdminCorrectionsPage({
 }) {
   // Spec section 4.1: the page authorizes itself rather than trusting the
   // layout or the middleware to have done it.
-  await requireRole('admin');
+  await requireRoleOrRedirect('admin');
 
   const params = await searchParams;
   const filters = parseCorrectionFilters(params);

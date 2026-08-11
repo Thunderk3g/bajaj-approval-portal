@@ -15,6 +15,17 @@ export const AUDIT_ACTIONS = [
   'USER_CREATE',
   'USER_UPDATE',
   'USER_DEACTIVATE',
+  /**
+   * An account was deleted over the top of its own audit history.
+   *
+   * The entries do not survive: every row the account was the actor of is
+   * deleted with it. This entry is what is left — written by the admin who
+   * forced it, carrying the account's snapshot. Its own action because "which
+   * accounts were removed this way, and how much of the trail went with them" is
+   * a question nobody asks of an ordinary deactivation, and
+   * `metadata.deletedAuditRows` is the only place the answer is recorded.
+   */
+  'USER_DELETE_FORCED',
 
   'UPLOAD_CREATE',
   'UPLOAD_MAPPING_SET',
@@ -47,6 +58,16 @@ export const AUDIT_ACTIONS = [
    * `before` — after the fact there is nothing left to join to.
    */
   'UPLOAD_DELETE',
+  /**
+   * The same act, taken over the top of the approved-correction guard.
+   *
+   * Its own action rather than a flag on UPLOAD_DELETE, because it answers a
+   * question nobody asks of an ordinary deletion: which audited approvals were
+   * destroyed, by whom, and when. Filtering the trail to this one action is the
+   * only way to find that out, and `metadata.erasedApprovals` carries the full
+   * decisions — after the cascade there is nothing left to join to.
+   */
+  'UPLOAD_DELETE_FORCED',
   'UPLOAD_ORIGINAL_DOWNLOAD',
 
   'RECORD_UPDATE',

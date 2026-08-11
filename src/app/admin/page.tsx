@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { requireRole } from '@/lib/auth/rbac';
+import { requireRoleOrRedirect } from '@/lib/auth/page';
 import { getAdminDashboard } from '@/lib/dashboard/admin';
 import { GAP_LABELS, GAP_TYPES } from '@/lib/records/gaps';
 import { formatDateTime, orDash } from '@/lib/format';
@@ -34,7 +34,7 @@ export default async function AdminDashboardPage() {
   // The layout already authorized this segment. Re-checking here is the rule of
   // spec section 4.1, not belt-and-braces: a page must never rely on something
   // upstream having run.
-  await requireRole('admin');
+  await requireRoleOrRedirect('admin');
 
   const data = await getAdminDashboard();
   const { records, batches, corrections } = data;

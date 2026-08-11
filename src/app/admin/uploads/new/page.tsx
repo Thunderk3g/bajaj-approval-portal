@@ -1,16 +1,17 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { requireRole } from '@/lib/auth/rbac';
+import { requireRoleOrRedirect } from '@/lib/auth/page';
 import { rosterState } from '@/lib/import/roster-gate';
-import { Alert, Card, PageHeader } from '@/components/ui';
+import { Alert, Card, LinkButton, PageHeader } from '@/components/ui';
 import { UploadForm } from '../_components/upload-form';
+import { UploadSteps } from '../_components/upload-steps';
 
 export const metadata: Metadata = {
   title: 'New upload · Sales Data Review Portal',
 };
 
 export default async function NewUploadPage() {
-  await requireRole('admin');
+  await requireRoleOrRedirect('admin');
   const roster = await rosterState();
 
   return (
@@ -20,7 +21,17 @@ export default async function NewUploadPage() {
     <section className="max-w-[920px]">
       <PageHeader
         title="New upload"
-        description="Uploading only stores and hashes the file. You will choose the sheet, confirm the column mapping and review the parsed rows before anything is written to the master records."
+        description="Six steps, all of them reversible until the last one. Uploading only stores and hashes the file."
+        actions={<LinkButton href="/admin/uploads">Back to uploads</LinkButton>}
+      />
+
+      {/* The whole journey, before any of it has been committed to. The five
+          steps after this one happen on the review screen, and an admin who can
+          see them here does not have to discover halfway through that a roster
+          commit was going to be asked of them. */}
+      <UploadSteps
+        className="mb-4"
+        states={['current', 'todo', 'todo', 'todo', 'todo', 'todo']}
       />
 
       {/*
@@ -56,16 +67,16 @@ export default async function NewUploadPage() {
               accounts. Nothing creates users from a business dashboard.
             </p>
             <p>
-              You can upload either a workbook containing a <strong>Manpower</strong> sheet on its
-              own, or the full dashboard workbook — as long as a Manpower sheet is in it, one pass
-              does both. A transaction sheet with no roster anywhere is refused at commit.
+              Upload either a workbook containing a <strong>Manpower</strong> sheet on its own, or
+              the full dashboard workbook — as long as a Manpower sheet is in it, one pass does
+              both. A transaction sheet with no roster anywhere is refused at commit.
             </p>
           </div>
         </Alert>
       )}
 
       <div className="mt-4">
-        <Card title="The file">
+        <Card title="1 · The file">
           <UploadForm />
         </Card>
       </div>

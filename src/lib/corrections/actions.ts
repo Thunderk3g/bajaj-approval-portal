@@ -49,10 +49,20 @@ async function readFiles(form: FormData, key = 'files'): Promise<ProofUpload[] |
   );
 }
 
+/**
+ * Who may raise, and for whom — 2026-08-06 spec section 5.
+ *
+ * A rep raises for their own book; a team leader and an area manager raise for
+ * the people beneath them, which is the same boundary they already read and
+ * approve across. The service decides WHOSE book each request lands in
+ * (`actorBooks`); this list only decides who may reach it at all.
+ */
+const RAISING_ROLES = ['sales', 'tl', 'acm'] as const;
+
 export async function submitCorrectionAction(
   form: FormData,
 ): Promise<ActionResult<{ id: string }>> {
-  const actor = await requireRole('sales');
+  const actor = await requireRole(...RAISING_ROLES);
 
   const files = await readFiles(form);
   if ('error' in files) return fail(files.error, { files: [files.error] });
@@ -78,7 +88,7 @@ export async function submitCorrectionAction(
 export async function resubmitCorrectionAction(
   form: FormData,
 ): Promise<ActionResult<{ id: string }>> {
-  const actor = await requireRole('sales');
+  const actor = await requireRole(...RAISING_ROLES);
 
   const files = await readFiles(form);
   if ('error' in files) return fail(files.error, { files: [files.error] });
@@ -103,7 +113,7 @@ export async function resubmitCorrectionAction(
 export async function withdrawCorrectionAction(
   form: FormData,
 ): Promise<ActionResult<{ id: string }>> {
-  const actor = await requireRole('sales');
+  const actor = await requireRole(...RAISING_ROLES);
   const requestId = text(form, 'requestId');
 
   const result = await withdrawCorrection(actor, {
@@ -122,12 +132,13 @@ export async function withdrawCorrectionAction(
 /**
  * The section 7.2 cross-scope lookup.
  *
- * Gated on `requireRole('sales')` like the rest, even though it is the one
- * action that deliberately reads outside the caller's scope — the exception is
- * granted to sales reps raising mapping claims, not to anyone who can reach the
- * endpoint.
+ * Gated on the raising roles like the rest, even though it is the one action
+ * that deliberately reads outside the caller's scope — the exception is granted
+ * to whoever may raise a mapping claim, not to anyone who can reach the
+ * endpoint. A manager raising a claim for one of their reps needs the same six
+ * columns, under the same rate limit and the same audit row per attempt.
  */
 export async function lookupRecordAction(appsNo: string): Promise<ActionResult<LookupOutcome>> {
-  const actor = await requireRole('sales');
+  const actor = await requireRole(...RAISING_ROLES);
   return lookupRecordByAppsNo(actor, { appsNo });
 }

@@ -62,15 +62,19 @@ const NAV: Record<Role, readonly NavItem[]> = {
     { href: '/verifier/queue', label: 'Verification queue' },
     { href: '/verifier/history', label: 'History' },
   ],
+  // "Raise a request" sits with the team rather than with the approvals: a
+  // manager raising one is acting for their people, not deciding on them.
   tl: [
     { href: '/tl', label: 'Dashboard' },
     { href: '/tl/queue', label: 'My approvals' },
     { href: '/tl/team', label: 'My team' },
+    { href: '/tl/requests/new', label: 'Raise a request' },
   ],
   acm: [
     { href: '/acm', label: 'Dashboard' },
     { href: '/acm/queue', label: 'My approvals' },
     { href: '/acm/team', label: 'My teams' },
+    { href: '/acm/requests/new', label: 'Raise a request' },
   ],
 };
 

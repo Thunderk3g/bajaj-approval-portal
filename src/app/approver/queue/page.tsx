@@ -1,4 +1,4 @@
-import { requireRole } from '@/lib/auth/rbac';
+import { requireRoleOrRedirect } from '@/lib/auth/page';
 import { PageHeader, Pagination, Select, Input, Button, StatCard } from '@/components/ui';
 import { FilterBar, FilterField } from '@/components/approvals/filter-bar';
 import { buildQuery, parsePageParams, PAGE_SIZES } from '@/lib/pagination';
@@ -30,7 +30,7 @@ export default async function QueuePage({
 }: {
   searchParams: Promise<SearchParams>;
 }) {
-  await requireRole('approver');
+  await requireRoleOrRedirect('approver');
 
   const params = await searchParams;
   const filters = parseQueueFilters(params);

@@ -47,6 +47,8 @@ export type RosterCandidate = {
   code: string;
   name: string | null;
   rung: RosterRung;
+  /** Lower rungs the sheet also names this code at — one login covers all of them. */
+  alsoRungs: RosterRung[];
   location: string | null;
   parentCode: string | null;
   reports: number;
@@ -251,6 +253,16 @@ export function RosterBulkProvision({ entries }: { entries: RosterCandidate[] })
                 <Td>{orDash(entry.name)}</Td>
                 <Td>
                   <Badge tone={RUNG_TONE[entry.rung]}>{RUNG_LABELS[entry.rung]}</Badge>
+                  {/* One person, one login, at the rung that outranks the other.
+                      Stated on the row because the sheet says both, and an admin
+                      comparing the two would otherwise read the missing rung as
+                      a person the worklist had lost. */}
+                  {entry.alsoRungs.length > 0 ? (
+                    <span className="mt-0.5 block text-[11px] text-slate-500">
+                      also {entry.alsoRungs.map((r) => RUNG_LABELS[r].toLowerCase()).join(', ')} on
+                      the sheet
+                    </span>
+                  ) : null}
                 </Td>
                 <Td className="font-mono text-[12px] whitespace-nowrap text-slate-600">
                   {entry.parentCode ? (

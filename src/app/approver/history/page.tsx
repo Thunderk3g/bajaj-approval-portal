@@ -1,4 +1,4 @@
-import { requireRole } from '@/lib/auth/rbac';
+import { requireRoleOrRedirect } from '@/lib/auth/page';
 import { Button, Input, PageHeader, Pagination, Select } from '@/components/ui';
 import { FilterBar, FilterField } from '@/components/approvals/filter-bar';
 import { buildQuery, parsePageParams, PAGE_SIZES } from '@/lib/pagination';
@@ -19,7 +19,7 @@ export default async function HistoryPage({
 }: {
   searchParams: Promise<SearchParams>;
 }) {
-  const approver = await requireRole('approver');
+  const approver = await requireRoleOrRedirect('approver');
 
   const params = await searchParams;
   const filters = parseHistoryFilters(params);

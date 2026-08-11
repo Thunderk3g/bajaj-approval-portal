@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { requireRole } from '@/lib/auth/rbac';
+import { requireRoleOrRedirect } from '@/lib/auth/page';
 import { committedBatches, listExports } from '@/lib/export/queries';
 import { describeFilters } from '@/lib/export/schemas';
 import { formatDateTime } from '@/lib/format';
@@ -26,7 +26,7 @@ export const dynamic = 'force-dynamic';
  * anyone has generated, so it is worth the line.
  */
 export default async function ExportsPage() {
-  await requireRole('admin');
+  await requireRoleOrRedirect('admin');
 
   const [batches, exports] = await Promise.all([committedBatches(), listExports()]);
   const batchNames = new Map(batches.map((b) => [b.id, b.name]));

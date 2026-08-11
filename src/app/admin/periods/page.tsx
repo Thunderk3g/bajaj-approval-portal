@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { requireRole } from '@/lib/auth/rbac';
+import { requireRoleOrRedirect } from '@/lib/auth/page';
 import { listPeriodSummaries } from '@/lib/periods/queries';
 import { formatDateTime, orDash } from '@/lib/format';
 import {
@@ -31,7 +31,7 @@ const n = (value: number) => value.toLocaleString('en-IN');
  * closing early, and reopening a month closed by mistake.
  */
 export default async function PeriodsPage() {
-  await requireRole('admin');
+  await requireRoleOrRedirect('admin');
 
   const periods = await listPeriodSummaries();
   const open = periods.find((p) => p.status === 'OPEN') ?? null;

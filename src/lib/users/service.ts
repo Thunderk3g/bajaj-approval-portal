@@ -6,6 +6,7 @@ import { writeAudit } from '@/lib/audit/log';
 import { createUserAccount } from '@/lib/auth/provision';
 import type { SessionUser } from '@/lib/auth/rbac';
 import { fail, ok, zodFieldErrors, type ActionResult } from '@/lib/result';
+import { pgError } from '@/lib/db-errors';
 import { isPlaceholderCode, PLACEHOLDER_REASON } from '@/lib/roster/placeholders';
 import {
   emailForRosterEntry,
@@ -550,6 +551,8 @@ export type BulkRemovalOutcome = {
   deleted: string[];
   /** Accounts that could not be deleted, and were deactivated instead. */
   deactivated: Array<{ email: string; reason: string }>;
+  /** Accounts deleted over their own audit history, and how much went with them. */
+  forced: Array<{ email: string; deletedAuditRows: number }>;
   skipped: Array<{ email: string; reason: string }>;
 };
 
@@ -563,19 +566,38 @@ export type BulkRemovalOutcome = {
  * destroying that record, so it is deactivated instead — which is what the
  * spec's "users are never hard-deleted" rule has always said.
  *
- * The three-way outcome is the point. Silently deactivating something the admin
+ * The outcome groups are the point. Silently deactivating something the admin
  * asked to delete would be lying about what happened; failing the whole batch
  * because one account has history would make the button useless on any
  * deployment that has been running. So each account gets the strongest action
- * that is safe for it, and the screen reports all three groups.
+ * that is safe for it, and the screen reports every group.
+ *
+ * `force` is the way past the audit-log block, and it DOES destroy the entries
+ * it removes: every row the account is the actor of is deleted, then the account
+ * is. Nothing is kept — not `actor_email`, not `actor_role`, not what was done.
+ * It exists because "deactivate instead" is not always an acceptable answer (a
+ * duplicate account, one created by mistake, a contractor who must come off the
+ * list for real), and the alternative to offering it here was a DELETE run by
+ * hand against the database.
+ *
+ * What survives is the USER_DELETE_FORCED entry written first, whose actor is
+ * the ADMIN: the snapshot of the account, and the number of entries the purge
+ * took. Rows about this account that somebody else authored are left alone —
+ * they are that person's history, not this one's.
+ *
+ * It is not a delete-anything switch. Every other reference to the account —
+ * the corrections it submitted, the uploads it committed — still holds, and an
+ * account those tables are holding is reported as skipped with the constraint
+ * named, having been deactivated rather than left untouched.
  */
 export async function removeUsers(
   actor: Actor,
   userIds: string[],
+  options: { force?: boolean } = {},
 ): Promise<ActionResult<BulkRemovalOutcome>> {
   if (userIds.length === 0) return fail('Select at least one account.');
 
-  const outcome: BulkRemovalOutcome = { deleted: [], deactivated: [], skipped: [] };
+  const outcome: BulkRemovalOutcome = { deleted: [], deactivated: [], forced: [], skipped: [] };
 
   for (const id of userIds) {
     const [row] = await db.select().from(user).where(eq(user.id, id)).limit(1);
@@ -595,7 +617,7 @@ export async function removeUsers(
       .from(auditLog)
       .where(eq(auditLog.actorId, row.id));
 
-    if (Number(auditRows) > 0) {
+    if (Number(auditRows) > 0 && !options.force) {
       if (row.isActive) {
         await db
           .update(user)
@@ -615,6 +637,69 @@ export async function removeUsers(
         email: row.email,
         reason: `has ${auditRows} audit entr${auditRows === 1 ? 'y' : 'ies'} that must survive`,
       });
+      continue;
+    }
+
+    if (Number(auditRows) > 0) {
+      /**
+       * Purge, then delete, in one transaction.
+       *
+       * The order matters and so does the atomicity. The entry describing the
+       * removal is written first — afterwards there is no row to describe — and
+       * its actor is the ADMIN, so it is not among the rows purged on the next
+       * line and survives to be the record of what happened. If the delete then
+       * fails on some other reference, the whole thing rolls back rather than
+       * leaving a trail already destroyed for an account which is still there.
+       */
+      try {
+        await db.transaction(async (tx) => {
+          await writeAudit(
+            {
+              actor,
+              action: 'USER_DELETE_FORCED',
+              entityType: 'user',
+              entityId: row.id,
+              before: snapshot(row),
+              after: null,
+              metadata: { deletedAuditRows: Number(auditRows) },
+            },
+            tx,
+          );
+
+          // The one thing that unlocks a DELETE on `audit_log`, and it unlocks it
+          // for this actor's rows only. `true` is set_config's is_local: the
+          // setting is discarded at commit or rollback, so the pooled connection
+          // cannot carry the permission to whoever gets it next.
+          await tx.execute(sql`select set_config('app.purge_actor', ${row.id}, true)`);
+          await tx.delete(auditLog).where(eq(auditLog.actorId, row.id));
+          await tx.delete(user).where(eq(user.id, row.id));
+        });
+      } catch (error) {
+        // 23503: something other than the audit log still references this
+        // account — a correction it submitted, an upload it committed. Those
+        // rows are work, not history, and deleting them is not on offer, so the
+        // account is deactivated and the constraint is named. A generic failure
+        // here would leave the admin with no idea which table to look at.
+        const failure = pgError(error);
+        if (failure?.code !== '23503') throw error;
+
+        const constraint = failure.constraint;
+        if (row.isActive) {
+          await db
+            .update(user)
+            .set({ isActive: false, updatedAt: new Date() })
+            .where(eq(user.id, row.id));
+        }
+        outcome.skipped.push({
+          email: row.email,
+          reason:
+            `still referenced by work it did${constraint ? ` (${constraint})` : ''}, ` +
+            'so it was deactivated instead. That reference is not removable.',
+        });
+        continue;
+      }
+
+      outcome.forced.push({ email: row.email, deletedAuditRows: Number(auditRows) });
       continue;
     }
 

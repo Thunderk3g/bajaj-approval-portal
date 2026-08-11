@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { desc, eq } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { uploadBatch, user } from '@/db/schema';
-import { requireRole } from '@/lib/auth/rbac';
+import { requireRoleOrRedirect } from '@/lib/auth/page';
 import { formatDateTime } from '@/lib/format';
 import {
   EmptyState,
@@ -25,7 +25,7 @@ export const dynamic = 'force-dynamic';
 export default async function UploadsPage() {
   // The layout already gates /admin, but a page that reads batch metadata
   // re-checks rather than inheriting the assumption — spec section 4.1.
-  await requireRole('admin');
+  await requireRoleOrRedirect('admin');
 
   const batches = await db
     .select({

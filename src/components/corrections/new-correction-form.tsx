@@ -28,6 +28,16 @@ export type FieldChoice = { value: string; label: string };
 
 type Props = {
   smId: string;
+  /**
+   * The reps this actor may raise for, when they are a manager rather than one.
+   *
+   * Absent for a sales user — their book is the only one there is, and the
+   * claim destination is fixed to their own code. Present for a team leader or
+   * an area manager, where a claim has to say which of their people it lands on.
+   */
+  reps?: Array<{ smId: string; smName: string | null }>;
+  /** Where a created request lives, e.g. `/sales/requests` or `/tl/requests`. */
+  requestBase?: string;
   initialAppsNo: string;
   initialCategory: string;
   /** Only meaningful when the category is MAPPING; ignored otherwise. */
@@ -43,6 +53,8 @@ type Props = {
 
 export function NewCorrectionForm({
   smId,
+  reps,
+  requestBase = '/sales/requests',
   initialAppsNo,
   initialCategory,
   initialDirection,
@@ -125,7 +137,7 @@ export function NewCorrectionForm({
         return;
       }
 
-      router.push(`/sales/requests/${result.data.id}`);
+      router.push(`${requestBase}/${result.data.id}`);
       router.refresh();
     });
   }
@@ -284,7 +296,9 @@ export function NewCorrectionForm({
             error={fieldErrors.proposedValue}
             hint={
               isClaim
-                ? 'A mapping claim always moves the sale to you. The SM name is resolved from the Manpower roster when it is approved.'
+                ? reps
+                  ? 'A mapping claim moves the sale to the rep you choose here, and only somebody on your team. The SM name is resolved from the Manpower roster when it is approved.'
+                  : 'A mapping claim always moves the sale to you. The SM name is resolved from the Manpower roster when it is approved.'
                 : isTransfer
                   ? 'The SM ID that should hold this sale. It must be in the Manpower roster — the SM name is resolved from there when it is approved.'
                   : undefined
@@ -307,6 +321,19 @@ export function NewCorrectionForm({
                 className="font-mono uppercase"
                 placeholder="C2CM21350"
               />
+            ) : isMapping && reps ? (
+              // A manager claims FOR one of their people, so the destination is a
+              // choice — but only ever from the team beneath them. The server
+              // re-checks membership; this select is what makes the boundary
+              // visible rather than something to be discovered by refusal.
+              <Select id="proposedValue" name="proposedValue" defaultValue={reps[0]?.smId ?? ''}>
+                {reps.map((rep) => (
+                  <option key={rep.smId} value={rep.smId}>
+                    {rep.smId}
+                    {rep.smName ? ` · ${rep.smName}` : ''}
+                  </option>
+                ))}
+              </Select>
             ) : isMapping ? (
               // Read-only: the claimant's SM_ID is taken from the session, and
               // the server refuses a value that does not match it, so a claim

@@ -154,7 +154,16 @@ export function BulkRemove({
             ) : null}
             {state.data.deactivated.map((row) => (
               <li key={row.email}>
-                Deactivated {row.email} — {row.reason}.
+                Deactivated {row.email} — {row.reason}. Remove it from its own row to force it.
+              </li>
+            ))}
+            {/* The bulk action never sets `force` — it is a per-account decision
+                that has to be read one account at a time. The group is rendered
+                anyway so the shape of the outcome is the same everywhere. */}
+            {state.data.forced.map((row) => (
+              <li key={row.email}>
+                Removed {row.email} — {row.deletedAuditRows} audit entr
+                {row.deletedAuditRows === 1 ? 'y' : 'ies'} deleted with it.
               </li>
             ))}
             {state.data.skipped.map((row) => (

@@ -213,7 +213,10 @@ describe('submitting a transfer (2026-07-29 spec 4)', () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toMatch(/that one is yours/i);
+    // Names the code the sale already sits under rather than saying "yours":
+    // the same refusal now serves a manager transferring one of their reps'
+    // records, for whom "yours" would be false.
+    expect(result.error).toMatch(new RegExp(`already mapped to ${OWNER}`, 'i'));
   });
 
   it('refuses a destination the Manpower roster does not know, before it reaches a verifier', async () => {

@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { requireRole } from '@/lib/auth/rbac';
+import { requireRoleOrRedirect } from '@/lib/auth/page';
 import { getApproverDashboard, DECISION_ACTIONS } from '@/lib/dashboard/approver';
 import { AGE_BUCKETS, THROUGHPUT_WINDOWS } from '@/lib/dashboard/ageing';
 import { ageInDays, formatDateTime } from '@/lib/format';
@@ -31,7 +31,7 @@ const DECISION_LABELS: Record<string, string> = {
 };
 
 export default async function ApproverDashboardPage() {
-  await requireRole('approver');
+  await requireRoleOrRedirect('approver');
 
   const { queue, throughput } = await getApproverDashboard();
   const oldestDays = queue.oldestPendingAt ? ageInDays(queue.oldestPendingAt) : null;

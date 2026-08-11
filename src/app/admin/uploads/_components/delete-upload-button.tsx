@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { deleteBatchAction } from '@/lib/import/actions';
+import { FORCE_DELETE_PHRASE } from '@/lib/import/delete-confirm';
 import { Alert, Button, Input } from '@/components/ui';
 
 /**
@@ -21,6 +22,11 @@ import { Alert, Button, Input } from '@/components/ui';
  * deleting a draft, so it gets different words, a red panel that names the record
  * count, and a typed confirmation. The server re-checks all of it; this is the
  * explanation, not the control.
+ *
+ * Approved corrections on those records stop the delete outright, and the way
+ * past that is offered only AFTER the server has refused once — the override
+ * appears in response to the refusal rather than beside the ordinary button, so
+ * nobody reaches it without first reading what it destroys.
  */
 export function DeleteUploadButton({
   batchId,
@@ -43,6 +49,11 @@ export function DeleteUploadButton({
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [typed, setTyped] = useState('');
+  /** How many approved corrections the server said are in the way, once it has said so. */
+  const [blockedBy, setBlockedBy] = useState<number | null>(null);
+  /** The admin has asked for the override and is being shown the phrase box. */
+  const [forcing, setForcing] = useState(false);
+  const [phrase, setPhrase] = useState('');
 
   async function run() {
     setPending(true);
@@ -52,6 +63,8 @@ export function DeleteUploadButton({
       batchId,
       purge: committed,
       confirm: committed ? typed.trim() : undefined,
+      force: forcing || undefined,
+      forceConfirm: forcing ? phrase.trim() : undefined,
     });
 
     if (!result.ok) {
@@ -60,6 +73,11 @@ export function DeleteUploadButton({
       // expected to fail — it is what asks for the record count — and closing
       // the panel would make the admin start again to read the number.
       setError(result.error);
+      // The one refusal in this action that has a way past it says so with this
+      // key. Reading the wording instead would put the rule in two places and
+      // silently lose the override the first time somebody edits the sentence.
+      const blocking = result.fieldErrors?.force?.[0];
+      if (blocking) setBlockedBy(Number(blocking));
       return;
     }
 
@@ -81,6 +99,9 @@ export function DeleteUploadButton({
 
     setPending(false);
     setConfirming(false);
+    setForcing(false);
+    setBlockedBy(null);
+    setPhrase('');
     router.refresh();
   }
 
@@ -141,11 +162,59 @@ export function DeleteUploadButton({
 
       {error ? <Alert tone="danger">{error}</Alert> : null}
 
+      {/* Offered only once the server has refused, and only for the refusal that
+          can be overridden. The count comes from the server rather than from a
+          query this component runs, so what the admin is told is the number the
+          delete will actually erase. */}
+      {blockedBy !== null && !forcing ? (
+        <button
+          type="button"
+          onClick={() => setForcing(true)}
+          className="text-[13px] font-medium text-red-700 underline underline-offset-2 hover:text-red-900"
+        >
+          Force delete
+        </button>
+      ) : null}
+
+      {forcing ? (
+        <label className="block text-[13px] font-medium text-red-900">
+          Forcing this erases {blockedBy} approved correction{blockedBy === 1 ? '' : 's'} and the
+          version{blockedBy === 1 ? '' : 's'} {blockedBy === 1 ? 'it' : 'they'} produced. The audit
+          entry is all that survives. Type {FORCE_DELETE_PHRASE} to confirm.
+          <Input
+            value={phrase}
+            onChange={(event) => setPhrase(event.target.value)}
+            className="mt-1.5 w-56 border-red-300 font-mono uppercase focus:border-red-500 focus:ring-red-500"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </label>
+      ) : null}
+
       <div className="flex flex-wrap gap-2">
         <Button type="button" variant="danger" onClick={() => void run()} disabled={pending}>
-          {pending ? 'Deleting…' : committed ? 'Delete permanently, with its records' : 'Delete permanently'}
+          {pending
+            ? 'Deleting…'
+            : forcing
+              ? 'Delete permanently, erasing the approvals'
+              : committed
+                ? 'Delete permanently, with its records'
+                : 'Delete permanently'}
         </Button>
-        <Button type="button" variant="ghost" onClick={() => setConfirming(false)} disabled={pending}>
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={() => {
+            // Everything the panel learned goes with it. Reopening it must start
+            // from the ordinary delete again, not from an override already armed.
+            setConfirming(false);
+            setForcing(false);
+            setBlockedBy(null);
+            setPhrase('');
+            setError(null);
+          }}
+          disabled={pending}
+        >
           Cancel
         </Button>
       </div>

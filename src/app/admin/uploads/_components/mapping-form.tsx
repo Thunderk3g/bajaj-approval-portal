@@ -6,7 +6,7 @@ import { CANONICAL_FIELDS } from '@/lib/fields';
 import { setColumnMappingAction, validateBatchAction } from '@/lib/import/actions';
 import type { ColumnMapping, MappingSuggestion, SourceColumn } from '@/lib/import/types';
 import type { MatchReason } from '@/lib/import/types';
-import { Alert, Badge, Button, Select, Table, Td, Th } from '@/components/ui';
+import { Alert, Badge, Button, Select, Spinner, Table, Td, Th } from '@/components/ui';
 
 /**
  * Why the scorer picked a column, in words.
@@ -55,6 +55,11 @@ export function MappingForm({
   const usedColumns = new Set(Object.values(mapping).filter(Boolean));
   const unmapped = columns.filter((c) => !usedColumns.has(c.key));
 
+  // The one gate on this screen, said before the table rather than discovered by
+  // pressing Confirm and reading errors scattered down twenty rows.
+  const required = CANONICAL_FIELDS.filter((field) => field.required);
+  const missing = required.filter((field) => !mapping[field.key]);
+
   function save(thenValidate: boolean) {
     setError(null);
     setFieldErrors({});
@@ -78,6 +83,23 @@ export function MappingForm({
 
   return (
     <div className="space-y-4">
+      <p
+        className={
+          missing.length > 0
+            ? 'text-[12px] font-medium text-amber-800'
+            : 'text-[12px] font-medium text-emerald-800'
+        }
+      >
+        {missing.length === 0 ? (
+          <>All {required.length} required fields are mapped.</>
+        ) : (
+          <>
+            {required.length - missing.length} of {required.length} required fields mapped — still
+            needed: {missing.map((field) => field.label).join(', ')}.
+          </>
+        )}
+      </p>
+
       <Table>
         <thead>
           <tr>
@@ -157,17 +179,27 @@ export function MappingForm({
         </tbody>
       </Table>
 
-      <Alert tone="info" title={`${unmapped.length} column${unmapped.length === 1 ? '' : 's'} left unmapped`}>
-        These are preserved on every record rather than discarded, and stay searchable:{' '}
-        <span className="font-mono text-xs">
+      {/*
+        Folded, and no longer an Alert. Unmapped columns are the normal case —
+        every workbook has some — and a permanent blue banner saying so trained
+        the eye to skip the one place on this screen where a real problem is
+        announced.
+      */}
+      <details className="text-[12px] text-slate-500">
+        <summary className="cursor-pointer select-none hover:text-slate-700">
+          {unmapped.length} column{unmapped.length === 1 ? '' : 's'} left unmapped — kept on every
+          record and searchable, not discarded
+        </summary>
+        <p className="mt-1.5 pl-4 font-mono text-[11px] break-words">
           {unmapped.length === 0 ? 'none' : unmapped.map((c) => c.key).join(', ')}
-        </span>
-      </Alert>
+        </p>
+      </details>
 
       {error ? <Alert tone="danger">{error}</Alert> : null}
 
       <div className="flex flex-wrap items-center gap-2">
         <Button type="button" onClick={() => save(true)} disabled={pending}>
+          {pending ? <Spinner /> : null}
           {pending ? 'Parsing and validating…' : 'Confirm mapping and validate'}
         </Button>
         <Button type="button" variant="secondary" onClick={() => save(false)} disabled={pending}>

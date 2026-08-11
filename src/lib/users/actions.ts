@@ -14,6 +14,7 @@ import {
   type RosterProvisionOutcome,
   type RosterRemovalOutcome,
 } from './service';
+import { FORCE_REMOVE_PHRASE, matchesForceRemovePhrase } from './force-confirm';
 
 /**
  * The Server Action boundary for account administration.
@@ -93,6 +94,40 @@ export async function removeUsersAction(
   }
 
   const result = await removeUsers(actor, ids);
+  if (result.ok) revalidatePath('/admin/users');
+  return result;
+}
+
+/**
+ * Removes one account, from the row it sits on.
+ *
+ * A plain object rather than FormData: the row's control is not a form any more
+ * — it has to hold a refusal, offer the override, and send the phrase back — and
+ * `useActionState` cannot express that without a hidden field per state.
+ *
+ * The two gates are separate on purpose. `force` says the admin chose to go past
+ * the audit-log block; the phrase says they read what going past it does. A
+ * single flag would make the override one click from a row in a table.
+ */
+export async function removeUserAction(input: {
+  userId: string;
+  force?: boolean;
+  confirm?: string;
+}): Promise<ActionResult<BulkRemovalOutcome>> {
+  const actor = await requireRole('admin');
+
+  if (!input.userId) return fail('Unrecognised account.');
+
+  if (input.force && !matchesForceRemovePhrase(input.confirm)) {
+    return fail(
+      'Forcing this removal DELETES every audit entry this account is the actor of. ' +
+        'They are gone — who did what, when, to which record — and cannot be recovered. ' +
+        `Type ${FORCE_REMOVE_PHRASE} to confirm.`,
+      { force: ['1'] },
+    );
+  }
+
+  const result = await removeUsers(actor, [input.userId], { force: input.force });
   if (result.ok) revalidatePath('/admin/users');
   return result;
 }

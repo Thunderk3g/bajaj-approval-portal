@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { requireRole } from '@/lib/auth/rbac';
+import { requireRoleOrRedirect } from '@/lib/auth/page';
 import { getSalesDashboard } from '@/lib/dashboard/sales';
 import { GAP_LABELS, GAP_TYPES } from '@/lib/records/gaps';
 import {
@@ -30,7 +30,7 @@ export default async function SalesDashboardPage() {
   // Spec section 4.1: the page authorizes itself. requireRole also re-reads the
   // role and SM_ID from the session store, so the scope below is never built
   // from anything a request could have carried in.
-  const user = await requireRole('sales');
+  const user = await requireRoleOrRedirect('sales');
   const { records, requests, smId } = await getSalesDashboard(user);
 
   return (

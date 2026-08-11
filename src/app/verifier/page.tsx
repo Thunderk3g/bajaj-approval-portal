@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { requireRole } from '@/lib/auth/rbac';
+import { requireRoleOrRedirect } from '@/lib/auth/page';
 import { getVerifierSummary } from '@/lib/verification/queries';
 import { ageInDays, formatDateTime } from '@/lib/format';
 import { Alert, Card, LinkButton, PageHeader, StatCard } from '@/components/ui';
@@ -16,7 +16,7 @@ const n = (value: number) => value.toLocaleString('en-IN');
 const QUEUE = '/verifier/queue';
 
 export default async function VerifierDashboardPage() {
-  const user = await requireRole('verifier');
+  const user = await requireRoleOrRedirect('verifier');
   const summary = await getVerifierSummary(user.id);
   const oldestDays = summary.oldestPendingAt ? ageInDays(summary.oldestPendingAt) : null;
 

@@ -22,12 +22,15 @@ import {
 import type { ParseJobResult } from '@/lib/ingest/types';
 import {
   Alert,
+  Badge,
   Card,
   DetailRow,
   LinkButton,
   PageHeader,
   StatusBadge,
+  StepCard,
   buttonClass,
+  type StepState,
 } from '@/components/ui';
 import { loadBatchCoverage } from '@/lib/hierarchy/coverage';
 import { DeleteUploadButton } from '../_components/delete-upload-button';
@@ -38,6 +41,7 @@ import { ParseProgress, ReparseButton } from '../_components/parse-status';
 import { ReviewPanel } from '../_components/review-panel';
 import { RosterStep } from '../_components/roster-step';
 import { SheetPicker } from '../_components/sheet-picker';
+import { UploadSteps } from '../_components/upload-steps';
 
 /**
  * The review screen — 2026-07-28 ingestion spec sections 1 and 5.
@@ -50,6 +54,13 @@ import { SheetPicker } from '../_components/sheet-picker';
  *
  * Which means every state below is a rendering of the job row, and the client
  * poller's only job is to notice when that row changes.
+ *
+ * The steps are numbered 2 to 6, continuing from the upload screen's step 1, and
+ * the chips at the top of the page carry the same numbers. Numbering and step
+ * state are computed once, here — the step components render bodies and know
+ * nothing about where they sit. That is deliberate: they used to label
+ * themselves, and the page ended up with a "Step 1 — the reporting line" above a
+ * "2 · Sheet and parsing options" while an unnumbered parse card sat above both.
  */
 
 export const metadata: Metadata = {
@@ -83,6 +94,22 @@ function samplesFor(result: ParseJobResult, columns: SourceColumn[]): Record<str
   }
 
   return samples;
+}
+
+/**
+ * Exactly one step is current: the first that is not done.
+ *
+ * Marking every incomplete step "current" — which is what deriving each one
+ * independently produces — puts three highlighted chips on the rail and answers
+ * "what do I do next" with "any of these".
+ */
+function stepStates(done: boolean[], blocked: Set<number>): StepState[] {
+  const next = done.indexOf(false);
+  return done.map((isDone, index) => {
+    if (blocked.has(index)) return 'blocked';
+    if (isDone) return 'done';
+    return index === next ? 'current' : 'todo';
+  });
 }
 
 export default async function UploadDetailPage({
@@ -132,6 +159,35 @@ export default async function UploadDetailPage({
   // hierarchy and read as "this file covers nobody".
   const coverage = record.status === 'COMMITTED' ? await loadBatchCoverage(record.id) : null;
 
+  const manpowerSheet =
+    parse?.sheets.find((s) => s.name.trim().toLowerCase() === MANPOWER_SHEET.toLowerCase())?.name ??
+    null;
+
+  /* ------------------------------------------------------------ step model */
+
+  const committed = record.status === 'COMMITTED';
+  const aborted = record.status === 'ABORTED';
+  const readDone = Boolean(parse && parse.columns.length > 0);
+  const rosterDone = Boolean(record.rosterCommittedAt);
+  const sheetDone = readDone && Boolean(record.sheetName);
+  const mappingDone = Boolean(record.columnMapping);
+
+  // A closed batch has no next step, so every chip settles rather than pointing
+  // at work nobody is going to do. Committed included: its roster may well have
+  // come from a different workbook, and a "you are here" chip on step 3 of a
+  // batch whose rows are already live is an instruction to do the impossible.
+  const done = isOpen
+    ? [true, readDone, rosterDone, sheetDone, mappingDone, false]
+    : [true, true, true, true, true, true];
+
+  const blocked = new Set<number>();
+  if (isOpen && job?.status === 'FAILED') blocked.add(1);
+  if (isOpen && readDone && !manpowerSheet && !rosterDone) blocked.add(2);
+  if (aborted) blocked.add(5);
+
+  const states = stepStates(done, blocked);
+  const stateOf = (step: number): StepState => states[step - 1] ?? 'todo';
+
   return (
     // Capped: the steps below are a sequence of forms and reports read top to
     // bottom, and a 1500px column turns the mapping table into a row of controls
@@ -179,6 +235,8 @@ export default async function UploadDetailPage({
         }
       />
 
+      <UploadSteps states={states} />
+
       {reupload ? (
         <Alert tone="warning" title="This file has been uploaded before">
           A previous batch has the identical SHA-256 hash. Re-importing a stale export is how an
@@ -187,26 +245,22 @@ export default async function UploadDetailPage({
         </Alert>
       ) : null}
 
-      <Card title="Source file">
-        <dl>
-          <DetailRow label="Stored as">
-            <span className="font-mono text-xs">{record.storedPath}</span>
-          </DetailRow>
-          <DetailRow label="SHA-256">
-            <span className="font-mono text-xs break-all">{record.fileHash}</span>
-          </DetailRow>
-          <DetailRow label="Sheet">{record.sheetName ?? parse?.chosen_sheet ?? 'not chosen yet'}</DetailRow>
-          <DetailRow label="Header row">{record.headerRow}</DetailRow>
-          <DetailRow label="Date format">{record.dateFormat}</DetailRow>
-          {record.notes ? <DetailRow label="Notes">{record.notes}</DetailRow> : null}
-          {record.committedAt ? (
-            <DetailRow label="Committed">{formatDateTime(record.committedAt)}</DetailRow>
-          ) : null}
-        </dl>
-      </Card>
-
       {isOpen ? (
-        <ParseStep batchId={record.id} job={job} parse={parse} />
+        <StepCard
+          step={2}
+          state={stateOf(2)}
+          title="Reading the workbook"
+          description="Parsing runs in the ingestion service. This page follows the job rather than blocking on it."
+          status={
+            readDone ? (
+              <Badge tone="neutral">
+                {columns.length} columns · {parse!.total_rows.toLocaleString('en-IN')} rows
+              </Badge>
+            ) : null
+          }
+        >
+          <ParseStep batchId={record.id} job={job} parse={parse} />
+        </StepCard>
       ) : null}
 
       {/*
@@ -216,25 +270,41 @@ export default async function UploadDetailPage({
         commit at the bottom refuses until it has been run.
       */}
       {isOpen && parse ? (
-        <RosterStep
-          batchId={record.id}
-          committedAt={record.rosterCommittedAt}
-          rowCount={record.rosterRowCount}
-          hasManpowerSheet={parse.sheets.some(
-            (s) => s.name.trim().toLowerCase() === MANPOWER_SHEET.toLowerCase(),
-          )}
-          sheetName={
-            parse.sheets.find(
-              (s) => s.name.trim().toLowerCase() === MANPOWER_SHEET.toLowerCase(),
-            )?.name ?? null
+        <StepCard
+          step={3}
+          state={stateOf(3)}
+          title="The reporting line"
+          description="Who reports to whom. Committed on its own, before any policy is mapped against it."
+          status={
+            rosterDone ? (
+              <Badge tone="success">{record.rosterRowCount} reps</Badge>
+            ) : (
+              <Badge tone="warning">Not committed</Badge>
+            )
           }
-        />
+        >
+          <RosterStep
+            batchId={record.id}
+            committedAt={record.rosterCommittedAt}
+            hasManpowerSheet={Boolean(manpowerSheet)}
+            sheetName={manpowerSheet}
+          />
+        </StepCard>
       ) : null}
 
       {isOpen && parse && parse.sheets.length > 0 ? (
-        <Card
-          title="2 · Sheet and parsing options"
+        <StepCard
+          step={4}
+          state={stateOf(4)}
+          title="Sheet and parsing options"
           description="Parsing happens in the ingestion service, one sheet at a time. Choosing a different sheet queues a fresh read rather than blocking this page on one."
+          status={
+            sheetDone ? (
+              <Badge tone="neutral">
+                <span className="font-mono">{record.sheetName}</span>
+              </Badge>
+            ) : null
+          }
         >
           <SheetPicker
             batchId={record.id}
@@ -243,13 +313,16 @@ export default async function UploadDetailPage({
             headerRow={record.headerRow}
             dateFormat={(record.dateFormat as DateFormat) ?? DEFAULT_DATE_FORMAT}
           />
-        </Card>
+        </StepCard>
       ) : null}
 
       {isOpen && parse && suggestion ? (
-        <Card
-          title="3 · Column mapping"
+        <StepCard
+          step={5}
+          state={stateOf(5)}
+          title="Column mapping"
           description={`${columns.length} columns found on row ${parse.header_row} of "${parse.chosen_sheet}", across ${parse.total_rows.toLocaleString('en-IN')} rows. Suggestions are matched on meaning, not spelling — override any of them.`}
+          status={mappingDone ? <Badge tone="success">Confirmed</Badge> : null}
         >
           <MappingForm
             batchId={record.id}
@@ -258,13 +331,53 @@ export default async function UploadDetailPage({
             suggestion={suggestion}
             current={record.columnMapping as ColumnMapping | null}
           />
-        </Card>
+        </StepCard>
       ) : null}
 
-      {/* Outside the numbered steps on purpose. Leads are not part of the
-          sheet → mapping → validate → commit sequence: they are a separate
-          sheet with a separate destination, and numbering them would imply the
-          commit depends on them. */}
+      {/* Step 6 is on screen from the moment the batch opens, empty or not. It
+          used to appear only once a validation report existed, so the last thing
+          the flow asks for was also the one step an admin could not see coming —
+          and the page simply ended after the mapping table. */}
+      {isOpen ? (
+        <StepCard
+          step={6}
+          state={stateOf(6)}
+          title="Validate and commit"
+          description={
+            report
+              ? `Validated against ${report.sheetName} using ${report.dateFormat}.`
+              : 'Nothing reaches the master records until this step.'
+          }
+          status={
+            report ? (
+              <Badge tone={report.totals.invalid > 0 ? 'warning' : 'success'}>
+                {report.totals.valid.toLocaleString('en-IN')} of{' '}
+                {report.totals.rows.toLocaleString('en-IN')} rows
+              </Badge>
+            ) : null
+          }
+        >
+          {report ? (
+            <ReviewPanel
+              batchId={record.id}
+              report={report}
+              committable={record.status === 'VALIDATED'}
+            />
+          ) : (
+            <p className="text-[13px] text-slate-600">
+              Confirm the column mapping at step 5 to validate this file. The report lands here:
+              which rows commit, which are skipped and why, and every value that disagrees with an
+              already-approved correction.
+            </p>
+          )}
+        </StepCard>
+      ) : null}
+
+      {/* Outside the numbered steps on purpose, and below them rather than in
+          the middle. Leads are not part of the sheet → mapping → validate →
+          commit sequence: they are a separate sheet with a separate destination,
+          and interrupting the numbering with them implied the commit waits on
+          them. */}
       {parse?.has_lead_dump ? (
         <Card
           title="Lead Dump"
@@ -274,20 +387,18 @@ export default async function UploadDetailPage({
         </Card>
       ) : null}
 
-      {report ? (
+      {/* A closed batch has no steps left, so its report is the whole screen
+          rather than one panel of a wizard. */}
+      {!isOpen && report ? (
         <Card
-          title={isOpen ? '4 · Validation report' : 'Validation report'}
+          title="Validation report"
           description={`Validated against ${report.sheetName} using ${report.dateFormat}.`}
         >
-          <ReviewPanel
-            batchId={record.id}
-            report={report}
-            committable={record.status === 'VALIDATED'}
-          />
+          <ReviewPanel batchId={record.id} report={report} committable={false} />
         </Card>
       ) : null}
 
-      {record.status === 'COMMITTED' ? (
+      {committed ? (
         <Alert tone="success" title="Committed">
           {record.validRows.toLocaleString('en-IN')} rows were written to the master records. The
           stored workbook above is unchanged and remains the original of record.
@@ -303,11 +414,40 @@ export default async function UploadDetailPage({
         </Card>
       ) : null}
 
+      {/* Provenance, not a step — moved below the sequence and folded shut. It
+          was the first card on the page, which meant every visit opened on a
+          stored path and a SHA-256 nobody had come to read, with the step
+          actually waiting on the admin pushed below the fold. */}
+      <details className="rounded-lg border border-slate-200 bg-white">
+        <summary className="cursor-pointer list-none px-3.5 py-[9px] text-[13px] font-semibold text-slate-900 marker:content-none hover:bg-slate-50">
+          Source file and stored copy
+        </summary>
+        <div className="border-t border-slate-200 px-3.5 py-3">
+          <dl>
+            <DetailRow label="Stored as">
+              <span className="font-mono text-xs">{record.storedPath}</span>
+            </DetailRow>
+            <DetailRow label="SHA-256">
+              <span className="font-mono text-xs break-all">{record.fileHash}</span>
+            </DetailRow>
+            <DetailRow label="Sheet">
+              {record.sheetName ?? parse?.chosen_sheet ?? 'not chosen yet'}
+            </DetailRow>
+            <DetailRow label="Header row">{record.headerRow}</DetailRow>
+            <DetailRow label="Date format">{record.dateFormat}</DetailRow>
+            {record.notes ? <DetailRow label="Notes">{record.notes}</DetailRow> : null}
+            {record.committedAt ? (
+              <DetailRow label="Committed">{formatDateTime(record.committedAt)}</DetailRow>
+            ) : null}
+          </dl>
+        </div>
+      </details>
+
       {/* Last on the page and nowhere near the header, deliberately: this is the
           one control here that destroys something. A committed batch renders
           nothing — the component returns null rather than offering a button
           whose only outcome is a refusal. */}
-      {record.status !== 'COMMITTED' ? (
+      {!committed ? (
         <Card
           title="Delete this upload"
           description="Removes the stored workbook, everything staged from it, and any leads it imported. Aborting instead keeps all three and only closes the batch."
@@ -414,7 +554,10 @@ function LeadsStep({ batchId, job }: { batchId: string; job: IngestJobRow | null
       </p>
 
       {result.orphan_count > 0 ? (
-        <Alert tone="warning" title={`${result.orphan_count} SM code${result.orphan_count === 1 ? '' : 's'} not on the roster`}>
+        <Alert
+          tone="warning"
+          title={`${result.orphan_count} SM code${result.orphan_count === 1 ? '' : 's'} not on the roster`}
+        >
           <p>
             These codes own real leads but have no <span className="font-medium">Manpower</span> row,
             so nobody can sign in to see them. The leads are kept — the roster sheet is what is
@@ -464,9 +607,10 @@ function LeadStat({
 /**
  * Everything the parse job can be, rendered from its row.
  *
- * A SUCCEEDED job renders nothing here — the sheet and mapping cards below it
- * are the success state, and a green "parse complete" banner above them would
- * be a second announcement of the same fact.
+ * The succeeded case is a one-line statement of what was read rather than
+ * nothing at all. It used to render null — correct while the card was allowed to
+ * vanish, wrong now that step 2 has a number the rail depends on: a step that
+ * disappears once it is done leaves a gap where the admin counts.
  */
 function ParseStep({
   batchId,
@@ -479,54 +623,45 @@ function ParseStep({
 }) {
   if (!job) {
     return (
-      <Card title="Reading the workbook">
-        <div className="space-y-3">
-          <Alert tone="warning" title="No parse has been run for this upload">
-            The file is stored and intact. Nothing has read it yet, which is what a batch created
-            before the ingestion service existed looks like.
-          </Alert>
-          <ReparseButton batchId={batchId} label="Read this workbook" />
-        </div>
-      </Card>
+      <div className="space-y-3">
+        <Alert tone="warning" title="No parse has been run for this upload">
+          The file is stored and intact. Nothing has read it yet, which is what a batch created
+          before the ingestion service existed looks like.
+        </Alert>
+        <ReparseButton batchId={batchId} label="Read this workbook" />
+      </div>
     );
   }
 
   if (isJobRunning(job.status)) {
     return (
-      <Card
-        title="Reading the workbook"
-        description="The upload is stored. This page updates itself as the parse progresses — there is nothing to wait on here."
-      >
-        {/* Keyed by job id so a re-parse gets a fresh component rather than one
-            still holding the previous job's progress and its already-fired
-            refresh guard. */}
-        <ParseProgress
-          key={job.id}
-          jobId={job.id}
-          initial={{
-            status: job.status,
-            stage: job.stage,
-            done: job.done,
-            total: job.total,
-          }}
-        />
-      </Card>
+      // Keyed by job id so a re-parse gets a fresh component rather than one
+      // still holding the previous job's progress and its already-fired
+      // refresh guard.
+      <ParseProgress
+        key={job.id}
+        jobId={job.id}
+        initial={{
+          status: job.status,
+          stage: job.stage,
+          done: job.done,
+          total: job.total,
+        }}
+      />
     );
   }
 
   if (job.status === 'FAILED') {
     return (
-      <Card title="Reading the workbook">
-        <div className="space-y-3">
-          {/* Spec section 7: the batch stays DRAFT, the file is retained, and the
-              reader's own message is what is shown. It names a sheet or a
-              structural problem, which is actionable; "the parse failed" is not. */}
-          <Alert tone="danger" title="The workbook could not be read">
-            {job.error ?? 'The ingestion service reported no reason.'}
-          </Alert>
-          <ReparseButton batchId={batchId} label="Try again" />
-        </div>
-      </Card>
+      <div className="space-y-3">
+        {/* Spec section 7: the batch stays DRAFT, the file is retained, and the
+            reader's own message is what is shown. It names a sheet or a
+            structural problem, which is actionable; "the parse failed" is not. */}
+        <Alert tone="danger" title="The workbook could not be read">
+          {job.error ?? 'The ingestion service reported no reason.'}
+        </Alert>
+        <ReparseButton batchId={batchId} label="Try again" />
+      </div>
     );
   }
 
@@ -535,15 +670,13 @@ function ParseStep({
   // the dead end is stated and the only way out of it is offered.
   if (!parse) {
     return (
-      <Card title="Reading the workbook">
-        <div className="space-y-3">
-          <Alert tone="danger" title="The parse finished but returned nothing usable">
-            The job succeeded without a column list. That is a mismatch between this app and the
-            ingestion service, not a problem with the file.
-          </Alert>
-          <ReparseButton batchId={batchId} label="Read it again" />
-        </div>
-      </Card>
+      <div className="space-y-3">
+        <Alert tone="danger" title="The parse finished but returned nothing usable">
+          The job succeeded without a column list. That is a mismatch between this app and the
+          ingestion service, not a problem with the file.
+        </Alert>
+        <ReparseButton batchId={batchId} label="Read it again" />
+      </div>
     );
   }
 
@@ -552,14 +685,23 @@ function ParseStep({
   // the message points at it rather than offering a button that cannot help.
   if (parse.columns.length === 0) {
     return (
-      <Card title="Reading the workbook">
-        <Alert tone="warning" title="That header row has no column names">
-          Row {parse.header_row} of &ldquo;{parse.chosen_sheet}&rdquo; is empty. Some sheets carry
-          totals above their headers — change the header row below and read it again.
-        </Alert>
-      </Card>
+      <Alert tone="warning" title="That header row has no column names">
+        Row {parse.header_row} of &ldquo;{parse.chosen_sheet}&rdquo; is empty. Some sheets carry
+        totals above their headers — change the header row at step 4 and read it again.
+      </Alert>
     );
   }
 
-  return null;
+  return (
+    <div className="space-y-3">
+      <p className="text-[13px] text-slate-600">
+        Read <span className="font-medium">{parse.columns.length}</span> columns from row{' '}
+        <span className="tabular-nums">{parse.header_row}</span> of{' '}
+        <span className="font-mono">{parse.chosen_sheet}</span>, across{' '}
+        <span className="tabular-nums">{parse.total_rows.toLocaleString('en-IN')}</span> rows.{' '}
+        {parse.sheets.length} sheet{parse.sheets.length === 1 ? '' : 's'} in the workbook.
+      </p>
+      <ReparseButton batchId={batchId} label="Read it again" />
+    </div>
+  );
 }

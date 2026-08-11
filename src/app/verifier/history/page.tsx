@@ -1,4 +1,4 @@
-import { requireRole } from '@/lib/auth/rbac';
+import { requireRoleOrRedirect } from '@/lib/auth/page';
 import { Button, Input, PageHeader, Pagination, Select } from '@/components/ui';
 import { FilterBar, FilterField } from '@/components/approvals/filter-bar';
 import { buildQuery, parsePageParams, PAGE_SIZES } from '@/lib/pagination';
@@ -17,7 +17,7 @@ export default async function VerifierHistoryPage({
 }: {
   searchParams: Promise<SearchParams>;
 }) {
-  const verifier = await requireRole('verifier');
+  const verifier = await requireRoleOrRedirect('verifier');
 
   const params = await searchParams;
   const filters = parseVerifierHistoryFilters(params);

@@ -455,6 +455,211 @@ describe('purging a committed upload', () => {
   });
 });
 
+/**
+ * Forcing past the approved-correction guard.
+ *
+ * "Withdraw them first" is not always a route that is open — a period closes, an
+ * approver leaves — so the wrong workbook, committed, would otherwise sit in the
+ * list forever. The override exists for that, and everything below is about the
+ * price it charges: two confirmations, and an audit entry that carries the
+ * decisions themselves, because after the cascade there is nothing left to join
+ * to.
+ */
+describe('forcing a delete past an approved correction', () => {
+  async function seedApproved() {
+    const seeded = await seedBatch(admin.id, { status: 'COMMITTED' });
+    const [record] = await db
+      .insert(salesRecord)
+      .values({
+        appsNo: `FORCE-${randomUUID().slice(0, 8)}`,
+        smId: SM_CODE,
+        status: 'ISSUED',
+        sourceBatchId: seeded.batchId,
+        sourceRowNumber: 2,
+      })
+      .returning();
+
+    const [correction] = await db
+      .insert(correctionRequest)
+      .values({
+        recordId: record.id,
+        appsNo: record.appsNo,
+        category: 'AUTOPAY',
+        fieldName: 'autopay',
+        fieldLabel: 'AutoPay',
+        originalValue: 'No',
+        proposedValue: 'Yes',
+        submittedBy: admin.id,
+        smId: SM_CODE,
+        status: 'APPROVED',
+        reviewedBy: admin.id,
+        reviewedAt: new Date(),
+        appliedVersion: 2,
+      })
+      .returning();
+
+    return { seeded, record, correction };
+  }
+
+  it('offers the override in the refusal itself, so the panel can find it without reading the sentence', async () => {
+    const { seeded } = await seedApproved();
+
+    const result = await deleteBatchAction({ batchId: seeded.batchId, purge: true, confirm: '1' });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // The panel offers "Force delete" off this key alone. Matching the wording
+    // instead would put the rule in two places and lose the override the first
+    // time somebody rewrites the copy.
+    expect(result.fieldErrors?.force).toEqual(['1']);
+    // Singular agreement, because the sentence names a real number and "1
+    // approved correction have been applied" is the first thing an admin reads
+    // at the most consequential moment in the app.
+    expect(result.error).toMatch(/1 approved correction has been applied/);
+  });
+
+  it('still refuses with the flag alone — the phrase is a second decision, not a louder click', async () => {
+    const { seeded } = await seedApproved();
+
+    const result = await deleteBatchAction({
+      batchId: seeded.batchId,
+      purge: true,
+      confirm: '1',
+      force: true,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/Type ERASE APPROVALS to confirm/);
+
+    expect(await db.select().from(salesRecord)).toHaveLength(1);
+    expect(await db.select().from(correctionRequest)).toHaveLength(1);
+    // The audit write sits after the guards, so a refused force leaves no record
+    // of a deletion that never happened.
+    expect(await db.select().from(auditLog)).toHaveLength(0);
+  });
+
+  it('refuses the phrase without the record count too — both gates hold', async () => {
+    const { seeded } = await seedApproved();
+
+    const result = await deleteBatchAction({
+      batchId: seeded.batchId,
+      purge: true,
+      force: true,
+      forceConfirm: 'ERASE APPROVALS',
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/Type 1 to confirm/);
+    expect(await db.select().from(salesRecord)).toHaveLength(1);
+  });
+
+  it('takes the approved correction with the records once both are typed', async () => {
+    const { seeded } = await seedApproved();
+
+    const result = await deleteBatchAction({
+      batchId: seeded.batchId,
+      purge: true,
+      confirm: '1',
+      // Case and padding are forgiven: the box renders uppercase, and being
+      // refused for typing exactly what the screen said is how an admin
+      // concludes the override is broken and asks for the row to be deleted by
+      // hand instead.
+      force: true,
+      forceConfirm: '  erase approvals ',
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.recordsRemoved).toBe(1);
+
+    // `correction_request.record_id` is ON DELETE CASCADE, so the decision goes
+    // out with the record it was about.
+    expect(await db.select().from(correctionRequest)).toHaveLength(0);
+    expect(await db.select().from(salesRecord)).toHaveLength(0);
+    expect(await survivors(seeded.batchId)).toEqual(GONE);
+    expect(existsSync(seeded.absolutePath)).toBe(false);
+  });
+
+  it('writes the erased decisions into an audit entry of its own', async () => {
+    const { seeded, correction, record } = await seedApproved();
+
+    await deleteBatchAction({
+      batchId: seeded.batchId,
+      purge: true,
+      confirm: '1',
+      force: true,
+      forceConfirm: 'ERASE APPROVALS',
+    });
+
+    // A distinct action, not a flag on UPLOAD_DELETE: "which approvals has an
+    // admin overridden" is unanswerable if the two share a name.
+    const entries = await db.select().from(auditLog).where(eq(auditLog.action, 'UPLOAD_DELETE_FORCED'));
+    expect(entries).toHaveLength(1);
+    expect(await db.select().from(auditLog).where(eq(auditLog.action, 'UPLOAD_DELETE'))).toHaveLength(0);
+
+    // The decision in full, because `correction_request` no longer has a row to
+    // join to and this entry is the only place it ever happened.
+    expect(entries[0].metadata).toMatchObject({
+      erasedApprovals: [
+        {
+          id: correction.id,
+          appsNo: record.appsNo,
+          fieldLabel: 'AutoPay',
+          originalValue: 'No',
+          proposedValue: 'Yes',
+          reviewedBy: admin.id,
+          appliedVersion: 2,
+        },
+      ],
+    });
+    expect(entries[0].entityId).toBe(seeded.batchId);
+  });
+
+  it('leaves the ordinary action name on a purge with nothing to override', async () => {
+    const seeded = await seedBatch(admin.id, { status: 'COMMITTED' });
+    await db.insert(salesRecord).values({
+      appsNo: `PLAIN-${randomUUID().slice(0, 8)}`,
+      smId: SM_CODE,
+      status: 'ISSUED',
+      sourceBatchId: seeded.batchId,
+      sourceRowNumber: 2,
+    });
+
+    // The flag and the phrase are both present and both irrelevant. A purge that
+    // erases no approval is not a forced delete, and recording it as one would
+    // make the filter that finds real overrides useless.
+    await deleteBatchAction({
+      batchId: seeded.batchId,
+      purge: true,
+      confirm: '1',
+      force: true,
+      forceConfirm: 'ERASE APPROVALS',
+    });
+
+    const [entry] = await db.select().from(auditLog);
+    expect(entry.action).toBe('UPLOAD_DELETE');
+    expect(entry.metadata).toBeNull();
+  });
+
+  it('does not let the force past any other refusal', async () => {
+    const seeded = await seedBatch(admin.id, { status: 'COMMITTED' });
+    await db.insert(ingestJob).values({ kind: 'PARSE', status: 'RUNNING', batchId: seeded.batchId });
+
+    const result = await deleteBatchAction({
+      batchId: seeded.batchId,
+      purge: true,
+      confirm: '0',
+      force: true,
+      forceConfirm: 'ERASE APPROVALS',
+    });
+
+    expect(result.ok).toBe(false);
+    // A worker still holds this batch's id. The override is about approved
+    // corrections and nothing else — it is not an admin-knows-best switch.
+    if (!result.ok) expect(result.error).toMatch(/parse is still running/i);
+    expect(await db.select().from(uploadBatch).where(eq(uploadBatch.id, seeded.batchId))).toHaveLength(1);
+  });
+});
+
 describe('deletions the action refuses', () => {
   it('refuses a committed upload without the purge flag, and leaves every part of it in place', async () => {
     const seeded = await seedBatch(admin.id, { status: 'COMMITTED' });

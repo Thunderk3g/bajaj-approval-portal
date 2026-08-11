@@ -63,8 +63,8 @@ describe('navForRole', () => {
       sales: ['/sales', '/sales/records', '/sales/leads', '/sales/requests'],
       approver: ['/approver', '/approver/queue', '/approver/history'],
       verifier: ['/verifier', '/verifier/queue', '/verifier/history'],
-      tl: ['/tl', '/tl/queue', '/tl/team'],
-      acm: ['/acm', '/acm/queue', '/acm/team'],
+      tl: ['/tl', '/tl/queue', '/tl/team', '/tl/requests/new'],
+      acm: ['/acm', '/acm/queue', '/acm/team', '/acm/requests/new'],
     };
 
     // Record<Role, …> catches a missing role at compile time, which this suite

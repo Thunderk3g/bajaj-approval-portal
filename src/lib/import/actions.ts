@@ -5,7 +5,7 @@ import { readFile, unlink, writeFile } from 'node:fs/promises';
 import { extname } from 'node:path';
 import { revalidatePath } from 'next/cache';
 import { headers } from 'next/headers';
-import { and, count, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/db/client';
 import {
@@ -20,10 +20,13 @@ import {
 import { writeAudit } from '@/lib/audit/log';
 import { requireRole } from '@/lib/auth/rbac';
 import { fail, ok, zodFieldErrors, type ActionResult } from '@/lib/result';
+import { pgError } from '@/lib/db-errors';
 import { allocateStoragePath, ensureStorageDirs, resolveStoredPath, UPLOADS_DIR } from '@/lib/storage/paths';
 import { isPeriodCode, periodCodeFor } from '@/lib/periods/service';
 import { IngestError, startLeadsJob, startParseJob, toSourceColumns } from '@/lib/ingest/client';
 import { latestParseJob, parseResultOf } from '@/lib/ingest/queries';
+import { ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, MAX_UPLOAD_MB } from './upload-limits';
+import { FORCE_DELETE_PHRASE, matchesForcePhrase } from './delete-confirm';
 import { DATE_FORMATS, DEFAULT_DATE_FORMAT, type DateFormat } from './dates';
 import { commitBatch, commitRoster, type RosterCommitOutcome } from './commit';
 import { ImportPreconditionError } from './roster-gate';
@@ -54,8 +57,6 @@ import type { ColumnMapping, CommitOutcome } from './types';
  * `reconciliation-ingest` and return; the review page renders from the job row.
  */
 
-const MAX_UPLOAD_BYTES = 60 * 1024 * 1024;
-
 /**
  * The sheet that must never be chosen as the transaction sheet.
  *
@@ -66,8 +67,13 @@ const MAX_UPLOAD_BYTES = 60 * 1024 * 1024;
  */
 const LEAD_SHEET = 'lead dump';
 
-/** Formats SheetJS can read here. `.xlsb` is the one the real source uses. */
-const ALLOWED_EXTENSIONS = new Set(['.xlsb', '.xlsx', '.xlsm', '.xls']);
+/**
+ * Formats SheetJS can read here. `.xlsb` is the one the real source uses.
+ *
+ * The list itself lives in `upload-limits.ts` so the form can apply the same one
+ * before it spends a minute uploading something this will refuse.
+ */
+const ACCEPTED_EXTENSIONS = new Set<string>(ALLOWED_EXTENSIONS);
 
 /**
  * The leading bytes each accepted container must actually start with.
@@ -127,14 +133,14 @@ export async function createUploadBatchAction(
   }
   if (file.size > MAX_UPLOAD_BYTES) {
     return fail('That file is too large.', {
-      file: [`Maximum upload size is ${Math.floor(MAX_UPLOAD_BYTES / 1024 / 1024)} MB.`],
+      file: [`Maximum upload size is ${MAX_UPLOAD_MB} MB.`],
     });
   }
 
   const extension = extname(file.name).toLowerCase();
-  if (!ALLOWED_EXTENSIONS.has(extension)) {
+  if (!ACCEPTED_EXTENSIONS.has(extension)) {
     return fail('That file type cannot be read.', {
-      file: [`Accepted formats: ${[...ALLOWED_EXTENSIONS].join(', ')}.`],
+      file: [`Accepted formats: ${ALLOWED_EXTENSIONS.join(', ')}.`],
     });
   }
 
@@ -735,7 +741,33 @@ const deleteSchema = z.object({
   purge: z.boolean().optional(),
   /** The record count, typed back, for a purge. */
   confirm: z.string().optional(),
+  /**
+   * Erase approved corrections along with the records rather than being refused.
+   *
+   * Separate from `purge` because it is a separate decision. A purge destroys
+   * data an import created; this destroys decisions people made about it.
+   */
+  force: z.boolean().optional(),
+  /** {@link FORCE_DELETE_PHRASE}, typed back, for a forced purge. */
+  forceConfirm: z.string().optional(),
 });
+
+/**
+ * One approved correction as it stood at the moment it was erased.
+ *
+ * Copied into the audit entry rather than counted, because `correction_request`
+ * cascades out with the record and this is the only place the decision survives.
+ */
+type ErasedApproval = {
+  id: string;
+  appsNo: string;
+  fieldLabel: string;
+  originalValue: string | null;
+  proposedValue: string;
+  reviewedBy: string | null;
+  reviewedAt: Date | null;
+  appliedVersion: number | null;
+};
 
 const rosterSchema = z.object({ batchId: z.string().uuid() });
 
@@ -800,6 +832,8 @@ export async function deleteBatchAction(
     );
   }
 
+  let erasedApprovals: ErasedApproval[] = [];
+
   if (batch.status === 'COMMITTED') {
     const [counts] = await db
       .select({
@@ -813,21 +847,60 @@ export async function deleteBatchAction(
      * An approved correction is an audited business decision about a record.
      * Deleting the record destroys it along with the version it produced, so the
      * purge stops here rather than quietly erasing somebody's approval.
+     *
+     * `force` is the way past it, and it is a second decision rather than a
+     * louder click — the record count has already been typed, and this asks for
+     * a phrase as well. It exists because "withdraw them first" is not always a
+     * route that is open: a period can be closed, the approver can have left,
+     * and an upload that must go — the wrong workbook, committed — would
+     * otherwise be permanently stuck in the list. What it costs is written into
+     * the audit entry in full, because nothing else about these decisions
+     * survives the cascade.
+     *
+     * Selected rather than counted for exactly that reason.
      */
-    const [decided] = await db
-      .select({ value: count() })
+    const approvals = await db
+      .select({
+        id: correctionRequest.id,
+        appsNo: correctionRequest.appsNo,
+        fieldLabel: correctionRequest.fieldLabel,
+        originalValue: correctionRequest.originalValue,
+        proposedValue: correctionRequest.proposedValue,
+        reviewedBy: correctionRequest.reviewedBy,
+        reviewedAt: correctionRequest.reviewedAt,
+        appliedVersion: correctionRequest.appliedVersion,
+      })
       .from(correctionRequest)
       .innerJoin(salesRecord, eq(salesRecord.id, correctionRequest.recordId))
       .where(
         and(eq(salesRecord.sourceBatchId, batch.id), eq(correctionRequest.status, 'APPROVED')),
       );
 
-    if (Number(decided?.value ?? 0) > 0) {
-      return fail(
-        `${decided.value} approved correction${decided.value === 1 ? '' : 's'} have been applied to records from this upload. ` +
-          'Deleting it would erase those decisions and the versions they produced, so it is refused. ' +
-          'Withdraw or reject them first if this really has to go.',
-      );
+    if (approvals.length > 0) {
+      const many = approvals.length !== 1;
+      const subject = `${approvals.length} approved correction${many ? 's' : ''}`;
+
+      if (!parsed.data.force) {
+        // `fieldErrors.force` is a signal, not decoration: it is what tells the
+        // panel to offer the override at all. Every other refusal in this action
+        // is final, and the panel treats them that way unless this key is present.
+        return fail(
+          `${subject} ${many ? 'have' : 'has'} been applied to records from this upload. ` +
+            'Deleting it would erase those decisions and the versions they produced, so it is refused. ' +
+            'Withdraw or reject them first if this really has to go.',
+          { force: [String(approvals.length)] },
+        );
+      }
+
+      if (!matchesForcePhrase(parsed.data.forceConfirm)) {
+        return fail(
+          `Forcing this delete erases ${subject} and the version${many ? 's' : ''} ${many ? 'they' : 'it'} produced. ` +
+            `Nothing but the audit entry survives it. Type ${FORCE_DELETE_PHRASE} to confirm.`,
+          { force: [String(approvals.length)] },
+        );
+      }
+
+      erasedApprovals = approvals;
     }
 
     if (parsed.data.confirm !== String(recordCount)) {
@@ -866,7 +939,10 @@ export async function deleteBatchAction(
   // it or what it was.
   await writeAudit({
     actor,
-    action: 'UPLOAD_DELETE',
+    // A forced delete gets its own action so the trail can be filtered to it.
+    // "Which approvals has an admin overridden" is not a question anybody asks
+    // of an ordinary deletion, and it is unanswerable if the two share a name.
+    action: erasedApprovals.length > 0 ? 'UPLOAD_DELETE_FORCED' : 'UPLOAD_DELETE',
     entityType: 'upload_batch',
     entityId: batch.id,
     before: {
@@ -878,6 +954,10 @@ export async function deleteBatchAction(
       uploadedAt: batch.uploadedAt,
       storedPath: batch.storedPath,
     },
+    // The decisions themselves, not a count of them. They cascade out with the
+    // records a few lines below and this entry becomes the only evidence that
+    // anybody ever approved anything on this batch.
+    metadata: erasedApprovals.length > 0 ? { erasedApprovals } : undefined,
     ...context,
   });
 
@@ -929,8 +1009,9 @@ export async function deleteBatchAction(
 
       if (batch.status === 'COMMITTED') {
         // The records this commit created, and by cascade their version history
-        // and any correction raised against them. Guarded above: no APPROVED
-        // correction can be among them.
+        // and any correction raised against them. An APPROVED correction is
+        // among them only on a forced delete, and only after the phrase above
+        // was typed and the decision copied into the audit entry.
         const gone = await tx
           .delete(salesRecord)
           .where(eq(salesRecord.sourceBatchId, batch.id))
@@ -951,9 +1032,9 @@ export async function deleteBatchAction(
     // that the two steps above did not cover. Naming the constraint is what
     // makes it fixable — a generic "delete failed" would leave an admin with no
     // idea which table is holding it.
-    const code = (error as { code?: string })?.code;
-    const constraint = (error as { constraint?: string })?.constraint;
-    if (code === '23503') {
+    const failure = pgError(error);
+    const constraint = failure?.constraint;
+    if (failure?.code === '23503') {
       return fail(
         `This upload cannot be deleted: other data still refers to it` +
           `${constraint ? ` (${constraint})` : ''}. Nothing was removed.`,
@@ -976,6 +1057,9 @@ export async function deleteBatchAction(
   revalidatePath('/admin/uploads');
   revalidatePath('/admin/leads');
   revalidatePath('/admin/records');
+  // Corrections cascade out with the records, so the corrections list is stale
+  // the moment a committed batch goes — forced or not.
+  if (batch.status === 'COMMITTED') revalidatePath('/admin/corrections');
   return ok({ leadsRemoved, fileRemoved, recordsRemoved });
 }
 

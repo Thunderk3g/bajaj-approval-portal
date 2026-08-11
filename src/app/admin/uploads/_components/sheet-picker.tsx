@@ -129,7 +129,7 @@ export function SheetPicker({
 
       {error ? <Alert tone="danger">{error}</Alert> : null}
 
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <Button type="button" onClick={submit} disabled={pending}>
           {pending ? 'Queueing…' : 'Use this sheet'}
         </Button>
@@ -137,22 +137,31 @@ export function SheetPicker({
           Changing the sheet clears any column mapping made against the previous one and re-reads
           the workbook.
         </p>
+      </div>
 
-        {/*
-          Names every sheet that was withheld and why. The count alone read as
-          "some sheets are missing" and sent the admin looking for the one they
-          expected — usually Manpower, which has its own step above.
-        */}
-        {excluded > 0 ? (
-          <ul className="mt-1.5 space-y-0.5 text-[11px] text-slate-500">
+      {/*
+        Names every sheet that was withheld and why. The count alone read as
+        "some sheets are missing" and sent the admin looking for the one they
+        expected — usually Manpower, which has its own step above.
+
+        Its own block, below the action row: inside it — which is where this
+        used to sit — a flex child of a centred row squeezed a list of six sheet
+        names into whatever width the button and its caption left over.
+      */}
+      {excluded > 0 ? (
+        <details className="text-[11px] text-slate-500">
+          <summary className="cursor-pointer select-none hover:text-slate-700">
+            {excluded} sheet{excluded === 1 ? '' : 's'} not offered here
+          </summary>
+          <ul className="mt-1.5 space-y-0.5 pl-4">
             {skipped.map((name) => (
               <li key={name}>
                 <span className="font-mono">{name}</span> — {sheetExclusionReason(name)}
               </li>
             ))}
           </ul>
-        ) : null}
-      </div>
+        </details>
+      ) : null}
     </div>
   );
 }

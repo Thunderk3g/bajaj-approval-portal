@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { requireRole } from '@/lib/auth/rbac';
+import { requireRoleOrRedirect } from '@/lib/auth/page';
 import { loadHierarchyTree, loadUnplacedReps } from '@/lib/hierarchy/actions';
 import { listHierarchyGaps } from '@/lib/hierarchy/queries';
 import { Alert, Badge, Card, LinkButton, PageHeader, Table, Td, Th } from '@/components/ui';
@@ -27,7 +27,7 @@ export const dynamic = 'force-dynamic';
  * that reason.
  */
 export default async function HierarchyPage() {
-  await requireRole('admin');
+  await requireRoleOrRedirect('admin');
 
   const [teams, unplaced, gaps] = await Promise.all([
     loadHierarchyTree(),

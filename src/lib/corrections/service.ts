@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import {
   correctionAttachment,
@@ -8,7 +8,7 @@ import {
   salesRecord,
 } from '@/db/schema';
 import { writeAudit, type DbTransaction } from '@/lib/audit/log';
-import type { SessionUser } from '@/lib/auth/rbac';
+import { teamSmIds, type SessionUser } from '@/lib/auth/rbac';
 import { fieldLabel } from '@/lib/fields';
 import { normalizeIdentifier } from '@/lib/import/normalize';
 import { isPlaceholderCode, PLACEHOLDER_REASON } from '@/lib/roster/placeholders';
@@ -171,13 +171,72 @@ function snapshotOriginal(record: Record<string, unknown>, fieldName: string): s
   return text === '' ? null : text;
 }
 
-function actorScope(actor: SessionUser): { ok: true; smId: string } | { ok: false; message: string } {
-  // Mirrors `scopedRecordCondition`: a sales account with no SM_ID is scoped to
-  // nothing, and must fail rather than fall through to an unscoped path.
-  if (actor.role !== 'sales' || !actor.smId) {
-    return { ok: false, message: 'Only a sales user with an SM ID can raise a correction.' };
+/**
+ * The books this actor may raise a request against — 2026-08-06 spec section 5.
+ *
+ * A rep has one: their own. A team leader has their team's, an area manager
+ * their cluster's, because a manager is answerable for their people's data and
+ * was previously reduced to telling a rep what to type. The set is the same one
+ * `scopedRecordCondition` reads them by, so a manager can raise a request on
+ * exactly the records they can already see, and on no others.
+ *
+ * Materialised rather than left as a subquery: the same list fills the rep
+ * picker on the manager's form, and a membership test against a few hundred
+ * codes in memory is cheaper than a round trip per check.
+ *
+ * `own` separates the two cases where being the rep matters. A mapping claim
+ * moves the sale to somebody, and for a rep that somebody is always themselves;
+ * a manager has to name which of their people it lands on.
+ */
+export type ActorBooks = {
+  /** Every SM_ID this actor may act for. */
+  smIds: string[];
+  /** The actor's own SM_ID when they are a rep, null when they are a manager. */
+  own: string | null;
+  /** "your book" or "your team", for messages that name the boundary. */
+  noun: string;
+};
+
+export async function actorBooks(
+  actor: SessionUser,
+): Promise<{ ok: true; books: ActorBooks } | { ok: false; message: string }> {
+  if (actor.role === 'sales') {
+    // Mirrors `scopedRecordCondition`: a sales account with no SM_ID is scoped
+    // to nothing, and must fail rather than fall through to an unscoped path.
+    if (!actor.smId) {
+      return { ok: false, message: 'Only a sales user with an SM ID can raise a correction.' };
+    }
+    return { ok: true, books: { smIds: [actor.smId], own: actor.smId, noun: 'your book' } };
   }
-  return { ok: true, smId: actor.smId };
+
+  if (actor.role === 'tl' || actor.role === 'acm') {
+    const code = actor.role === 'tl' ? actor.tlCode : actor.acmCode;
+    const rung = actor.role === 'tl' ? 'team leader' : 'area manager';
+    if (!code) {
+      return { ok: false, message: `This ${rung} account has no code, so it manages nobody.` };
+    }
+
+    // The same predicate the read scope uses, so "raise for" can never widen
+    // beyond "can see" — one function, one definition of a team.
+    const rows = await db
+      .select({ smId: manpower.smId })
+      .from(manpower)
+      .where(sql`${manpower.smId} in ${teamSmIds(actor.role === 'tl' ? 'tl_id' : 'ccm_id', code)}`);
+
+    if (rows.length === 0) {
+      return {
+        ok: false,
+        message: `The Manpower roster places nobody under ${code}, so there is no book to raise a request against.`,
+      };
+    }
+
+    return { ok: true, books: { smIds: rows.map((r) => r.smId), own: null, noun: 'your team' } };
+  }
+
+  return {
+    ok: false,
+    message: 'Only a sales user, or their team leader or area manager, can raise a correction.',
+  };
 }
 
 type OwnRecord = typeof salesRecord.$inferSelect;
@@ -204,11 +263,11 @@ type ResolveOutcome =
  * same way as one that matches nothing at all, so this cannot be used to probe
  * whether a number exists in someone else's book.
  */
-async function resolveOwnRecord(smId: string, identifier: string): Promise<ResolveOutcome> {
+async function resolveOwnRecord(smIds: string[], identifier: string): Promise<ResolveOutcome> {
   const [byAppsNo] = await db
     .select()
     .from(salesRecord)
-    .where(and(eq(salesRecord.appsNo, identifier), eq(salesRecord.smId, smId)))
+    .where(and(eq(salesRecord.appsNo, identifier), inArray(salesRecord.smId, smIds)))
     .limit(1);
 
   if (byAppsNo) return { ok: true, record: byAppsNo };
@@ -219,7 +278,7 @@ async function resolveOwnRecord(smId: string, identifier: string): Promise<Resol
   const byPolicyNo = await db
     .select()
     .from(salesRecord)
-    .where(and(eq(salesRecord.policyNo, identifier), eq(salesRecord.smId, smId)))
+    .where(and(eq(salesRecord.policyNo, identifier), inArray(salesRecord.smId, smIds)))
     .limit(2);
 
   if (byPolicyNo.length === 1) return { ok: true, record: byPolicyNo[0] };
@@ -238,12 +297,15 @@ async function resolveOwnRecord(smId: string, identifier: string): Promise<Resol
  */
 async function checkTransferTarget(
   targetSmId: string,
-  ownSmId: string,
+  currentSmId: string,
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  if (targetSmId === ownSmId) {
+  if (targetSmId === currentSmId) {
     // Not merely pointless: it would still consume the record's one open-request
     // slot under `correction_one_open_per_field`, blocking a real reassignment.
-    return { ok: false, message: 'Choose a different SM ID — that one is yours.' };
+    return {
+      ok: false,
+      message: `Choose a different SM ID — the sale is already mapped to ${currentSmId}.`,
+    };
   }
 
   // Before the roster is consulted, because the roster answers yes: the sheet
@@ -279,8 +341,9 @@ export async function submitCorrection(
   actor: SessionUser,
   input: SubmitCorrectionInput,
 ): Promise<ActionResult<SubmitOutcome>> {
-  const scope = actorScope(actor);
+  const scope = await actorBooks(actor);
   if (!scope.ok) return fail(scope.message);
+  const books = scope.books;
 
   const parsed = correctionSubmitSchema.safeParse({
     category: input.category,
@@ -324,12 +387,12 @@ export async function submitCorrection(
   let record: OwnRecord;
 
   if (direction === 'TRANSFER_OUT') {
-    const resolved = await resolveOwnRecord(scope.smId, identifier);
+    const resolved = await resolveOwnRecord(books.smIds, identifier);
     if (!resolved.ok) {
       const message =
         resolved.reason === 'AMBIGUOUS'
-          ? `More than one record in your book has policy number ${identifier}. Enter the application number instead.`
-          : `No record for ${identifier} is in your book.`;
+          ? `More than one record in ${books.noun} has policy number ${identifier}. Enter the application number instead.`
+          : `No record for ${identifier} is in ${books.noun}.`;
       return fail(message, { appsNo: [message] });
     }
     record = resolved.record;
@@ -350,35 +413,52 @@ export async function submitCorrection(
 
   const appsNo = record.appsNo;
 
+  /**
+   * Whose book the request belongs to.
+   *
+   * A claim names its destination, so the claimant is the proposed SM_ID; every
+   * other category is about the record where it already sits. For a rep the two
+   * collapse to their own SM_ID, which is what this used to read off the
+   * session. A manager raising for one of their people is the reason it is
+   * derived rather than assumed: the request belongs to the REP's book, and the
+   * chain, the queue and the counterparty notice all key on that.
+   */
+  const bookSmId = direction === 'CLAIM_IN' ? submission.proposedValue : record.smId;
+
   if (direction === 'CLAIM_IN') {
-    // Section 7.2: approval moves the record to the CLAIMANT. Letting a rep
-    // name any SM_ID would produce an approval that does something other than
-    // what the request said, and would turn the lookup exception into a way to
-    // push sales onto other people's books. Taken from the session, never from
-    // the form.
+    // Section 7.2: approval moves the record to the CLAIMANT, so the destination
+    // must be somebody this actor may act for — themselves, for a rep. Letting
+    // anyone name any SM_ID would produce an approval that does something other
+    // than what the request said, and would turn the lookup exception into a way
+    // to push sales onto other people's books.
     //
-    // Pushing a sale onto someone else is now a supported thing to want, but it
-    // is TRANSFER_OUT, which starts from a record the rep owns.
-    if (submission.proposedValue !== scope.smId) {
-      return fail('A mapping claim moves the sale to your own SM ID.', {
-        proposedValue: ['A mapping claim moves the sale to your own SM ID.'],
-      });
+    // Pushing a sale onto someone outside that boundary is a supported thing to
+    // want, but it is TRANSFER_OUT, which starts from a record already inside it.
+    if (!books.smIds.includes(bookSmId)) {
+      const message = books.own
+        ? 'A mapping claim moves the sale to your own SM ID.'
+        : `A mapping claim moves the sale to one of your reps. ${submission.proposedValue || 'That SM ID'} is not in ${books.noun}.`;
+      return fail(message, { proposedValue: [message] });
     }
-    if (record.smId === scope.smId) {
-      return fail(`Application ${appsNo} is already mapped to you.`);
+    if (record.smId === bookSmId) {
+      return fail(
+        books.own
+          ? `Application ${appsNo} is already mapped to you.`
+          : `Application ${appsNo} is already mapped to ${bookSmId}.`,
+      );
     }
   } else if (direction === 'TRANSFER_OUT') {
     // Ownership was already proved by resolveOwnRecord's scope predicate — a
-    // record it returns is in this rep's book by construction. What is left is
-    // the destination.
-    const target = await checkTransferTarget(submission.proposedValue, scope.smId);
+    // record it returns is inside this actor's boundary by construction. What is
+    // left is the destination, which must differ from where the sale sits now.
+    const target = await checkTransferTarget(submission.proposedValue, record.smId);
     if (!target.ok) return fail(target.message, { proposedValue: [target.message] });
-  } else if (record.smId !== scope.smId) {
+  } else if (!books.smIds.includes(record.smId)) {
     // The section 7.2 exception is for MAPPING only. Every other category is
-    // still bound by scope, so a rep cannot change a field on a record they do
-    // not own by looking up its application number first.
-    return fail(`No record for application ${appsNo} is in your book.`, {
-      appsNo: [`No record for application ${appsNo} is in your book.`],
+    // still bound by scope, so nobody can change a field on a record outside
+    // their boundary by looking up its application number first.
+    return fail(`No record for application ${appsNo} is in ${books.noun}.`, {
+      appsNo: [`No record for application ${appsNo} is in ${books.noun}.`],
     });
   }
 
@@ -437,8 +517,10 @@ export async function submitCorrection(
           submittedBy: actor.id,
           // The claimant's SM_ID, not the record's. For a mapping claim those
           // differ, and "whose request is this" is the question this column is
-          // indexed to answer.
-          smId: scope.smId,
+          // indexed to answer. It is the REP's code even when a manager raised
+          // it — the request belongs to the book it is about, and `submittedBy`
+          // above is what records who actually raised it.
+          smId: bookSmId,
           status: 'PENDING',
           periodId,
         })
@@ -483,7 +565,7 @@ export async function submitCorrection(
       const chainKey = await chainKeyFor(tx, {
         category: submission.category,
         direction,
-        submitterSmId: scope.smId,
+        submitterSmId: bookSmId,
         counterpartySmId,
       });
 
@@ -579,7 +661,10 @@ export async function resubmitCorrection(
   actor: SessionUser,
   input: ResubmitCorrectionInput,
 ): Promise<ActionResult<SubmitOutcome>> {
-  const scope = actorScope(actor);
+  // Whoever raised it may resubmit it — `loadOwnRequest` below pins the request
+  // to this actor, so a manager can answer a return on a request they raised
+  // and a rep cannot touch one they did not.
+  const scope = await actorBooks(actor);
   if (!scope.ok) return fail(scope.message);
 
   const existing = await loadOwnRequest(actor, input.requestId);
@@ -626,14 +711,20 @@ export async function resubmitCorrection(
    * that could be resubmitted naming a third party would be a way around the pin
    * that the submission path refuses.
    */
-  if (existing.direction === 'CLAIM_IN' && proposed.value !== scope.smId) {
-    return fail('A mapping claim moves the sale to your own SM ID.', {
-      proposedValue: ['A mapping claim moves the sale to your own SM ID.'],
-    });
+  // Against the request's OWN book rather than the actor's, which is the same
+  // value for a rep and the right one for a manager: a claim raised for one of
+  // their reps must come back for that same rep, not be redirected to another on
+  // the way through a return.
+  if (existing.direction === 'CLAIM_IN' && proposed.value !== existing.smId) {
+    const message =
+      scope.books.own === existing.smId
+        ? 'A mapping claim moves the sale to your own SM ID.'
+        : `This claim was raised for ${existing.smId}. Withdraw it and raise a new one to claim for somebody else.`;
+    return fail(message, { proposedValue: [message] });
   }
 
   if (existing.direction === 'TRANSFER_OUT') {
-    const target = await checkTransferTarget(proposed.value as string, scope.smId);
+    const target = await checkTransferTarget(proposed.value as string, existing.smId);
     if (!target.ok) return fail(target.message, { proposedValue: [target.message] });
   }
 

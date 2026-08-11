@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { auditLog, manpower, salesRecord, uploadBatch, user } from '@/db/schema';
-import { createUser, setUserActive, updateUser } from '@/lib/users/service';
+import { createUser, removeUsers, setUserActive, updateUser } from '@/lib/users/service';
 import { listRoster, listUsers, rosterStatus, userCounts } from '@/lib/users/queries';
 import { rosterKey } from '@/lib/roster/entries';
 import { createUserSchema } from '@/lib/users/schema';
@@ -348,6 +348,230 @@ describe('deactivation, never deletion (spec 4.2)', () => {
     const inactive = await listUsers({ active: 'inactive', limit: 25, offset: 0 });
     expect(inactive.total).toBe(1);
     expect(inactive.rows[0].id).toBe(target.id);
+  });
+});
+
+/**
+ * Forcing an account off the list.
+ *
+ * "Deactivate instead" is the right default and it stays the default. It is not
+ * always an acceptable answer though — a duplicate, an account created by
+ * mistake — and the alternative to a narrow audited path here was a DELETE run
+ * by hand against the database.
+ *
+ * The force destroys what it removes: every entry the account is the actor of
+ * goes with the account. So the tests below are about the blast radius — that it
+ * reaches those rows and nothing else, that the record of the removal itself
+ * survives, and that the exception cannot be reached from anywhere but this
+ * path.
+ */
+describe('removing an account over its own audit history', () => {
+  beforeEach(truncateAll);
+
+  /** An account with history: created by the admin, then does something itself. */
+  async function seedWithHistory() {
+    const admin = actorFrom(await makeUser({ role: 'admin', smId: null }));
+    const target = await makeUser({ role: 'approver', smId: null, name: 'Departed Approver' });
+
+    // Two entries, so a partial purge shows up as a count rather than passing.
+    await db.insert(auditLog).values([
+      {
+        actorId: target.id,
+        actorEmail: target.email,
+        actorRole: 'approver',
+        action: 'AUTH_LOGIN',
+        entityType: 'user',
+        entityId: target.id,
+      },
+      {
+        actorId: target.id,
+        actorEmail: target.email,
+        actorRole: 'approver',
+        action: 'CORRECTION_APPROVE',
+        entityType: 'correction_request',
+        entityId: 'REQ-1',
+      },
+    ]);
+
+    return { admin, target };
+  }
+
+  it('deactivates rather than deletes when the force is not asked for', async () => {
+    const { admin, target } = await seedWithHistory();
+
+    const result = await removeUsers(admin, [target.id]);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.deleted).toEqual([]);
+    expect(result.data.forced).toEqual([]);
+    expect(result.data.deactivated).toEqual([
+      { email: target.email, reason: 'has 2 audit entries that must survive' },
+    ]);
+
+    const [row] = await db.select().from(user).where(eq(user.id, target.id));
+    expect(row.isActive).toBe(false);
+  });
+
+  it('deletes the entries along with the account when it is', async () => {
+    const { admin, target } = await seedWithHistory();
+
+    const result = await removeUsers(admin, [target.id], { force: true });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.forced).toEqual([{ email: target.email, deletedAuditRows: 2 }]);
+
+    expect(await db.select().from(user).where(eq(user.id, target.id))).toHaveLength(0);
+
+    // Gone, not detached. Nothing is left carrying this account's email — the
+    // whole point of asking for the force rather than the deactivation.
+    const left = await db.select().from(auditLog).where(eq(auditLog.actorEmail, target.email));
+    expect(left).toEqual([]);
+  });
+
+  it('takes only the rows this account authored, not the ones about it', async () => {
+    const { admin, target } = await seedWithHistory();
+    // The admin's own entry, about the target. It is the admin's history, and a
+    // purge that swallowed it would erase somebody else's record to remove this
+    // account.
+    await db.insert(auditLog).values({
+      actorId: admin.id,
+      actorEmail: admin.email,
+      actorRole: 'admin',
+      action: 'USER_UPDATE',
+      entityType: 'user',
+      entityId: target.id,
+    });
+
+    await removeUsers(admin, [target.id], { force: true });
+
+    const kept = await db.select().from(auditLog).where(eq(auditLog.actorId, admin.id));
+    expect(kept.map((e) => e.action).sort()).toEqual(['USER_DELETE_FORCED', 'USER_UPDATE']);
+  });
+
+  it('records the removal under its own action, with what it cost', async () => {
+    const { admin, target } = await seedWithHistory();
+
+    await removeUsers(admin, [target.id], { force: true });
+
+    // Written by the ADMIN, so it is not among the rows purged a line later —
+    // and it is the only evidence the account ever existed.
+    const [entry] = await auditFor(target.id);
+    expect(entry.action).toBe('USER_DELETE_FORCED');
+    expect(entry.actorId).toBe(admin.id);
+    expect(entry.metadata).toMatchObject({ deletedAuditRows: 2 });
+    expect(entry.before).toMatchObject({ email: target.email, role: 'approver' });
+    expect(entry.after).toBeNull();
+  });
+
+  it('leaves an account alone when something other than the trail still holds it', async () => {
+    const { admin, target } = await seedWithHistory();
+    // `upload_batch.uploaded_by` is NOT NULL and the batch is real work, so it
+    // is not going anywhere. The force is about the audit log and nothing else.
+    await db.insert(uploadBatch).values({
+      originalFileName: "Jun'26.xlsb",
+      storedPath: 'uploads/2026/06/held.xlsb',
+      fileHash: 'held',
+      uploadedBy: target.id,
+    });
+
+    const result = await removeUsers(admin, [target.id], { force: true });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.forced).toEqual([]);
+    expect(result.data.skipped[0].email).toBe(target.email);
+    expect(result.data.skipped[0].reason).toMatch(/still referenced by work it did/);
+
+    // The transaction rolled back whole: the account is there and its trail is
+    // too. A trail destroyed for an account that is still on the list is the one
+    // outcome worse than refusing.
+    const [row] = await db.select().from(user).where(eq(user.id, target.id));
+    expect(row).toBeDefined();
+    expect(row.isActive).toBe(false);
+    const entries = await db.select().from(auditLog).where(eq(auditLog.actorId, target.id));
+    expect(entries).toHaveLength(2);
+  });
+
+  it('still refuses the actor their own account, force or not', async () => {
+    const { admin } = await seedWithHistory();
+
+    const result = await removeUsers(admin, [admin.id], { force: true });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.skipped).toEqual([
+      { email: admin.email, reason: 'This is your own account.' },
+    ]);
+    expect(await db.select().from(user).where(eq(user.id, admin.id))).toHaveLength(1);
+  });
+
+  it('deletes outright, with no purge, when there is no history at all', async () => {
+    const admin = actorFrom(await makeUser({ role: 'admin', smId: null }));
+    const target = await makeUser({ role: 'approver', smId: null });
+
+    const result = await removeUsers(admin, [target.id], { force: true });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Not a forced removal — nothing was overridden. Recording it as one would
+    // make the group that finds real overrides useless.
+    expect(result.data.deleted).toEqual([target.email]);
+    expect(result.data.forced).toEqual([]);
+    expect((await auditFor(target.id))[0].action).toBe('USER_DEACTIVATE');
+  });
+
+  /**
+   * The trigger is the guarantee, not the service. Everything above goes through
+   * `removeUsers`; these two go straight at the table, because the exception the
+   * migration opened is a DELETE, and a DELETE reachable from anywhere else is a
+   * way to erase history at will.
+   */
+  it('refuses a delete from outside the purge, and every update always', async () => {
+    const { target } = await seedWithHistory();
+    const [entry] = await db.select().from(auditLog).where(eq(auditLog.actorId, target.id));
+
+    // Nothing set `app.purge_actor` on this connection, so the exception is shut.
+    await expectDbError(
+      db.delete(auditLog).where(eq(auditLog.id, entry.id)),
+      /audit_log is append-only: DELETE is not permitted/,
+    );
+
+    // Every UPDATE, in every shape — including the actor detach 0009 allowed.
+    // The force deletes the row now, so nothing needs the narrower write.
+    await expectDbError(
+      db.update(auditLog).set({ actorId: null }).where(eq(auditLog.id, entry.id)),
+      /audit_log is append-only: UPDATE is not permitted/,
+    );
+
+    await expectDbError(
+      db.update(auditLog).set({ action: 'AUTH_LOGOUT' }).where(eq(auditLog.id, entry.id)),
+      /audit_log is append-only: UPDATE is not permitted/,
+    );
+  });
+
+  it('opens the delete for the named actor only, setting or no setting', async () => {
+    const { admin, target } = await seedWithHistory();
+    await db.insert(auditLog).values({
+      actorId: admin.id,
+      actorEmail: admin.email,
+      actorRole: 'admin',
+      action: 'AUTH_LOGIN',
+      entityType: 'user',
+      entityId: admin.id,
+    });
+    const [theirs] = await db.select().from(auditLog).where(eq(auditLog.actorId, admin.id));
+
+    // Inside a transaction that has unlocked the purge for `target`, and still
+    // refused: the setting names one account, not "deleting is allowed now".
+    await expectDbError(
+      db.transaction(async (tx) => {
+        await tx.execute(sql`select set_config('app.purge_actor', ${target.id}, true)`);
+        await tx.delete(auditLog).where(eq(auditLog.id, theirs.id));
+      }),
+      /audit_log is append-only: DELETE is not permitted/,
+    );
   });
 });
 

@@ -228,6 +228,7 @@ export default async function UsersPage({
                       <Td>
                         <UserRowActions
                           userId={row.id}
+                          email={row.email}
                           isActive={row.isActive}
                           isSelf={row.id === admin.id}
                         />
@@ -320,6 +321,7 @@ export default async function UsersPage({
               code: entry.code,
               name: entry.name,
               rung: entry.rung,
+              alsoRungs: entry.alsoRungs,
               location: entry.location,
               parentCode: entry.parentCode,
               reports: entry.reports,

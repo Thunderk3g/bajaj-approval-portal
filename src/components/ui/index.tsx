@@ -82,6 +82,173 @@ export function Card({
   );
 }
 
+/* ------------------------------------------------------------------- steps */
+
+export type StepState = 'done' | 'current' | 'todo' | 'blocked';
+
+const STEP_CHIP: Record<StepState, string> = {
+  done: 'border-slate-900 bg-slate-900 text-white',
+  current: 'border-slate-900 bg-white text-slate-900',
+  todo: 'border-slate-300 bg-white text-slate-400',
+  blocked: 'border-amber-400 bg-amber-50 text-amber-700',
+};
+
+const STEP_LABEL: Record<StepState, string> = {
+  done: 'text-slate-500',
+  current: 'font-semibold text-slate-900',
+  todo: 'text-slate-400',
+  blocked: 'font-semibold text-amber-800',
+};
+
+function StepGlyph({ state, index }: { state: StepState; index: number }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cx(
+        'flex size-[18px] shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold tabular-nums',
+        STEP_CHIP[state],
+      )}
+    >
+      {state === 'done' ? (
+        <svg viewBox="0 0 12 12" className="size-2.5" fill="none">
+          <path
+            d="M2.5 6.2 4.8 8.5 9.5 3.8"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      ) : state === 'blocked' ? (
+        '!'
+      ) : (
+        index
+      )}
+    </span>
+  );
+}
+
+/**
+ * The spine of a multi-step screen.
+ *
+ * Every step in the import is a card somewhere down a long page, and until this
+ * existed the only way to answer "how much of this is left" was to scroll to the
+ * bottom and count. The chips carry the same numbers as the cards, so a glance
+ * at the rail and a glance at a card heading agree.
+ *
+ * A list, not a nav: these are not links. Steps become reachable by doing the
+ * previous one, and a chip you can click to a step the batch is not at yet would
+ * be a promise the pipeline cannot keep.
+ */
+export function Steps({
+  steps,
+  className,
+}: {
+  steps: Array<{ label: string; state: StepState }>;
+  className?: string;
+}) {
+  return (
+    <ol
+      className={cx(
+        'flex flex-wrap items-center gap-y-2 rounded-lg border border-slate-200 bg-white px-3 py-2.5',
+        className,
+      )}
+    >
+      {steps.map((step, index) => (
+        <li
+          key={step.label}
+          aria-current={step.state === 'current' ? 'step' : undefined}
+          className="flex min-w-0 items-center gap-1.5"
+        >
+          <StepGlyph state={step.state} index={index + 1} />
+          <span className={cx('truncate text-[11px]', STEP_LABEL[step.state])}>{step.label}</span>
+          {/* A hairline between chips rather than a full-width rail: the steps
+              wrap on a narrow viewport, and a connector that stretches leaves a
+              rule dangling off the end of every wrapped row. */}
+          {index < steps.length - 1 ? (
+            <span aria-hidden="true" className="mx-2 h-px w-4 shrink-0 bg-slate-200 sm:w-7" />
+          ) : null}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/**
+ * A {@link Card} that knows where it sits in a sequence — and folds once passed.
+ *
+ * `<details>`, not client state: the open/closed decision is made on the server
+ * from the batch's own status, it survives a refresh for free, and a step that
+ * is finished should not be shipping a state hook to the browser to say so.
+ *
+ * Done steps close. That is the whole point — a validated batch used to put a
+ * twenty-row mapping table and a sheet picker between the admin and the commit
+ * button, so the one action left on the screen was the one below the fold.
+ */
+export function StepCard({
+  step,
+  title,
+  description,
+  state,
+  status,
+  children,
+}: {
+  step: number;
+  title: ReactNode;
+  description?: ReactNode;
+  state: StepState;
+  /** Short right-aligned summary of the outcome — shown even when folded. */
+  status?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <details
+      open={state !== 'done'}
+      className={cx(
+        'group rounded-lg border bg-white',
+        state === 'current'
+          ? 'border-slate-300 shadow-[0_1px_2px_rgba(15,23,42,0.06)]'
+          : 'border-slate-200',
+      )}
+    >
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 rounded-t-lg px-3.5 py-[9px] marker:content-none hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-slate-500">
+        <StepGlyph state={state} index={step} />
+        <div className="min-w-0 flex-1">
+          <h2
+            className={cx(
+              'text-[13px] font-semibold',
+              state === 'todo' ? 'text-slate-500' : 'text-slate-900',
+            )}
+          >
+            {title}
+          </h2>
+          {description ? (
+            <p className="mt-0.5 text-[11px] leading-snug text-slate-500">{description}</p>
+          ) : null}
+        </div>
+        {status ? <div className="flex shrink-0 items-center gap-2">{status}</div> : null}
+        {/* The only affordance saying this panel opens. Rotates rather than
+            swapping glyphs so the control stays in one place while it turns. */}
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 12 12"
+          className="size-3 shrink-0 text-slate-400 transition-transform group-open:rotate-90"
+          fill="none"
+        >
+          <path
+            d="m4.5 2.5 4 3.5-4 3.5"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </summary>
+      <div className="border-t border-slate-200 px-3.5 py-3">{children}</div>
+    </details>
+  );
+}
+
 export function StatCard({
   label,
   value,
