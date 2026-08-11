@@ -33,6 +33,9 @@ import {
   type StepState,
 } from '@/components/ui';
 import { loadBatchCoverage } from '@/lib/hierarchy/coverage';
+import { listRoster } from '@/lib/users/queries';
+import { rosterKey } from '@/lib/roster/entries';
+import { batchPeriodState } from '@/lib/periods/queries';
 import { DeleteUploadButton } from '../_components/delete-upload-button';
 import { HierarchyBubbles } from '../_components/hierarchy-bubbles';
 import { ImportLeadsButton } from '../_components/leads-import';
@@ -163,6 +166,24 @@ export default async function UploadDetailPage({
     parse?.sheets.find((s) => s.name.trim().toLowerCase() === MANPOWER_SHEET.toLowerCase())?.name ??
     null;
 
+  /*
+    Who this workbook placed, and which of them can sign in.
+
+    Scoped to this batch's `manpower` rows rather than the whole roster: the step
+    is about the file in front of the admin, and the company-wide worklist is
+    what /admin/users is for. Only read once the roster is committed — before
+    that there are no rows carrying this batch id and the list would be empty for
+    a reason the screen could not explain.
+  */
+  const rosterAccounts = record.rosterCommittedAt ? await listRoster({ batchId: record.id }) : [];
+
+  /*
+    The month these rows will land in, read BEFORE the commit button rather than
+    discovered as a thrown error after it. A closed period is the one refusal an
+    admin can act on, and the review panel offers the way past it.
+  */
+  const periodState = isOpen ? await batchPeriodState(record) : null;
+
   /* ------------------------------------------------------------ step model */
 
   const committed = record.status === 'COMMITTED';
@@ -288,6 +309,15 @@ export default async function UploadDetailPage({
             committedAt={record.rosterCommittedAt}
             hasManpowerSheet={Boolean(manpowerSheet)}
             sheetName={manpowerSheet}
+            accounts={rosterAccounts.map((entry) => ({
+              key: rosterKey(entry),
+              code: entry.code,
+              name: entry.name,
+              rung: entry.rung,
+              parentCode: entry.parentCode,
+              location: entry.location,
+              accountEmail: entry.accountEmail,
+            }))}
           />
         </StepCard>
       ) : null}
@@ -362,6 +392,7 @@ export default async function UploadDetailPage({
               batchId={record.id}
               report={report}
               committable={record.status === 'VALIDATED'}
+              period={periodState}
             />
           ) : (
             <p className="text-[13px] text-slate-600">

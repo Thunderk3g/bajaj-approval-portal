@@ -13,6 +13,20 @@ import { z } from 'zod';
 export type ExportFilters = {
   batchId: string | null;
   smId: string | null;
+  /**
+   * The reconciliation month, as its `YYYY-MM` code — spec section 4.
+   *
+   * The code rather than `period.id` for the same reason the label is stored on
+   * the period row: this blob is read back a year later, and `2026-07` still
+   * says July while a UUID says nothing. `exportConditions` translates it to the
+   * `period_id` the record actually carries.
+   *
+   * Not the same question as `issuedFrom`/`issuedTo`. The period is the cycle a
+   * record was RECONCILED in, stamped by the import that carried it; the issued
+   * dates are when the policy was issued. A June policy first seen in the July
+   * workbook belongs to July's dashboard and falls outside a June date range.
+   */
+  periodCode: string | null;
   issuedFrom: string | null;
   issuedTo: string | null;
   correctedOnly: boolean;
@@ -30,6 +44,7 @@ export type ExportFilters = {
 export const NO_FILTERS: ExportFilters = {
   batchId: null,
   smId: null,
+  periodCode: null,
   issuedFrom: null,
   issuedTo: null,
   correctedOnly: false,
@@ -68,6 +83,13 @@ export const exportFiltersSchema = z
         .string()
         .max(64, 'SM ID is too long')
         .regex(/^[A-Z0-9._-]+$/, 'SM ID contains characters no rep code uses')
+        .nullable(),
+    ),
+    periodCode: z.preprocess(
+      blankToNull,
+      z
+        .string()
+        .regex(/^\d{4}-\d{2}$/, 'Pick a month from the list')
         .nullable(),
     ),
     issuedFrom: z.preprocess(blankToNull, z.iso.date('Use the date picker').nullable()),
@@ -114,6 +136,7 @@ export function describeFilters(
   const parts: string[] = [];
   if (filters.batchId) parts.push(`Batch ${batchNames?.get(filters.batchId) ?? filters.batchId}`);
   if (filters.smId) parts.push(`SM_ID ${filters.smId}`);
+  if (filters.periodCode) parts.push(`Period ${filters.periodCode}`);
   if (filters.issuedFrom) parts.push(`Issued on or after ${filters.issuedFrom}`);
   if (filters.issuedTo) parts.push(`Issued on or before ${filters.issuedTo}`);
   if (filters.correctedOnly) parts.push('Corrected records only');

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { badgeLabel, bellLabel, relativeTime, BADGE_CAP } from '@/components/notifications/format';
+import {
+  badgeLabel,
+  bellLabel,
+  notificationLabel,
+  relativeTime,
+  BADGE_CAP,
+} from '@/components/notifications/format';
+import { NOTIFICATION_TYPES } from '@/lib/notifications/service';
 
 describe('notification badge (spec 10)', () => {
   it('renders nothing at zero — an empty badge is noise, not information', () => {
@@ -18,6 +25,37 @@ describe('notification badge (spec 10)', () => {
   it('states the count in text, so the badge is not the only signal', () => {
     expect(bellLabel(0)).toMatch(/none unread/);
     expect(bellLabel(3)).toMatch(/3 unread/);
+  });
+});
+
+describe('the type caption on a feed row', () => {
+  it.each([
+    ['CORRECTION_RAISED_FOR_YOU', 'Raised for you'],
+    ['CORRECTION_RETURNED_BY_VERIFIER', 'Returned by verifier'],
+    ['CORRECTION_APPROVED', 'Approved'],
+    ['MAPPING_CLAIM_RAISED', 'Mapping claim raised'],
+    ['BATCH_COMMITTED', 'Batch committed'],
+  ])('renders %j as %j', (type, expected) => {
+    expect(notificationLabel(type)).toBe(expected);
+  });
+
+  /**
+   * The reason this is derived rather than mapped: a type added to the const and
+   * forgotten here would render as a blank caption in production. Asserting over
+   * the list itself means a new type cannot be added without this passing.
+   */
+  it('renders every declared type as something readable', () => {
+    for (const type of NOTIFICATION_TYPES) {
+      const label = notificationLabel(type);
+      expect(label.length).toBeGreaterThan(0);
+      expect(label).toMatch(/^[A-Z][a-z]/);
+      expect(label).not.toContain('_');
+    }
+  });
+
+  it('degrades to empty rather than throwing on a row with a junk type', () => {
+    expect(notificationLabel('')).toBe('');
+    expect(notificationLabel('CORRECTION_')).toBe('');
   });
 });
 

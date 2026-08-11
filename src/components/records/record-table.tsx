@@ -66,6 +66,7 @@ export function RecordTable({
   sort,
   dir,
   variant,
+  tlBySmId,
 }: {
   rows: RecordListRow[];
   basePath: string;
@@ -73,8 +74,25 @@ export function RecordTable({
   query: SearchParams;
   sort: SortKey;
   dir: SortDir;
-  variant: 'admin' | 'sales';
+  /**
+   * `manager` is the TL/ACM grid: the rep column an admin gets, plus the gap
+   * column a rep gets. A manager needs both — whose policy it is, and what is
+   * missing on it — because their screen is the team's worklist, not a ledger.
+   */
+  variant: 'admin' | 'sales' | 'manager';
+  /**
+   * Effective TL per SM_ID. Supplied by the ACM view only, and its presence is
+   * what renders the Team leader column — `docs/ui-flows.md` §7 gives the ACM
+   * that extra column because their view spans several teams and "which TL is
+   * this rep under" is the question the view exists to answer. A TL's own view
+   * would render one repeated value, so it passes nothing.
+   */
+  tlBySmId?: ReadonlyMap<string, string | null>;
 }) {
+  const showRep = variant === 'admin' || variant === 'manager';
+  const showGaps = variant === 'sales' || variant === 'manager';
+  const showTl = variant === 'manager' && tlBySmId !== undefined;
+
   if (rows.length === 0) {
     return (
       <EmptyState
@@ -93,10 +111,11 @@ export function RecordTable({
           <SortHeader label="Apps No" column="appsNo" {...header} />
           {/* The rep's worklist is the gap column, so it comes before the
               commercial detail rather than after it — section 6.4. */}
-          {variant === 'sales' ? <Th>Missing</Th> : null}
+          {showGaps ? <Th>Missing</Th> : null}
           <SortHeader label="Policy No" column="policyNo" {...header} />
           <SortHeader label="Client" column="clientName" {...header} />
-          {variant === 'admin' ? <SortHeader label="SM" column="smId" {...header} /> : null}
+          {showRep ? <SortHeader label="SM" column="smId" {...header} /> : null}
+          {showTl ? <Th>Team leader</Th> : null}
           <SortHeader label="Status" column="status" {...header} />
           <SortHeader label="Issued" column="issuedDate" {...header} />
           <SortHeader label="ANP" column="anp" className="text-right" {...header} />
@@ -116,18 +135,21 @@ export function RecordTable({
                 {row.appsNo}
               </Link>
             </Td>
-            {variant === 'sales' ? (
+            {showGaps ? (
               <Td>
                 <GapBadges record={row} emptyLabel="Nothing missing" />
               </Td>
             ) : null}
             <Td className="font-mono text-xs">{orDash(row.policyNo)}</Td>
             <Td>{orDash(row.clientName)}</Td>
-            {variant === 'admin' ? (
+            {showRep ? (
               <Td>
                 <span className="font-mono text-xs">{row.smId}</span>
                 {row.smName ? <span className="block text-xs text-slate-500">{row.smName}</span> : null}
               </Td>
+            ) : null}
+            {showTl ? (
+              <Td className="font-mono text-xs">{orDash(tlBySmId?.get(row.smId) ?? null)}</Td>
             ) : null}
             <Td>
               <StatusBadge status={row.status} />

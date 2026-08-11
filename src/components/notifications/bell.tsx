@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { apiPath } from '@/lib/nav';
 import { markAllNotificationsRead, markNotificationRead } from '@/lib/notifications/actions';
-import { badgeLabel, bellLabel, relativeTime } from './format';
+import { badgeLabel, bellLabel, notificationLabel, relativeTime } from './format';
 
 /**
  * The header bell — spec section 10.
@@ -261,7 +261,7 @@ function FeedRow({ item, onOpen }: { item: FeedItem; onOpen: () => void }) {
           <span className="mt-0.5 block text-[12px] text-pretty text-slate-500">{item.body}</span>
         ) : null}
         <span className="mt-0.5 block text-[11px] text-slate-400">
-          {relativeTime(item.createdAt)}
+          {notificationLabel(item.type)} · {relativeTime(item.createdAt)}
         </span>
       </span>
     </span>

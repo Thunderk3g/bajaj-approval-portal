@@ -161,7 +161,14 @@ export async function provisionRosterAccountsAction(
   }
 
   const result = await provisionRosterAccounts(actor, keys);
-  if (result.ok) revalidatePath('/admin/users');
+  if (result.ok) {
+    revalidatePath('/admin/users');
+    // The same worklist is embedded in the upload wizard's roster step, where
+    // its running count ("N of M have an account") is exactly what just changed.
+    // The route form rather than one id: this action is not told which batch the
+    // admin is looking at, and every upload's copy of the list is now stale.
+    revalidatePath('/admin/uploads/[id]', 'page');
+  }
   return result;
 }
 

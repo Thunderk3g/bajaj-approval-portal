@@ -24,6 +24,28 @@ export function bellLabel(unread: number): string {
   return `Notifications, ${unread} unread`;
 }
 
+/**
+ * A short caption for a feed row, derived from `notification.type`.
+ *
+ * Derived rather than mapped, and that is the point: `NOTIFICATION_TYPES` is a
+ * TS-only const that grows whenever a new event needs announcing, and a lookup
+ * table here would be a second list to keep in step — the failure mode being a
+ * new type rendering as a blank caption long after anyone remembers why. The
+ * names are already written as readable phrases, so uppercasing the first letter
+ * of the snake_case tail is all the formatting they need.
+ *
+ * `CORRECTION_` is stripped because every row in the feed is about a correction
+ * and repeating the word costs the reader the distinction they came for:
+ * "Returned by verifier" and "Raised for you" say different things,
+ * "Correction returned by verifier" and "Correction raised for you" both start
+ * with the same nine characters.
+ */
+export function notificationLabel(type: string): string {
+  const words = type.replace(/^CORRECTION_/, '').replace(/_/g, ' ').trim().toLowerCase();
+  if (!words) return '';
+  return words[0].toUpperCase() + words.slice(1);
+}
+
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;

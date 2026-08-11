@@ -206,28 +206,30 @@ export async function getOrCreatePeriod(
  *
  * Called from the commit transaction, so a rolled-back import does not leave
  * last month closed and this month never started.
+ *
+ * `reopenClosed` is the ONE way a closed month reopens from an import, and it
+ * defaults to false on purpose: that default is what stops a stale file quietly
+ * undoing a reconciliation everybody signed off on. The caller has to have been
+ * shown the month, been told it is closed, and pressed a second button — see
+ * `commitBatchAction`.
  */
 export async function openPeriodForCommit(
   tx: DbTransaction,
   code: string,
   actor: SessionUser,
+  options: { reopenClosed?: boolean } = {},
 ): Promise<{ opened: PeriodRow; closed: PeriodRow[] }> {
   if (!isPeriodCode(code)) {
     throw new PeriodError(`"${code}" is not a period code (expected YYYY-MM).`);
   }
 
-  const stale = await tx
-    .select()
-    .from(period)
-    .where(and(eq(period.status, 'OPEN'), lt(period.code, code)));
-
-  const closedAt = new Date();
   const closed: PeriodRow[] = [];
 
-  for (const row of stale) {
+  /** Closes one open period and records why, so both callers below read alike. */
+  const close = async (row: PeriodRow, reason: string) => {
     const [updated] = await tx
       .update(period)
-      .set({ status: 'CLOSED', closedBy: actor.id, closedAt })
+      .set({ status: 'CLOSED', closedBy: actor.id, closedAt: new Date() })
       .where(eq(period.id, row.id))
       .returning();
 
@@ -241,25 +243,78 @@ export async function openPeriodForCommit(
         entityId: row.id,
         before: { status: 'OPEN' },
         after: { status: 'CLOSED' },
-        metadata: {
-          code: row.code,
-          label: row.label,
-          reason: `Superseded by a batch committed into ${code}`,
-        },
+        metadata: { code: row.code, label: row.label, reason },
       },
       tx,
     );
+  };
+
+  const stale = await tx
+    .select()
+    .from(period)
+    .where(and(eq(period.status, 'OPEN'), lt(period.code, code)));
+
+  for (const row of stale) {
+    await close(row, `Superseded by a batch committed into ${code}`);
   }
 
   const existing = await periodByCode(code, tx);
   if (existing) {
-    // A back-dated upload into an already-closed month reopens nothing. Closing
-    // is a decision an admin made; an import must not quietly undo it, or a
-    // stale file would reopen a reconciled month by accident.
+    // A back-dated upload into an already-closed month reopens nothing by
+    // itself. Closing is a decision an admin made; an import must not quietly
+    // undo it, or a stale file would reopen a reconciled month by accident.
     if (existing.status === 'CLOSED') {
-      throw new PeriodError(
-        `${existing.label} is closed. Reopen it from Periods before importing a file for that month.`,
+      const refusal = `${existing.label} is closed. Reopen it from Periods before importing a file for that month.`;
+      if (!options.reopenClosed) throw new PeriodError(refusal);
+
+      // The override is an administrator's call. `commitBatchAction` already
+      // refuses anybody else, but this function is reachable from any commit
+      // path and the rule belongs where the reopening actually happens.
+      if (actor.role !== 'admin') {
+        throw new PeriodError(`${refusal} Only an administrator can reopen a closed period.`);
+      }
+
+      /*
+       * Whatever is open now closes first — `period_one_open` admits exactly one
+       * OPEN row, so the reverse order is a constraint violation rather than a
+       * wrong answer. The loop above only caught periods OLDER than this one;
+       * reopening a back-dated month means the NEWER open month has to go, and
+       * it is named in `closed` so the commit outcome can say which.
+       */
+      const others = await tx
+        .select()
+        .from(period)
+        .where(and(eq(period.status, 'OPEN'), ne(period.id, existing.id)));
+
+      for (const row of others) {
+        await close(row, `Closed so ${existing.label} could be reopened for an import`);
+      }
+
+      const [reopened] = await tx
+        .update(period)
+        .set({ status: 'OPEN', closedBy: null, closedAt: null })
+        .where(eq(period.id, existing.id))
+        .returning();
+
+      await writeAudit(
+        {
+          actor,
+          action: 'PERIOD_REOPEN_IMPORT',
+          entityType: 'period',
+          entityId: existing.id,
+          before: { status: 'CLOSED', closedBy: existing.closedBy, closedAt: existing.closedAt },
+          after: { status: 'OPEN' },
+          metadata: {
+            code: existing.code,
+            label: existing.label,
+            reason: 'Reopened by an administrator committing a file into a closed month',
+            closedToReopen: others.map((row) => row.code),
+          },
+        },
+        tx,
       );
+
+      return { opened: reopened, closed };
     }
     return { opened: existing, closed };
   }

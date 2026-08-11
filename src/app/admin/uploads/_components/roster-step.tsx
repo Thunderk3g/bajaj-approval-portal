@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { commitRosterAction } from '@/lib/import/actions';
 import { Alert, Button, DetailRow } from '@/components/ui';
+import { RosterAccounts, type RosterAccountRow } from './roster-accounts';
 
 /**
  * Commit this workbook's Manpower sheet to the roster.
@@ -21,18 +22,26 @@ import { Alert, Button, DetailRow } from '@/components/ui';
  *
  * Re-runnable on purpose. Importing a corrected sheet updates placements in
  * place; the button says so rather than looking like a one-shot action somebody
- * is afraid to press twice.
+ * is afraid to press twice. Re-running disturbs no account either — the upsert
+ * writes `manpower`, and nothing in it touches `user`.
+ *
+ * The accounts come after, in the same card: a placement without a login is a
+ * manager who cannot approve, and sending the admin to People and back — then
+ * re-uploading the same workbook so the mapping resolves — was the whole reason
+ * this step felt unfinished.
  */
 export function RosterStep({
   batchId,
   committedAt,
   hasManpowerSheet,
   sheetName,
+  accounts,
 }: {
   batchId: string;
   committedAt: Date | null;
   hasManpowerSheet: boolean;
   sheetName: string | null;
+  accounts: RosterAccountRow[];
 }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
@@ -103,9 +112,16 @@ export function RosterStep({
           </Button>
           <span className="text-[12px] text-slate-500">
             {committed
-              ? 'Re-running updates placements in place. Admin overrides survive it.'
+              ? 'Re-running updates placements in place. Admin overrides and existing accounts survive it.'
               : 'Every step after this one is matched against the hierarchy this writes.'}
           </span>
+        </div>
+      ) : null}
+
+      {committed ? (
+        <div className="space-y-2 border-t border-slate-200 pt-3">
+          <h3 className="text-[13px] font-semibold text-slate-900">Portal accounts</h3>
+          <RosterAccounts entries={accounts} />
         </div>
       ) : null}
     </div>

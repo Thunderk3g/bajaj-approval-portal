@@ -47,7 +47,17 @@ export type DecisionInput = {
 
 export type ApprovalOutcome = {
   requestId: string;
-  recordId: string;
+  /**
+   * No `recordId`, deliberately.
+   *
+   * This field used to exist and was filled with `outcome.requestId` — the
+   * request's id under the record's name. `DecideStageOutcome` carries no record
+   * id, so there was never a correct value to put there, and every caller that
+   * trusted it would have loaded the wrong row (or, more likely, none at all).
+   * A field nobody reads is cheaper to delete than to keep truthful; if a caller
+   * ever needs it, `decideStageWithin` should return it rather than this adapter
+   * inventing it. `appsNo` below identifies the record for every current caller.
+   */
   appsNo: string;
   fieldName: string;
   fieldLabel: string;
@@ -145,7 +155,6 @@ function asApprovalOutcome(outcome: DecideStageOutcome): ApprovalOutcome {
 
   return {
     requestId: outcome.requestId,
-    recordId: outcome.requestId,
     appsNo: outcome.appsNo,
     fieldName: outcome.fieldName,
     fieldLabel: outcome.fieldLabel,

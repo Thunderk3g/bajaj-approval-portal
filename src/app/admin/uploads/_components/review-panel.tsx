@@ -4,7 +4,8 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { abortBatchAction, commitBatchAction, validateBatchAction } from '@/lib/import/actions';
 import type { ValidationReport } from '@/lib/import/types';
-import { Alert, Button, Card, StatCard, Table, Td, Th } from '@/components/ui';
+import type { BatchPeriodState } from '@/lib/periods/queries';
+import { Alert, Badge, Button, Card, StatCard, Table, Td, Th } from '@/components/ui';
 
 /** Enough rows to see the shape of a problem without rendering a 54,000-row table. */
 const VISIBLE = 50;
@@ -26,10 +27,13 @@ export function ReviewPanel({
   batchId,
   report,
   committable,
+  period = null,
 }: {
   batchId: string;
   report: ValidationReport;
   committable: boolean;
+  /** Which month these rows land in, and whether it is closed. */
+  period?: BatchPeriodState | null;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -48,19 +52,110 @@ export function ReviewPanel({
     });
   }
 
-  function commit() {
+  /**
+   * `reopenClosedPeriod` is sent only by the second, differently-worded button.
+   *
+   * The plain Commit never sends it and is therefore refused against a closed
+   * month — which is the safety property, not an oversight: without that refusal
+   * a stale re-upload would reopen a reconciled month by accident.
+   */
+  function commit(reopenClosedPeriod = false) {
     const acceptedConflicts: Record<string, string[]> = {};
     for (const conflict of report.conflicts) {
       if (!accepted.has(conflictKey(conflict.appsNo, conflict.field))) continue;
       (acceptedConflicts[conflict.appsNo] ??= []).push(conflict.field);
     }
-    run(() => commitBatchAction({ batchId, acceptedConflicts }));
+    run(() => commitBatchAction({ batchId, acceptedConflicts, reopenClosedPeriod }));
   }
 
   const { totals } = report;
+  const periodClosed = period?.status === 'CLOSED';
 
   return (
     <div className="space-y-4">
+      {/* Which month, stated before the button rather than after the refusal. */}
+      {period ? (
+        <div className="flex flex-wrap items-center gap-2 text-[13px] text-slate-600">
+          <span>
+            These rows land in <span className="font-medium text-slate-900">{period.label}</span>
+          </span>
+          {period.status === null ? (
+            <Badge tone="info">Opens on commit</Badge>
+          ) : period.status === 'OPEN' ? (
+            <Badge tone="success">Open</Badge>
+          ) : (
+            <Badge tone="danger">Closed</Badge>
+          )}
+          {period.openElsewhere ? (
+            <span className="text-slate-500">
+              · <span className="font-medium">{period.openElsewhere.label}</span> is the open month
+              now
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/*
+        The dead end, turned into a decision. The blast radius comes first —
+        docs/ui-flows.md §9 — because reopening a month is not a formality: the
+        reconciliation everybody signed off on becomes live again, and the
+        `period_one_open` index means the month that is open right now closes.
+      */}
+      {committable && periodClosed && period ? (
+        <Alert tone="warning" title={`${period.label} is closed`}>
+          <div className="space-y-2">
+            <p>
+              Committing into it is refused, so this file cannot land until the month is reopened.
+              Reopening is an administrator&rsquo;s decision and it does three things:
+            </p>
+            <ul className="list-disc space-y-1 pl-5">
+              <li>
+                reps can raise new corrections against{' '}
+                <span className="font-medium">{period.label}</span> again
+                {period.records > 0 ? (
+                  <>
+                    {' '}
+                    — {period.records.toLocaleString('en-IN')} record
+                    {period.records === 1 ? '' : 's'} already sit in it
+                  </>
+                ) : null}
+                ;
+              </li>
+              <li>
+                {period.openElsewhere ? (
+                  <>
+                    <span className="font-medium">{period.openElsewhere.label}</span> closes, because
+                    exactly one month is open at a time — reps lose the ability to raise new
+                    corrections against it;
+                  </>
+                ) : (
+                  <>no other month is open, so nothing else closes;</>
+                )}
+              </li>
+              <li>
+                both the reopening and the commit are recorded against your name, and the whole thing
+                rolls back together if the commit fails.
+              </li>
+            </ul>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="danger"
+                disabled={pending}
+                onClick={() => commit(true)}
+              >
+                {pending ? 'Committing…' : `Reopen ${period.label} and commit`}
+              </Button>
+            </div>
+            <p className="text-[12px]">
+              Or change the month this workbook is for, on{' '}
+              <span className="font-medium">Periods</span>, and re-upload it against the cycle it
+              belongs to.
+            </p>
+          </div>
+        </Alert>
+      ) : null}
+
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <StatCard label="Rows parsed" value={totals.rows.toLocaleString('en-IN')} />
         <StatCard label="Will commit" value={totals.valid.toLocaleString('en-IN')} tone="success" />
@@ -241,7 +336,7 @@ export function ReviewPanel({
 
       {committable ? (
         <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" onClick={commit} disabled={pending}>
+          <Button type="button" onClick={() => commit()} disabled={pending}>
             {pending
               ? 'Committing…'
               : `Commit ${totals.valid.toLocaleString('en-IN')} row${totals.valid === 1 ? '' : 's'}`}

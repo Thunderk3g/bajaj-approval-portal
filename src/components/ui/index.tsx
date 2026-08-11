@@ -455,6 +455,62 @@ export function Td({ children, className, ...rest }: ComponentProps<'td'>) {
   );
 }
 
+/**
+ * A percentage as a number with a bar beside it, for a table cell.
+ *
+ * The number leads and the bar follows. That order is the whole design: colour
+ * and length are the two things this cell must never rely on alone (ui-flows
+ * §9), and a reader comparing 61.2% against 58.9% cannot do it from two bars
+ * four pixels apart. The bar is there to make the shape of a column scannable,
+ * not to carry the value.
+ *
+ * `value` is a ratio in 0..1, or `null` when there was no denominator. Null
+ * renders the em dash and NO track at all — an empty track reads as "0%", and
+ * "this rep issued none of their logins" and "this rep has no logins" are
+ * different facts that must not share a picture.
+ *
+ * A `<div>` with a width, not `<progress>` or an SVG: the value is already
+ * announced as text next to it, so the bar is decorative and `aria-hidden`.
+ */
+export function Meter({
+  value,
+  label,
+  tone = 'neutral',
+}: {
+  value: number | null;
+  label?: string;
+  tone?: 'neutral' | 'positive' | 'negative';
+}) {
+  const fills = {
+    neutral: 'bg-slate-400',
+    positive: 'bg-emerald-500',
+    negative: 'bg-red-500',
+  } as const;
+
+  const text = label ?? (value === null ? '—' : `${(value * 100).toFixed(1)}%`);
+  // Clamped: a share can exceed 1 only through a bug, and a bar that overflows
+  // its track would hide that behind a layout glitch instead of showing it.
+  const width = value === null ? 0 : Math.max(0, Math.min(1, value)) * 100;
+
+  return (
+    <span className="flex items-center gap-2">
+      <span
+        className={cx(
+          'w-[3.25rem] shrink-0 text-right tabular-nums',
+          value === null ? 'text-slate-400' : 'text-slate-900',
+        )}
+      >
+        {text}
+      </span>
+      {value === null ? null : (
+        <span aria-hidden="true" className="h-1.5 min-w-[2.5rem] flex-1 rounded-sm bg-slate-200">
+          <span className={cx('block h-full rounded-sm', fills[tone])} style={{ width: `${width}%` }} />
+        </span>
+      )}
+    </span>
+  );
+}
+
 /** Definition row for detail panes — label left, value right. */
 export function DetailRow({ label, children }: { label: ReactNode; children: ReactNode }) {
   return (

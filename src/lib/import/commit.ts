@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import {
   correctionRequest,
@@ -50,6 +50,16 @@ export type CommitInput = {
   actor: SessionUser;
   /** Apps_No -> field keys whose file value the admin explicitly accepted. */
   acceptedConflicts?: ConflictAcceptance;
+  /**
+   * Reopen this batch's period if it is CLOSED, instead of refusing.
+   *
+   * Defaults to false and must stay that way. An ordinary commit refusing is the
+   * safety property: without it, re-uploading a stale export would reopen a
+   * reconciled month and make it correctable again with nothing on any screen
+   * saying so. Set only from the review panel, where the admin has been shown the
+   * month, told it is closed, and pressed a second, differently-worded button.
+   */
+  reopenClosedPeriod?: boolean;
 };
 
 /** The record columns an import is allowed to write, in canonical order. */
@@ -291,6 +301,9 @@ export async function commitBatch(input: CommitInput): Promise<CommitOutcome> {
       tx,
       periodCode,
       input.actor,
+      // Explicitly `=== true`: an undefined flag, or anything truthy arriving
+      // from a caller that did not mean it, must land on the refusing path.
+      { reopenClosed: input.reopenClosedPeriod === true },
     );
 
     const staged = await loadStagedRows(input.batchId, { onlyCommittable: true }, tx);
@@ -817,13 +830,4 @@ async function applyMappingChanges(
   }
 
   return { applied, unmatched };
-}
-
-/** Approved-correction field keys for one record, for the review screen. */
-export async function protectedFieldsFor(recordId: string): Promise<string[]> {
-  const rows = await db
-    .select({ fieldName: correctionRequest.fieldName })
-    .from(correctionRequest)
-    .where(and(eq(correctionRequest.recordId, recordId), eq(correctionRequest.status, 'APPROVED')));
-  return [...new Set(rows.map((r) => r.fieldName))];
 }

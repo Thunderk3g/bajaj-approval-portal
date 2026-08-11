@@ -76,10 +76,22 @@ export type GapFilter = (typeof GAP_FILTERS)[number];
 export const CORRECTION_STATUSES = correctionStatusEnum.enumValues;
 export type CorrectionStatus = (typeof CORRECTION_STATUSES)[number];
 
+/**
+ * Roles allowed to narrow the grid to one rep.
+ *
+ * A rep filter only makes sense for someone whose scope holds more than one rep,
+ * and it is only safe for someone whose scope the query already bounds. Both are
+ * true of a TL and an ACM: `scopedRecordCondition` resolves their whole team, and
+ * `recordWhere` ANDs this filter with it — so `?smId=` can narrow their team and
+ * can never reach outside it. A sales user is excluded because for them it is
+ * meaningless, not because it would be dangerous.
+ */
+const SM_ID_FILTER_ROLES: readonly Role[] = ['admin', 'tl', 'acm'];
+
 export type RecordFilters = {
   q: string | null;
   batchId: string | null;
-  /** Admin only. Null for every other role — see `parseRecordFilters`. */
+  /** Admin, TL and ACM only. Null for every other role — see `parseRecordFilters`. */
   smId: string | null;
   status: string | null;
   issuedFrom: string | null;
@@ -144,11 +156,12 @@ const SCHEMA = {
 /**
  * @param viewer the *session* role, never a request parameter.
  *
- * The `SM_ID` filter is Admin-only (section 9.1). Dropping it here rather than
- * in the query is the readable half of the defence; the load-bearing half is
- * that `recordWhere` ANDs every filter with `scopedRecordCondition`, so even if
- * this function were bypassed entirely a sales user's `?smId=SOMEONE_ELSE`
- * could only ever narrow their own book to nothing — never widen it.
+ * The `SM_ID` filter is restricted to the roles that scope more than one rep
+ * (section 9.1). Dropping it here rather than in the query is the readable half
+ * of the defence; the load-bearing half is that `recordWhere` ANDs every filter
+ * with `scopedRecordCondition`, so even if this function were bypassed entirely
+ * a sales user's `?smId=SOMEONE_ELSE` could only ever narrow their own book to
+ * nothing — never widen it. The same holds for a TL naming a rep in another team.
  */
 export function parseRecordFilters(
   params: SearchParams,
@@ -158,7 +171,7 @@ export function parseRecordFilters(
     schema.parse(first(params[key]));
 
   const status = read(SCHEMA.status, 'status');
-  const smId = viewer.role === 'admin' ? read(SCHEMA.smId, 'smId') : null;
+  const smId = SM_ID_FILTER_ROLES.includes(viewer.role) ? read(SCHEMA.smId, 'smId') : null;
 
   return {
     q: read(SCHEMA.q, 'q'),

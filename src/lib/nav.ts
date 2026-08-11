@@ -44,6 +44,8 @@ const NAV: Record<Role, readonly NavItem[]> = {
     // entry: the two are halves of one question, and an account and a placement
     // are each useless without the other.
     { href: '/admin/users', label: 'People' },
+    { href: '/admin/performance', label: 'Performance' },
+    { href: '/admin/mapping', label: 'Book mapping' },
     { href: '/admin/audit', label: 'Audit log' },
   ],
   sales: [
@@ -51,6 +53,7 @@ const NAV: Record<Role, readonly NavItem[]> = {
     { href: '/sales/records', label: 'My records' },
     { href: '/sales/leads', label: 'My leads' },
     { href: '/sales/requests', label: 'My requests' },
+    { href: '/sales/performance', label: 'My performance' },
   ],
   approver: [
     { href: '/approver', label: 'Dashboard' },
@@ -67,14 +70,25 @@ const NAV: Record<Role, readonly NavItem[]> = {
   tl: [
     { href: '/tl', label: 'Dashboard' },
     { href: '/tl/queue', label: 'My approvals' },
-    { href: '/tl/team', label: 'My team' },
+    // A manager's own book of raised requests. Distinct from the approvals
+    // queue: that one is work waiting on them, this one is work they started
+    // and are waiting on somebody else for.
+    { href: '/tl/requests', label: 'Requests I raised' },
     { href: '/tl/requests/new', label: 'Raise a request' },
+    { href: '/tl/records', label: 'Team records' },
+    { href: '/tl/team', label: 'My team' },
+    { href: '/tl/performance', label: 'Performance' },
+    { href: '/tl/mapping', label: 'Book mapping' },
   ],
   acm: [
     { href: '/acm', label: 'Dashboard' },
     { href: '/acm/queue', label: 'My approvals' },
-    { href: '/acm/team', label: 'My teams' },
+    { href: '/acm/requests', label: 'Requests I raised' },
     { href: '/acm/requests/new', label: 'Raise a request' },
+    { href: '/acm/records', label: 'Team records' },
+    { href: '/acm/team', label: 'My teams' },
+    { href: '/acm/performance', label: 'Performance' },
+    { href: '/acm/mapping', label: 'Book mapping' },
   ],
 };
 

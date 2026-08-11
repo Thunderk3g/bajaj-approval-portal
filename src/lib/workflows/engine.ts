@@ -7,7 +7,11 @@ import {
   salesRecord,
 } from '@/db/schema';
 import { writeAudit, type DbTransaction } from '@/lib/audit/log';
-import { notifyMany, type NotificationInput } from '@/lib/notifications/service';
+import {
+  notifyMany,
+  requestRecipients,
+  type NotificationInput,
+} from '@/lib/notifications/service';
 import { CATEGORY_LABELS, type CorrectionCategory } from '@/lib/approvals/schemas';
 import {
   applyCorrectionToRecord,
@@ -630,28 +634,36 @@ export async function decideStageWithin(
       tx,
     );
 
+    // Both the submitter and the rep whose book it is, one row each. When a
+    // manager raised it the rep would otherwise never learn it came back, and
+    // the manager's link would point into /sales, which their role cannot open.
+    const decided = await requestRecipients(request, tx);
+
     await notifyMany(
-      [
-        {
-          userId: request.submittedBy,
-          // Same split as the audit action above: the rep is told which kind of
-          // desk sent it back, because "the first reviewer wants more proof" and
-          // "the final decider wants more proof" are different amounts of bad
-          // news and the notification list is where they judge that.
-          type:
-            input.decision === 'REJECT'
-              ? 'CORRECTION_REJECTED'
-              : isFinal
-                ? 'CORRECTION_RETURNED'
-                : 'CORRECTION_RETURNED_BY_VERIFIER',
-          title:
-            input.decision === 'REJECT'
-              ? `Correction rejected — ${request.appsNo}`
-              : `More information needed — ${request.appsNo}`,
-          body: remarks,
-          link: `/sales/requests/${request.id}`,
-        },
-      ],
+      decided.map((r) => ({
+        userId: r.userId,
+        // Same split as the audit action above: the rep is told which kind of
+        // desk sent it back, because "the first reviewer wants more proof" and
+        // "the final decider wants more proof" are different amounts of bad
+        // news and the notification list is where they judge that.
+        type:
+          input.decision === 'REJECT'
+            ? ('CORRECTION_REJECTED' as const)
+            : isFinal
+              ? ('CORRECTION_RETURNED' as const)
+              : ('CORRECTION_RETURNED_BY_VERIFIER' as const),
+        title:
+          input.decision === 'REJECT'
+            ? `Correction rejected — ${request.appsNo}`
+            : `More information needed — ${request.appsNo}`,
+        // A rep who did not raise it cannot answer the return, so the row says
+        // so rather than leaving them looking for a form that is not there.
+        body:
+          r.isSubmitter || remarks === null
+            ? remarks
+            : `${remarks} — raised for your book by somebody else, so only they can answer it.`,
+        link: r.link,
+      })),
       tx,
     );
 
@@ -803,16 +815,18 @@ export async function decideStageWithin(
   // The rep is told too. Without it, the only observable difference between
   // "waiting on one desk" and "waiting on the next" is a status word they would
   // have to go looking for.
+  const advanced = await requestRecipients(request, tx);
+
   await notifyMany(
-    [
-      {
-        userId: request.submittedBy,
-        type: 'CORRECTION_VERIFIED',
-        title: `Progressed — ${request.appsNo}`,
-        body: `Your ${categoryLabel.toLowerCase()} correction cleared ${stage.stageKey} and is now with ${next.stage.stageKey}.`,
-        link: `/sales/requests/${request.id}`,
-      },
-    ],
+    advanced.map((r) => ({
+      userId: r.userId,
+      type: 'CORRECTION_VERIFIED' as const,
+      title: `Progressed — ${request.appsNo}`,
+      body: `${r.isSubmitter ? 'Your' : 'The'} ${categoryLabel.toLowerCase()} correction${
+        r.isSubmitter ? '' : ' on your book'
+      } cleared ${stage.stageKey} and is now with ${next.stage.stageKey}.`,
+      link: r.link,
+    })),
     tx,
   );
 

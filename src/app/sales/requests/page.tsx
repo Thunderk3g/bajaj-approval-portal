@@ -76,7 +76,7 @@ export default async function MyRequestsPage({
     <section>
       <PageHeader
         title="My correction requests"
-        description="Every correction you have raised, and where it has got to."
+        description="Every correction on your book — the ones you raised and the ones your team leader or area manager raised for you — and where each has got to."
         actions={<LinkButton href="/sales/requests/new" variant="primary">New request</LinkButton>}
       />
 
@@ -112,7 +112,7 @@ export default async function MyRequestsPage({
               <Link href="/sales/requests/new" className="underline">
                 start a new request
               </Link>
-              .
+              . Anything your team leader or area manager raises against your book appears here too.
             </>
           }
         />
@@ -132,6 +132,10 @@ export default async function MyRequestsPage({
             <tbody>
               {rows.map((row) => {
                 const shown = row.status;
+                // Who raised it decides what this rep can DO with it, so it is
+                // stated on the row rather than left to be discovered on the
+                // detail screen when the resubmit form turns out not to be there.
+                const mine = row.submittedBy === actor.id;
                 return (
                   <tr key={row.id} className="hover:bg-slate-50">
                     <Td>
@@ -141,6 +145,11 @@ export default async function MyRequestsPage({
                       >
                         {row.appsNo}
                       </Link>
+                      {mine ? null : (
+                        <div className="mt-1">
+                          <Badge tone="info">Raised by {row.submitterName ?? 'your manager'}</Badge>
+                        </div>
+                      )}
                     </Td>
                     <Td>{CATEGORY_LABELS[row.category as CorrectionCategory] ?? row.category}</Td>
                     <Td>

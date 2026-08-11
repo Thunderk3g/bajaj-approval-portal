@@ -13,6 +13,7 @@ import { db } from '@/db/client';
 import { correctionRequest, salesRecord } from '@/db/schema';
 import { AuthzError } from '@/lib/auth/errors';
 import { scopedRecordCondition, type SessionUser } from '@/lib/auth/rbac';
+import { visibleRequestCondition } from '@/lib/corrections/queries';
 import type { GapType } from '@/lib/records/gaps';
 import { ANY_GAP_CONDITION, ISSUED_CONDITION, countAll, countFiltered, gapCondition } from './sql';
 
@@ -94,7 +95,11 @@ export async function getSalesDashboard(user: SessionUser): Promise<SalesDashboa
         withdrawn: countFiltered(eq(correctionRequest.status, 'WITHDRAWN')),
       })
       .from(correctionRequest)
-      .where(eq(correctionRequest.submittedBy, user.id)),
+      // Not `submitted_by = user.id`: a request their team leader raised for
+      // their book is listed on /sales/requests, so counting only self-raised
+      // ones here would make the tile disagree with the screen it links to.
+      // `visibleRequestCondition` is the one predicate both sides share.
+      .where(visibleRequestCondition(user)),
   ]);
 
   const r = records[0];

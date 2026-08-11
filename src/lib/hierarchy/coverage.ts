@@ -20,9 +20,11 @@
  * A rep moved to another team must count towards the team they are actually on.
  */
 
-import { count, eq, sql } from 'drizzle-orm';
+import { and, count, eq, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { manpower, manpowerOverride, salesRecord } from '@/db/schema';
+import { AuthzError } from '@/lib/auth/errors';
+import { GLOBAL_READ_ROLES, scopedRecordCondition, type SessionUser } from '@/lib/auth/rbac';
 import { isPlaceholderCode } from '@/lib/roster/placeholders';
 
 export type CoverageRep = {
@@ -69,17 +71,50 @@ export type BatchCoverage = {
   };
 };
 
+export type CoverageScope = {
+  /** One upload's rows. Omit for every record in scope. */
+  batchId?: string | null;
+  /** One reconciliation month. Omit for every period. */
+  periodId?: string | null;
+  /**
+   * Whose book to draw. Omit only where the caller has already authorized and
+   * genuinely means every record — the committed-batch page does, because it
+   * is admin-only and the batch id is the scope.
+   */
+  viewer?: SessionUser;
+};
+
 /**
- * The whole fan-out for one committed batch.
+ * The same fan-out the batch page draws, over any slice of the records.
  *
  * One grouped query and a folding pass, not a query per rung: the roster is a
  * few hundred rows and the dump groups down to one row per code, so the entire
  * chart costs a single round trip. Grouping in SQL rather than fetching the
- * batch's rows matters more here than elsewhere — a month's upload is tens of
- * thousands of rows and this page would otherwise carry all of them into
- * JavaScript to produce about 230 numbers.
+ * rows matters more here than elsewhere — a month's upload is tens of thousands
+ * of rows and this page would otherwise carry all of them into JavaScript to
+ * produce about 230 numbers.
+ *
+ * `viewer` runs through `scopedRecordCondition`, so a team leader opening the
+ * chart sees their own team's bubbles and an area manager their cluster's, with
+ * no second scoping rule written here to drift from the one every other read
+ * uses. An undefined condition can only come back for a role that reads
+ * everything; anything else is refused rather than silently unscoped.
  */
-export async function loadBatchCoverage(batchId: string): Promise<BatchCoverage> {
+export async function loadCoverage(scope: CoverageScope = {}): Promise<BatchCoverage> {
+  let viewerCondition: SQL | undefined;
+  if (scope.viewer) {
+    viewerCondition = scopedRecordCondition(scope.viewer);
+    if (!viewerCondition && !GLOBAL_READ_ROLES.includes(scope.viewer.role)) {
+      throw new AuthzError('FORBIDDEN', 'This account has no scope to map');
+    }
+  }
+
+  const where = and(
+    scope.batchId ? eq(salesRecord.sourceBatchId, scope.batchId) : undefined,
+    scope.periodId ? eq(salesRecord.periodId, scope.periodId) : undefined,
+    viewerCondition,
+  );
+
   const rows = await db
     .select({
       smId: salesRecord.smId,
@@ -100,7 +135,7 @@ export async function loadBatchCoverage(batchId: string): Promise<BatchCoverage>
     .from(salesRecord)
     .leftJoin(manpower, eq(manpower.smId, salesRecord.smId))
     .leftJoin(manpowerOverride, eq(manpowerOverride.smId, salesRecord.smId))
-    .where(eq(salesRecord.sourceBatchId, batchId))
+    .where(where)
     .groupBy(
       salesRecord.smId,
       manpower.smId,
@@ -195,4 +230,17 @@ export async function loadBatchCoverage(batchId: string): Promise<BatchCoverage>
       reps,
     },
   };
+}
+
+/**
+ * One committed batch's fan-out — the call the upload detail page makes.
+ *
+ * Kept as its own export with its original signature rather than folded into
+ * `loadCoverage`'s options: `/admin/uploads/[id]` reads exactly this and its
+ * behaviour is pinned by `tests/integration/upload-coverage.test.ts`. A page
+ * that only ever wants one batch should not have to know there is a scope
+ * argument it must leave out.
+ */
+export async function loadBatchCoverage(batchId: string): Promise<BatchCoverage> {
+  return loadCoverage({ batchId });
 }

@@ -36,10 +36,20 @@ export default async function RequestDetailPage({
   // the same answer. Anything else confirms the id was real.
   if (!detail) notFound();
 
-  const { request, events, attachments } = detail;
+  const { request, events, attachments, submitterName } = detail;
   const shown = request.status;
   const category = request.category as CorrectionCategory;
-  const withdrawable = shown === 'PENDING' || shown === 'RETURNED';
+  /**
+   * Read widened, write did not — `docs/ui-flows.md` §7: the manager is recorded
+   * as the submitter, the rep as the owner, and only the manager can resubmit.
+   *
+   * This flag is presentation only. `resubmitCorrection` and `withdrawCorrection`
+   * both go through `loadOwnRequest`, which is still keyed on `submitted_by`, so
+   * hiding the controls and refusing the action are independent — a rep who
+   * POSTs the server action directly is refused there whatever this renders.
+   */
+  const raisedByMe = request.submittedBy === actor.id;
+  const withdrawable = raisedByMe && (shown === 'PENDING' || shown === 'RETURNED');
 
   return (
     <section>
@@ -75,6 +85,16 @@ export default async function RequestDetailPage({
         </p>
       </div>
 
+      {raisedByMe ? null : (
+        <div className="mb-4">
+          <Alert tone="info" title={`${submitterName ?? 'Your manager'} raised this for you`}>
+            It concerns your book, so you can follow it here — but only{' '}
+            {submitterName ?? 'the person who raised it'} can resubmit it if it comes back, add proof
+            to it, or withdraw it.
+          </Alert>
+        </div>
+      )}
+
       {shown === 'RETURNED' && request.approverRemarks ? (
         <div className="mb-4">
           <Alert tone="warning" title="The approver asked for a change">
@@ -95,7 +115,7 @@ export default async function RequestDetailPage({
         <div className="min-w-0 space-y-4">
           {/* The one thing a returned request needs is the form that fixes it,
               so it sits above the history rather than under it. */}
-          {shown === 'RETURNED' ? (
+          {shown === 'RETURNED' && raisedByMe ? (
             <ResubmitForm
               requestId={request.id}
               category={request.category}
@@ -137,7 +157,9 @@ export default async function RequestDetailPage({
 
             {request.description ? (
               <div className="mt-3 border-t border-slate-100 pt-3">
-                <p className={`${LABEL} text-slate-500`}>Your note</p>
+                <p className={`${LABEL} text-slate-500`}>
+                  {raisedByMe ? 'Your note' : `Note from ${submitterName ?? 'the raiser'}`}
+                </p>
                 <p className="mt-1.5 whitespace-pre-wrap text-[13px] leading-relaxed text-slate-800">
                   {request.description}
                 </p>
@@ -160,10 +182,11 @@ export default async function RequestDetailPage({
             <ProofList attachments={attachments} />
           </Card>
 
-          <Card title="If it comes back to you">
+          <Card title={raisedByMe ? 'If it comes back to you' : 'If it comes back'}>
             <p className="text-[13px] leading-relaxed text-slate-600">
-              A return at any step sends it to you with remarks and a form prefilled with these
-              values. Resubmitting restarts the review from the first step — never from the middle.
+              {raisedByMe
+                ? 'A return at any step sends it to you with remarks and a form prefilled with these values. Resubmitting restarts the review from the first step — never from the middle.'
+                : `A return at any step sends it back to ${submitterName ?? 'whoever raised it'}, who raised it, with remarks. You will be told, but the answer is theirs to give.`}
             </p>
 
             {withdrawable ? (
@@ -176,7 +199,9 @@ export default async function RequestDetailPage({
               </div>
             ) : (
               <p className="mt-2 text-[11px] leading-snug text-slate-500">
-                This request is {shown.toLowerCase()}, so there is nothing left to withdraw.
+                {raisedByMe
+                  ? `This request is ${shown.toLowerCase()}, so there is nothing left to withdraw.`
+                  : `Only ${submitterName ?? 'the person who raised it'} can withdraw this one.`}
               </p>
             )}
           </Card>

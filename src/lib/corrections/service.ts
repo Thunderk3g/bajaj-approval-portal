@@ -12,7 +12,7 @@ import { teamSmIds, type SessionUser } from '@/lib/auth/rbac';
 import { fieldLabel } from '@/lib/fields';
 import { normalizeIdentifier } from '@/lib/import/normalize';
 import { isPlaceholderCode, PLACEHOLDER_REASON } from '@/lib/roster/placeholders';
-import { findSalesUserBySmId, notify } from '@/lib/notifications/service';
+import { findSalesUserBySmId, notify, requestLink } from '@/lib/notifications/service';
 import {
   chainKeyFor,
   closeActiveStage,
@@ -587,6 +587,17 @@ export async function submitCorrection(
           })
         : 0;
 
+      const bookOwnerNotified = await notifyBookOwner(tx, {
+        requestId: created.id,
+        smId: bookSmId,
+        submittedBy: actor.id,
+        actorName: actor.name,
+        appsNo,
+        fieldLabel: label,
+        originalValue,
+        proposedValue: proposed.value as string,
+      });
+
       await writeAudit(
         {
           actor,
@@ -610,6 +621,9 @@ export async function submitCorrection(
             // reassignment is the record moving. Normal in this data — seven
             // such SM_IDs in the June file — but only visible if it is recorded.
             counterpartyNotified,
+            // 1 when a manager raised this for one of their reps and that rep
+            // has a login; 0 when the rep raised it themselves, or has none.
+            bookOwnerNotified,
             // Zero means this request landed in a queue nobody is subscribed to.
             // Recorded rather than swallowed: from the rep's side a request with
             // no verifier looks exactly like one that is being worked on, and
@@ -1021,6 +1035,52 @@ async function insertAttachments(
       tx,
     );
   }
+}
+
+/**
+ * Tells a rep that their manager raised a correction against their book —
+ * `docs/ui-flows.md` §7.
+ *
+ * Until this existed a TL-raised request was invisible to the rep it was about:
+ * `openStage` notifies the first rung, `notifyMappingCounterparty` notifies the
+ * other side of a mapping claim, and neither is the rep whose book it is. The
+ * request then showed up as pending in the manager's bucket alone, which is the
+ * bug reported.
+ *
+ * Returns 0 and does nothing when the raiser IS the rep, and when the SM_ID has
+ * no active account. The second case is a warning condition everywhere else in
+ * this codebase and never a blocker — an SM_ID without a login is normal in this
+ * data, and refusing the submission over it would stop a manager doing the job
+ * this feature exists for.
+ */
+async function notifyBookOwner(
+  tx: DbTransaction,
+  input: {
+    requestId: string;
+    smId: string;
+    submittedBy: string;
+    actorName: string;
+    appsNo: string;
+    fieldLabel: string;
+    originalValue: string | null;
+    proposedValue: string;
+  },
+): Promise<number> {
+  const owner = await findSalesUserBySmId(input.smId, tx);
+  if (!owner || owner.id === input.submittedBy) return 0;
+
+  await notify(
+    {
+      userId: owner.id,
+      type: 'CORRECTION_RAISED_FOR_YOU',
+      title: `${input.actorName} raised a correction on your book — ${input.appsNo}`,
+      body: `${input.fieldLabel}: ${input.originalValue ?? '(blank)'} → ${input.proposedValue}. You can follow it, but only ${input.actorName} can resubmit or withdraw it.`,
+      link: requestLink(input.requestId, 'sales'),
+    },
+    tx,
+  );
+
+  return 1;
 }
 
 /**

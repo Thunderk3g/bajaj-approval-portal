@@ -3,6 +3,7 @@ import { requireRoleOrRedirect } from '@/lib/auth/page';
 import { committedBatches, listExports } from '@/lib/export/queries';
 import { describeFilters } from '@/lib/export/schemas';
 import { formatDateTime } from '@/lib/format';
+import { periodOptions } from '@/lib/periods/queries';
 import { apiPath } from '@/lib/nav';
 import { buttonClass, Card, EmptyState, PageHeader, Table, Td, Th } from '@/components/ui';
 import { ExportForm } from './export-form';
@@ -28,7 +29,11 @@ export const dynamic = 'force-dynamic';
 export default async function ExportsPage() {
   await requireRoleOrRedirect('admin');
 
-  const [batches, exports] = await Promise.all([committedBatches(), listExports()]);
+  const [batches, exports, periods] = await Promise.all([
+    committedBatches(),
+    listExports(),
+    periodOptions(),
+  ]);
   const batchNames = new Map(batches.map((b) => [b.id, b.name]));
 
   return (
@@ -39,7 +44,7 @@ export default async function ExportsPage() {
       />
 
       <div className="space-y-4">
-        <ExportForm batches={batches} />
+        <ExportForm batches={batches} periods={periods} />
 
         <Card title="Past exports" description="Every generated file stays downloadable.">
           {exports.length === 0 ? (

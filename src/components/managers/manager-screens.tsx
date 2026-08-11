@@ -1,8 +1,10 @@
 import Link from 'next/link';
 import type { SessionUser } from '@/lib/auth/rbac';
 import { listActionableForUser } from '@/lib/workflows/engine';
+import { listMyRequests } from '@/lib/corrections/queries';
 import { listTeam, managerSummary } from '@/lib/managers/queries';
 import { ageInDays, formatDateTime, orDash } from '@/lib/format';
+import { buildQuery, pageCount, parsePageParams } from '@/lib/pagination';
 import { CategoryBadge } from '@/components/approvals/request-view';
 import {
   Badge,
@@ -10,6 +12,7 @@ import {
   EmptyState,
   LinkButton,
   PageHeader,
+  Pagination,
   StatCard,
   StatusBadge,
   Table,
@@ -201,6 +204,195 @@ export async function ManagerQueue({ user, role }: { user: SessionUser; role: Ro
             ))}
           </tbody>
         </Table>
+      )}
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------ what I raised */
+
+/**
+ * The requests this manager raised, whoever they were raised for.
+ *
+ * The counterpart to the queue: that one answers "what is waiting on me", this
+ * one answers "what did I send off, and where has it got to". A manager had
+ * neither until now — a request they raised appeared in no list for either party
+ * and was reachable only by following its notification, or by chance when a rung
+ * happened to land back on them.
+ *
+ * Backed by `listMyRequests`, which is the sales screen's own query. Nothing was
+ * needed to make it work here: its predicate is `submitted_by = actor.id` for
+ * everyone but a rep, so for a manager it already means exactly "raised by me".
+ * A second near-identical query would have been a second place for the columns
+ * to drift.
+ */
+const REQUEST_STATUS_FILTERS = [
+  { value: '', label: 'All' },
+  { value: 'PENDING', label: 'In review' },
+  { value: 'VERIFIED', label: 'Part-way up the chain' },
+  { value: 'RETURNED', label: 'Back with me' },
+  { value: 'APPROVED', label: 'Approved' },
+  { value: 'REJECTED', label: 'Closed' },
+  { value: 'WITHDRAWN', label: 'Withdrawn' },
+] as const;
+
+type SearchParams = Record<string, string | string[] | undefined>;
+
+export async function ManagerRequests({
+  user,
+  role,
+  params,
+}: {
+  user: SessionUser;
+  role: Role;
+  params: SearchParams;
+}) {
+  const { page, pageSize, offset } = parsePageParams(params);
+  const statusParam = typeof params.status === 'string' ? params.status : '';
+  // Same guard as /sales/requests: an unrecognised status must not fall through
+  // to `undefined`, which silently means "All" while a pill claims otherwise.
+  const status = REQUEST_STATUS_FILTERS.some((f) => f.value === statusParam && f.value !== '')
+    ? statusParam
+    : undefined;
+
+  const { rows, total } = await listMyRequests(user, { offset, limit: pageSize, status });
+
+  return (
+    <section>
+      <PageHeader
+        title="Requests I raised"
+        description="Corrections you raised on behalf of your reps, and where each has got to. The rep sees these too, read-only — only you can resubmit or withdraw one."
+        actions={
+          <LinkButton href={`/${role}/requests/new`} variant="primary">
+            Raise a request
+          </LinkButton>
+        }
+      />
+
+      <nav aria-label="Filter by status" className="mb-3 flex flex-wrap gap-1.5">
+        {REQUEST_STATUS_FILTERS.map((filter) => {
+          const active = (status ?? '') === filter.value;
+          return (
+            <Link
+              key={filter.value || 'all'}
+              href={`/${role}/requests${buildQuery(params, { status: filter.value, page: undefined })}`}
+              aria-current={active ? 'page' : undefined}
+              className={
+                active
+                  ? 'rounded-md border border-slate-900 bg-slate-900 px-2.5 py-1 text-[12px] font-medium text-white'
+                  : 'rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[12px] font-medium text-slate-700 hover:bg-slate-50'
+              }
+            >
+              {filter.label}
+            </Link>
+          );
+        })}
+      </nav>
+
+      {rows.length === 0 ? (
+        <EmptyState
+          title={status ? 'Nothing in this state' : 'You have not raised anything yet'}
+          description={
+            status ? (
+              <>
+                No request you raised is currently {status.toLowerCase()}.{' '}
+                <Link href={`/${role}/requests`} className="underline">
+                  Show all of them
+                </Link>
+                .
+              </>
+            ) : (
+              <>
+                A row appears here when you{' '}
+                <Link href={`/${role}/requests/new`} className="underline">
+                  raise a correction
+                </Link>{' '}
+                against one of your reps records. Requests your reps raise themselves are not
+                listed — those reach you through your queue when a step is yours to decide.
+              </>
+            )
+          }
+        />
+      ) : (
+        <>
+          <Table>
+            <thead>
+              <tr>
+                <Th>Application</Th>
+                <Th>Rep</Th>
+                <Th>Category / field</Th>
+                <Th>Status</Th>
+                <Th>Step</Th>
+                <Th>Raised</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.id} className="hover:bg-slate-50">
+                  <Td>
+                    <Link
+                      href={`/${role}/requests/${row.id}`}
+                      className="font-mono font-medium text-slate-900 underline underline-offset-2 hover:text-slate-600"
+                    >
+                      {row.appsNo}
+                    </Link>
+                    <div className="mt-0.5">
+                      <span className="font-mono text-xs text-slate-500">
+                        {orDash(row.originalValue)}
+                      </span>
+                      <span className="px-1 text-slate-400" aria-label="becomes">
+                        →
+                      </span>
+                      <span className="font-mono text-xs font-medium text-slate-900">
+                        {orDash(row.proposedValue)}
+                      </span>
+                    </div>
+                  </Td>
+                  <Td>
+                    {orDash(row.smName)}
+                    <div className="mt-0.5 font-mono text-xs text-slate-500">{row.smId}</div>
+                  </Td>
+                  <Td>
+                    <CategoryBadge category={row.category} />
+                    <div className="mt-0.5 text-xs text-slate-500">{row.fieldLabel}</div>
+                  </Td>
+                  <Td>
+                    <StatusBadge status={row.status} />
+                    {row.resubmissionCount > 0 ? (
+                      <div className="mt-0.5 text-xs text-slate-500">
+                        resubmitted {row.resubmissionCount}×
+                      </div>
+                    ) : null}
+                  </Td>
+                  {/* Null once it is decided — there is no open rung to name, and
+                      "6 of 5" would be worse than nothing. */}
+                  <Td>
+                    {row.currentStageKey ? (
+                      <>
+                        <Badge tone="info">{row.currentStageKey}</Badge>
+                        <div className="mt-0.5 text-xs tabular-nums text-slate-500">
+                          {row.currentStageSequence + 1} of {row.totalStages}
+                        </div>
+                      </>
+                    ) : (
+                      <span className="text-xs text-slate-500">Finished</span>
+                    )}
+                  </Td>
+                  <Td className="whitespace-nowrap text-xs text-slate-600">
+                    {formatDateTime(row.submittedAt)}
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+
+          <Pagination
+            page={page}
+            pageCount={pageCount(total, pageSize)}
+            totalRows={total}
+            hrefFor={(next) => `/${role}/requests${buildQuery(params, { page: next })}`}
+          />
+        </>
       )}
     </section>
   );

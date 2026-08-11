@@ -41,16 +41,43 @@ function label(name: string | null, code: string | null, fallback: string): stri
   return name ? `${name} (${code})` : code;
 }
 
-export function HierarchyBubbles({ coverage }: { coverage: BatchCoverage }) {
+/**
+ * Wording for the two empty states, so the chart can be reused off the batch page.
+ *
+ * Optional and defaulted: `/admin/uploads/[id]` passes only `coverage` and gets
+ * exactly the copy it always had. `/admin/mapping` and the manager views cover
+ * every record rather than one upload, where "nothing from this upload" would be
+ * the wrong sentence and, worse, would not tell the reader what to do about it.
+ */
+export type BubbleCopy = { title: string; description: string };
+
+const NO_POLICIES: BubbleCopy = {
+  title: 'No records from this upload',
+  description:
+    'Nothing was written to the master records under this batch, so there is nothing to place on the hierarchy.',
+};
+
+const NO_GROUPS: BubbleCopy = {
+  title: 'Nothing in this upload reached the roster',
+  description:
+    'Every code the file carries is a placeholder or absent from the Manpower sheet. Import an up-to-date roster and the chart will fill in.',
+};
+
+export function HierarchyBubbles({
+  coverage,
+  empty = NO_POLICIES,
+  unmapped = NO_GROUPS,
+}: {
+  coverage: BatchCoverage;
+  /** Shown when nothing at all is in scope. */
+  empty?: BubbleCopy;
+  /** Shown when there are policies but none of them reach a rep on the roster. */
+  unmapped?: BubbleCopy;
+}) {
   const { groups, orphans, totals } = coverage;
 
   if (totals.policies === 0) {
-    return (
-      <EmptyState
-        title="No records from this upload"
-        description="Nothing was written to the master records under this batch, so there is nothing to place on the hierarchy."
-      />
-    );
+    return <EmptyState title={empty.title} description={empty.description} />;
   }
 
   // One scale for the whole page, taken from the largest team and the largest
@@ -78,10 +105,7 @@ export function HierarchyBubbles({ coverage }: { coverage: BatchCoverage }) {
       </dl>
 
       {groups.length === 0 ? (
-        <EmptyState
-          title="Nothing in this upload reached the roster"
-          description="Every code the file carries is a placeholder or absent from the Manpower sheet. Import an up-to-date roster and the chart will fill in."
-        />
+        <EmptyState title={unmapped.title} description={unmapped.description} />
       ) : (
         <ul className="space-y-2">
           {groups.map((group, index) => (

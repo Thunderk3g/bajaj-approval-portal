@@ -1,7 +1,8 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, count, eq, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { correctionRequest, period, salesRecord, uploadBatch, user } from '@/db/schema';
 import { LOCKING_STATUSES } from '@/lib/corrections/service';
+import { currentPeriod, isPeriodCode, periodCodeFor, periodLabelFor } from './service';
 
 /** Reads for the admin Periods screen. Callers have already authorized. */
 
@@ -109,6 +110,59 @@ export async function closeImpact(periodId: string): Promise<CloseImpact | null>
   const returned = of('RETURNED');
 
   return { label: row.label, pending, verified, returned, total: pending + verified + returned };
+}
+
+/**
+ * Which cycle a batch will land in, and whether that cycle is closed.
+ *
+ * Read BEFORE the commit rather than discovered as a thrown `PeriodError` after
+ * it: a closed month is the one refusal an admin can do something about, and
+ * learning about it at the last button is what sent them off to /admin/periods
+ * and back again.
+ *
+ * The code is resolved exactly as `commitBatch` resolves it — the stored
+ * `period_code`, else the calendar month of the upload. Two spellings of that
+ * fallback is the bug this shares one line to avoid.
+ */
+export type BatchPeriodState = {
+  code: string;
+  label: string;
+  /** `null` when no row exists yet: the commit creates it, open. */
+  status: 'OPEN' | 'CLOSED' | null;
+  /** The period that is open right now, when it is a DIFFERENT one. */
+  openElsewhere: { code: string; label: string } | null;
+  /** Records already sitting in this cycle — the blast radius of reopening it. */
+  records: number;
+};
+
+export async function batchPeriodState(batch: {
+  periodCode: string | null;
+  uploadedAt: Date;
+}): Promise<BatchPeriodState> {
+  const code = batch.periodCode ?? periodCodeFor(batch.uploadedAt);
+
+  const [row] = await db.select().from(period).where(eq(period.code, code)).limit(1);
+  const open = await currentPeriod();
+
+  const records = row
+    ? ((
+        await db
+          .select({ value: count() })
+          .from(salesRecord)
+          .where(eq(salesRecord.periodId, row.id))
+      )[0]?.value ?? 0)
+    : 0;
+
+  return {
+    code,
+    // A stored code that is not `YYYY-MM` cannot be labelled and must not throw
+    // on a read: the commit is where that is refused, in a sentence.
+    label: row?.label ?? (isPeriodCode(code) ? periodLabelFor(code) : code),
+    status: row ? (row.status as 'OPEN' | 'CLOSED') : null,
+    openElsewhere:
+      open && open.code !== code ? { code: open.code, label: open.label } : null,
+    records,
+  };
 }
 
 /**

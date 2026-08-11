@@ -2,6 +2,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { correctionRequest, salesRecord, uploadBatchRow } from '@/db/schema';
 import type { DbTransaction } from '@/lib/audit/log';
+import { resolveTargetField } from '@/lib/approvals/record-apply';
 import { CANONICAL_FIELDS } from '@/lib/fields';
 import type { MasterRecordSnapshot, ValidatedRow } from './types';
 
@@ -73,7 +74,11 @@ export async function loadMasterSnapshots(
 
   for (const slice of chunk(ids, LOOKUP_CHUNK)) {
     const approved = await executor
-      .select({ recordId: correctionRequest.recordId, fieldName: correctionRequest.fieldName })
+      .select({
+        recordId: correctionRequest.recordId,
+        category: correctionRequest.category,
+        fieldName: correctionRequest.fieldName,
+      })
       .from(correctionRequest)
       .where(
         and(inArray(correctionRequest.recordId, slice), eq(correctionRequest.status, 'APPROVED')),
@@ -83,7 +88,7 @@ export async function loadMasterSnapshots(
       const snapshot = byId.get(row.recordId);
       if (!snapshot) continue;
 
-      for (const field of protectedByCorrectionTo(row.fieldName)) {
+      for (const field of protectedByCorrectionTo(row.category, row.fieldName)) {
         if (!snapshot.protectedFields.includes(field)) snapshot.protectedFields.push(field);
       }
     }
@@ -93,24 +98,37 @@ export async function loadMasterSnapshots(
 }
 
 /**
- * The record columns an approved correction to `fieldName` protects from a
- * re-import.
+ * The record columns an approved correction protects from a re-import.
  *
- * Usually just the field itself. `smId` is the exception: approving a mapping
- * claim writes `smId` AND `smName` together, because spec 7.2 forbids the two
- * from diverging — the name is resolved from the Manpower roster rather than
- * being typed, precisely so they cannot.
+ * Resolved through `resolveTargetField` — the SAME function the approval used to
+ * decide which column to write — rather than off the raw `field_name` text. The
+ * two used to be separate rules, and separate rules are how a re-import comes to
+ * guard a column the approval never touched while leaving the one it did touch
+ * open: for every category but OTHERS the category PINS the field and
+ * `field_name` is ignored at apply time, so a request whose text column says
+ * anything else would have been applied to one column and protected on another.
+ * A stale workbook would then silently revert an approved, evidenced correction,
+ * which spec 6.8 exists to make impossible.
  *
- * A correction request only ever NAMES `smId`, so protecting the named field
- * alone left `smName` unguarded. Re-importing the same workbook then held the ID
- * at the gaining rep while overwriting the name back to the losing one, and the
- * record would claim SM_ID C2CM88888 belongs to "Ravi Kumar" — a person who is
- * not that rep. Every downstream reader of `sm_name` (the export, the rep's own
- * record list, mapping notifications) would then name the wrong salesperson,
- * with nothing in the version history explaining why.
+ * `smId` is the exception that survives: approving a mapping claim writes `smId`
+ * AND `smName` together, because spec 7.2 forbids the two from diverging — the
+ * name is resolved from the Manpower roster rather than being typed, precisely
+ * so they cannot. Protecting only the named field left `smName` unguarded, and
+ * the record would claim SM_ID C2CM88888 belongs to "Ravi Kumar" — a person who
+ * is not that rep.
+ *
+ * An unresolvable category falls back to the named field rather than throwing.
+ * A single unreadable historical row must not take a whole import down; guarding
+ * what the row itself names is the narrowest honest answer available.
  */
-function protectedByCorrectionTo(fieldName: string): string[] {
-  return fieldName === 'smId' ? ['smId', 'smName'] : [fieldName];
+function protectedByCorrectionTo(category: string, fieldName: string): string[] {
+  let field: string;
+  try {
+    field = resolveTargetField(category, fieldName);
+  } catch {
+    field = fieldName;
+  }
+  return field === 'smId' ? ['smId', 'smName'] : [field];
 }
 
 /**

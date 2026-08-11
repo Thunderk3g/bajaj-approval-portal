@@ -45,6 +45,15 @@ export const NOTIFICATION_TYPES = [
   'MAPPING_CLAIM_RAISED',
   'MAPPING_TRANSFER_PROPOSED',
   'MAPPING_LOST',
+  /**
+   * A TL or an ACM raised a correction against a rep's book — `docs/ui-flows.md`
+   * §7, "raise on behalf of a rep".
+   *
+   * The rep is told, not asked. `submitted_by` is the manager and stays that
+   * way: only they can resubmit or withdraw it, so the body has to say who
+   * raised it or the rep opens a read-only screen with no explanation of why.
+   */
+  'CORRECTION_RAISED_FOR_YOU',
   'BATCH_COMMITTED',
   'EXPORT_READY',
 ] as const;
@@ -198,4 +207,99 @@ export async function findSalesUserBySmId(
  */
 export function recordLink(appsNo: string, role: Role): string {
   return role === 'sales' ? `/sales/records/${appsNo}` : `/admin/records/${appsNo}`;
+}
+
+/**
+ * Where a correction request lives, per role — the same idea as `recordLink`.
+ *
+ * Every decision notification used to hardcode `/sales/requests/${id}`, which is
+ * correct only while the submitter is a rep. A TL or an ACM following one landed
+ * on a page guarded by `requireSalesActor()`, which throws FORBIDDEN — so a
+ * manager could not open their own request from the notification telling them it
+ * had moved. Building the path from the RECIPIENT's role is the fix, and it has
+ * to be one function because there were three call sites and they had all drifted
+ * to the same wrong answer.
+ *
+ * `admin` goes to /admin/corrections: it is the only request screen an
+ * administrator can reach, and an unroutable rung already falls to them there.
+ */
+const REQUEST_PREFIX: Record<Role, string> = {
+  sales: '/sales/requests',
+  tl: '/tl/requests',
+  acm: '/acm/requests',
+  verifier: '/verifier/requests',
+  approver: '/approver/requests',
+  admin: '/admin/corrections',
+};
+
+export function requestLink(requestId: string, role: Role): string {
+  return `${REQUEST_PREFIX[role]}/${requestId}`;
+}
+
+export type RequestRecipient = {
+  userId: string;
+  name: string;
+  role: Role;
+  /** Already resolved against this recipient's own role prefix. */
+  link: string;
+  /** The account that raised it. */
+  isSubmitter: boolean;
+  /** The rep whose book it concerns. Both are true when the rep raised it themselves. */
+  isOwner: boolean;
+};
+
+/**
+ * Everyone who should hear about a request moving: whoever raised it, and the
+ * rep whose book it is about.
+ *
+ * One function rather than a fan-out at each call site, and it de-duplicates by
+ * construction — a rep who raised their own request appears once, flagged as
+ * both. That is the same guarantee `notifySubmitterOfApproval`'s Map gives, kept
+ * in one place instead of reinvented per event.
+ *
+ * A missing sales account for `smId` yields no row rather than an error. An
+ * SM_ID with no login is normal in this data and never blocks anything — the
+ * same rule `applyCorrectionToRecord` follows when it warns instead of refusing.
+ */
+export async function requestRecipients(
+  request: { id: string; submittedBy: string; smId: string },
+  tx?: DbTransaction,
+): Promise<RequestRecipient[]> {
+  const executor = tx ?? db;
+
+  const [submitter, owner] = await Promise.all([
+    executor
+      .select({ id: user.id, name: user.name, role: user.role })
+      .from(user)
+      .where(eq(user.id, request.submittedBy))
+      .limit(1)
+      .then((rows) => rows[0]),
+    findSalesUserBySmId(request.smId, tx),
+  ]);
+
+  const out: RequestRecipient[] = [];
+
+  if (submitter) {
+    out.push({
+      userId: submitter.id,
+      name: submitter.name,
+      role: submitter.role,
+      link: requestLink(request.id, submitter.role),
+      isSubmitter: true,
+      isOwner: owner?.id === submitter.id,
+    });
+  }
+
+  if (owner && owner.id !== request.submittedBy) {
+    out.push({
+      userId: owner.id,
+      name: owner.name,
+      role: 'sales',
+      link: requestLink(request.id, 'sales'),
+      isSubmitter: false,
+      isOwner: true,
+    });
+  }
+
+  return out;
 }

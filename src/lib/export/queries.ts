@@ -19,12 +19,32 @@ import { coerceFilters, type ExportFilters } from './schemas';
  * bug: a PENDING application has no issuance date to fall inside a range, and
  * including it would put rows in a "records issued in June" workbook that were
  * not issued at all.
+ *
+ * That interacts badly with `periodCode` if the two are combined, and they
+ * answer different questions, so they should not be. "The dashboard for July" is
+ * the period filter alone: every row July's import carried, PENDING ones
+ * included. Adding a July date range to it silently drops exactly the PENDING
+ * and not-yet-issued rows the monthly dashboard exists to chase — the export
+ * would look like a complete month while missing its whole worklist. The period
+ * filter is offered on its own for that reason.
  */
 export function exportConditions(filters: ExportFilters): SQL | undefined {
   const conditions: SQL[] = [];
 
   if (filters.batchId) conditions.push(eq(salesRecord.sourceBatchId, filters.batchId));
   if (filters.smId) conditions.push(eq(salesRecord.smId, filters.smId));
+  // A subquery rather than a join, so this stays one composable predicate that
+  // callers can AND into their own WHERE. `period.code` is UNIQUE, so it selects
+  // at most one id — and a code no period carries selects none, which correctly
+  // exports nothing rather than everything.
+  if (filters.periodCode) {
+    conditions.push(
+      inArray(
+        salesRecord.periodId,
+        db.select({ id: period.id }).from(period).where(eq(period.code, filters.periodCode)),
+      ),
+    );
+  }
   if (filters.issuedFrom) conditions.push(gte(salesRecord.issuedDate, filters.issuedFrom));
   if (filters.issuedTo) conditions.push(lte(salesRecord.issuedDate, filters.issuedTo));
   if (filters.correctedOnly) conditions.push(eq(salesRecord.hasCorrections, true));

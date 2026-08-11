@@ -64,7 +64,14 @@ export default async function NewUploadPage() {
             <p>
               No roster exists yet. The Manpower sheet is the only thing that places a rep under a
               team leader and that team leader under an area manager — and it is the only source of
-              accounts. Nothing creates users from a business dashboard.
+              accounts. Nothing creates users from a business dashboard, and no login is ever created
+              implicitly: an administrator still picks the people and presses the button.
+            </p>
+            <p>
+              That button is now on the roster step of this flow. Commit the Manpower sheet, then
+              create the logins for the managers and reps it introduced — passwords are shown once,
+              there — without leaving the upload. Anybody the sheet does not place is refused rather
+              than given an account whose approval path would be quietly shorter.
             </p>
             <p>
               Upload either a workbook containing a <strong>Manpower</strong> sheet on its own, or

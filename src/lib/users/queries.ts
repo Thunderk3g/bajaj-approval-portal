@@ -126,7 +126,7 @@ export type RosterWorklistEntry = RosterEntry & {
  * sheet's own columns come along beside it so team NAMES stay attributable to a
  * rep the sheet itself places there.
  */
-async function loadRoster(): Promise<RosterEntry[]> {
+async function loadRoster(batchId?: string): Promise<RosterEntry[]> {
   const rows = await db
     .select({
       smId: manpower.smId,
@@ -141,7 +141,10 @@ async function loadRoster(): Promise<RosterEntry[]> {
       ccmName: manpower.ccmName,
     })
     .from(manpower)
-    .leftJoin(manpowerOverride, eq(manpowerOverride.smId, manpower.smId));
+    .leftJoin(manpowerOverride, eq(manpowerOverride.smId, manpower.smId))
+    // Scoped to one workbook when the caller asks — the upload wizard's roster
+    // step lists the people THIS file introduced, not the whole company.
+    .where(batchId ? eq(manpower.sourceBatchId, batchId) : undefined);
 
   return buildRoster(rows);
 }
@@ -158,10 +161,17 @@ async function loadRoster(): Promise<RosterEntry[]> {
  * of them — one person who leads a team inside the cluster they head — and
  * matching on the code alone would report the area manager's account as covering
  * the team-leader rung, hiding the one gap that still routes to nobody.
+ *
+ * `batchId` narrows the ROSTER to the rows one workbook wrote; the account
+ * lookup below stays global, because an account created from any screen is still
+ * an account and offering a second one for the same code is the duplicate
+ * identity this list exists to prevent.
  */
-export async function listRoster(): Promise<RosterWorklistEntry[]> {
+export async function listRoster(
+  options: { batchId?: string } = {},
+): Promise<RosterWorklistEntry[]> {
   const [entries, accounts] = await Promise.all([
-    loadRoster(),
+    loadRoster(options.batchId),
     db
       .select({
         smId: user.smId,

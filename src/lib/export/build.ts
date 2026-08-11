@@ -554,6 +554,7 @@ function addInfoSheet(workbook: Workbook, input: ExportInput): void {
     ['Filters applied', { value: describeFilters(meta.filters).join('; ') }],
     ['Filter — batch', { value: meta.filters.batchId }],
     ['Filter — SM_ID', { value: meta.filters.smId }],
+    ['Filter — period', { value: meta.filters.periodCode }],
     ['Filter — issued from', { value: meta.filters.issuedFrom }],
     ['Filter — issued to', { value: meta.filters.issuedTo }],
     ['Filter — corrected records only', { value: meta.filters.correctedOnly ? 'Yes' : 'No' }],

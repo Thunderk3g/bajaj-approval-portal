@@ -22,7 +22,7 @@ import { requireRole } from '@/lib/auth/rbac';
 import { fail, ok, zodFieldErrors, type ActionResult } from '@/lib/result';
 import { pgError } from '@/lib/db-errors';
 import { allocateStoragePath, ensureStorageDirs, resolveStoredPath, UPLOADS_DIR } from '@/lib/storage/paths';
-import { isPeriodCode, periodCodeFor } from '@/lib/periods/service';
+import { isPeriodCode, periodCodeFor, PeriodError } from '@/lib/periods/service';
 import { IngestError, startLeadsJob, startParseJob, toSourceColumns } from '@/lib/ingest/client';
 import { latestParseJob, parseResultOf } from '@/lib/ingest/queries';
 import { ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, MAX_UPLOAD_MB } from './upload-limits';
@@ -644,6 +644,15 @@ const commitSchema = z.object({
   batchId: z.string().uuid(),
   /** Apps_No -> canonical field keys the admin accepted from the file (6.8). */
   acceptedConflicts: z.record(z.string(), z.array(z.string())).optional(),
+  /**
+   * Reopen the batch's period if it is closed, rather than being refused.
+   *
+   * Absent on every ordinary commit, which is the whole safety property: a stale
+   * file cannot reopen a reconciled month, because the plain Commit button never
+   * sends this. `requireRole('admin')` above is the second gate — the service
+   * refuses the override for anybody else regardless.
+   */
+  reopenClosedPeriod: z.boolean().optional(),
 });
 
 export async function commitBatchAction(input: unknown): Promise<ActionResult<CommitOutcome>> {
@@ -657,22 +666,40 @@ export async function commitBatchAction(input: unknown): Promise<ActionResult<Co
       batchId: parsed.data.batchId,
       actor,
       acceptedConflicts: parsed.data.acceptedConflicts,
+      reopenClosedPeriod: parsed.data.reopenClosedPeriod,
     });
 
     revalidatePath('/admin/uploads');
     revalidatePath(`/admin/uploads/${parsed.data.batchId}`);
     revalidatePath('/admin/records');
+    // Every commit opens, closes or reopens a month, so the periods screen is
+    // stale the moment this returns.
+    revalidatePath('/admin/periods');
     return ok(outcome);
   } catch (error) {
-    // The transaction has already rolled back; nothing partial reached
-    // sales_record. FAILED is recorded only when the batch was actually
-    // committable — a refusal because the batch was never validated is a
-    // precondition, not a failure, and marking it FAILED would strand a batch
-    // the admin could simply have validated.
-    await db
-      .update(uploadBatch)
-      .set({ status: 'FAILED' })
-      .where(and(eq(uploadBatch.id, parsed.data.batchId), eq(uploadBatch.status, 'VALIDATED')));
+    /*
+     * The transaction has already rolled back; nothing partial reached
+     * sales_record. FAILED is recorded only when the batch was actually
+     * committable — a refusal because the batch was never validated is a
+     * precondition, not a failure, and marking it FAILED would strand a batch
+     * the admin could simply have validated.
+     *
+     * The same is true of the two REFUSALS this commit makes on purpose: no
+     * roster yet, and a closed period. Both leave the file perfectly importable
+     * and both tell the admin exactly what to fix — and stamping FAILED over
+     * them made the instruction impossible to follow, because `commitBatch`
+     * requires VALIDATED and the review panel hides every control (the reopen
+     * affordance included) once the batch is not. That turned "fix it and press
+     * Commit again" into "upload the file a second time".
+     */
+    const recoverable = error instanceof ImportPreconditionError || error instanceof PeriodError;
+
+    if (!recoverable) {
+      await db
+        .update(uploadBatch)
+        .set({ status: 'FAILED' })
+        .where(and(eq(uploadBatch.id, parsed.data.batchId), eq(uploadBatch.status, 'VALIDATED')));
+    }
 
     revalidatePath(`/admin/uploads/${parsed.data.batchId}`);
     return fail(error instanceof Error ? error.message : 'The commit failed and was rolled back.');

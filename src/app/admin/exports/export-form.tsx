@@ -17,6 +17,11 @@ import type { GeneratedExport } from '@/lib/export/service';
 
 type BatchOption = { id: string; name: string; committedAt: Date | null };
 
+// Filtered by code, not id: the chosen value is stored on the export row and
+// read back months later, where "2026-07" still says which month it was and a
+// uuid does not.
+type PeriodOption = { code: string; label: string; status: string };
+
 function SubmitButton() {
   // Building a workbook over a full book takes seconds; without this the admin
   // clicks again and generates a second identical export.
@@ -28,7 +33,13 @@ function SubmitButton() {
   );
 }
 
-export function ExportForm({ batches }: { batches: BatchOption[] }) {
+export function ExportForm({
+  batches,
+  periods,
+}: {
+  batches: BatchOption[];
+  periods: PeriodOption[];
+}) {
   const [state, formAction] = useActionState<ActionResult<GeneratedExport> | null, FormData>(
     generateExportAction,
     null,
@@ -58,6 +69,23 @@ export function ExportForm({ batches }: { batches: BatchOption[] }) {
                   {batch.committedAt
                     ? ` — ${new Date(batch.committedAt).toISOString().slice(0, 10)}`
                     : ''}
+                </option>
+              ))}
+            </Select>
+          </Field>
+
+          <Field
+            label="Period"
+            htmlFor="periodCode"
+            hint="The month a record was last imported in. Independent of the issuance dates below."
+            error={fieldErrors.periodCode}
+          >
+            <Select id="periodCode" name="periodCode" defaultValue="">
+              <option value="">All months</option>
+              {periods.map((period) => (
+                <option key={period.code} value={period.code}>
+                  {period.label}
+                  {period.status === 'CLOSED' ? ' — closed' : ''}
                 </option>
               ))}
             </Select>

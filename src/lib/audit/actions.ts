@@ -111,6 +111,17 @@ export const AUDIT_ACTIONS = [
   /** The monthly cycle — 2026-07-28 spec section 4.4. */
   'PERIOD_OPEN',
   'PERIOD_CLOSE',
+  /**
+   * A closed month was reopened by an IMPORT, not by hand on /admin/periods.
+   *
+   * Its own action rather than a PERIOD_OPEN with a note, because the two are
+   * different decisions with different reviewers: the manual one is an admin
+   * saying "this month is not finished", while this one is an admin committing a
+   * back-dated workbook and accepting that a reconciled month becomes live again.
+   * "Which months were reopened by a file rather than by a person" is only
+   * answerable if the trail spells them differently.
+   */
+  'PERIOD_REOPEN_IMPORT',
 
   /**
    * The approval chain an admin edits — 2026-08-06 spec section 7.

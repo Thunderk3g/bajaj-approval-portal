@@ -1,10 +1,13 @@
-import { and, count, desc, eq, inArray, ne, or } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, ne, or, type SQL } from 'drizzle-orm';
 import { db } from '@/db/client';
 import {
   correctionAttachment,
   correctionEvent,
   correctionRequest,
+  correctionRequestStage,
+  manpower,
   salesRecord,
+  user,
 } from '@/db/schema';
 import type { SessionUser } from '@/lib/auth/rbac';
 import { PREVIEWABLE_MIME_TYPES } from '@/lib/storage/files';
@@ -12,11 +15,29 @@ import { PREVIEWABLE_MIME_TYPES } from '@/lib/storage/files';
 /**
  * Reads for the sales-side correction screens.
  *
- * Every query in this file filters on `submitted_by = actor.id`. Not
- * `sm_id = actor.smId`: two reps can share an SM_ID over time as accounts are
- * reissued, and a request is the property of the person who raised it. The
- * predicate is in the WHERE clause rather than applied after the read, so there
- * is no code path that materialises somebody else's request at all.
+ * ## The visibility key
+ *
+ * These queries used to filter on `submitted_by = actor.id` alone, reasoning
+ * that two reps can share an SM_ID over time as accounts are reissued, so a
+ * request is the property of the person who raised it. That reasoning still
+ * holds — for OWNERSHIP. It is why `loadOwnRequest` in service.ts, which gates
+ * resubmit, withdraw and add-proof, is still keyed on `submitted_by` and nothing
+ * here widens it.
+ *
+ * It does not hold for VISIBILITY of the book a rep currently holds. A TL or an
+ * ACM may raise a correction on one of their reps' records (`docs/ui-flows.md`
+ * §7 "raise on behalf of a rep"), and the row records the manager in
+ * `submitted_by` and the rep's code in `sm_id`. Under the old predicate the rep
+ * whose book it concerned could not see it anywhere. So reads — and only reads —
+ * match `submitted_by = actor.id OR sm_id = actor.smId`.
+ *
+ * The widening is narrow on purpose: only a `role='sales'` account with an
+ * SM_ID gets the second arm, and a reissued account inherits visibility of the
+ * book it now holds, which is exactly what it can already see under
+ * `/sales/records`. Nothing widens for tl/acm/admin/approver/verifier through
+ * this module. The predicate is still in the WHERE clause rather than applied
+ * after the read, so there is no code path that materialises a request against
+ * somebody else's book at all.
  */
 
 export type RequestListRow = {
@@ -34,6 +55,17 @@ export type RequestListRow = {
   attachmentCount: number;
   lastEventAction: string | null;
   lastEventAt: Date | null;
+  /** Whose book the request concerns — the rep's code, even when a manager raised it. */
+  smId: string;
+  /** That rep's name off the roster, for the manager screens. Null when unrostered. */
+  smName: string | null;
+  /** Who raised it. Compared against the viewer to tell "mine" from "my manager's". */
+  submittedBy: string;
+  submitterName: string | null;
+  /** The rung it is sitting on now, null once it is decided. */
+  currentStageKey: string | null;
+  currentStageSequence: number;
+  totalStages: number;
 };
 
 export type RequestEvent = {
@@ -60,6 +92,8 @@ export type RequestDetail = {
   request: typeof correctionRequest.$inferSelect;
   events: RequestEvent[];
   attachments: RequestAttachment[];
+  /** Who raised it, so a rep reading a manager-raised request is told plainly. */
+  submitterName: string | null;
 };
 
 /**
@@ -75,30 +109,70 @@ export function isOpenRequest(status: string): boolean {
   return (OPEN_REQUEST_STATUSES as readonly string[]).includes(status);
 }
 
+/**
+ * The one definition of "a request this actor may read".
+ *
+ * Every read in this module goes through it, so widening or narrowing visibility
+ * is a single edit rather than four that have to agree. Writes do NOT use it —
+ * see `loadOwnRequest` in service.ts.
+ */
+export function visibleRequestCondition(actor: SessionUser): SQL {
+  const raisedByMe = eq(correctionRequest.submittedBy, actor.id);
+  // Only a rep gets the second arm. A manager's `smId` is null and an admin's is
+  // meaningless here, so anything else stays on the submitter key exactly as
+  // before — this cannot become a back door into somebody else's queue.
+  if (actor.role !== 'sales' || !actor.smId) return raisedByMe;
+  return or(raisedByMe, eq(correctionRequest.smId, actor.smId)) as SQL;
+}
+
 export async function listMyRequests(
   actor: SessionUser,
   options: { offset: number; limit: number; status?: string },
 ): Promise<{ rows: RequestListRow[]; total: number }> {
+  const visible = visibleRequestCondition(actor);
   const where = options.status
     ? and(
-        eq(correctionRequest.submittedBy, actor.id),
+        visible,
         eq(
           correctionRequest.status,
           options.status as (typeof correctionRequest.$inferSelect)['status'],
         ),
       )
-    : eq(correctionRequest.submittedBy, actor.id);
+    : visible;
 
   const [totals] = await db.select({ value: count() }).from(correctionRequest).where(where);
 
-  const requests = await db
-    .select()
+  /**
+   * Three left joins, none of which can multiply a row.
+   *
+   * `user` is the submitter's own row, `manpower.sm_id` is unique, and the
+   * partial index behind `correction_request_stage` allows one ACTIVE rung per
+   * request. Doing it here rather than in a second pass keeps the list one round
+   * trip, which is what it was before the columns were added.
+   */
+  const rows = await db
+    .select({
+      request: correctionRequest,
+      submitterName: user.name,
+      smName: manpower.smName,
+      currentStageKey: correctionRequestStage.stageKey,
+    })
     .from(correctionRequest)
+    .leftJoin(user, eq(user.id, correctionRequest.submittedBy))
+    .leftJoin(manpower, eq(manpower.smId, correctionRequest.smId))
+    .leftJoin(
+      correctionRequestStage,
+      and(
+        eq(correctionRequestStage.requestId, correctionRequest.id),
+        eq(correctionRequestStage.status, 'ACTIVE'),
+      ),
+    )
     .where(where)
     .orderBy(desc(correctionRequest.submittedAt))
     .limit(options.limit)
     .offset(options.offset);
 
+  const requests = rows.map((r) => r.request);
   const ids = requests.map((r) => r.id);
   const [attachmentCounts, latestEvents] = await Promise.all([
     countAttachmentsFor(ids),
@@ -107,7 +181,7 @@ export async function listMyRequests(
 
   return {
     total: totals?.value ?? 0,
-    rows: requests.map((r) => {
+    rows: rows.map(({ request: r, submitterName, smName, currentStageKey }) => {
       const latest = latestEvents.get(r.id) ?? null;
       return {
         id: r.id,
@@ -124,6 +198,13 @@ export async function listMyRequests(
         attachmentCount: attachmentCounts.get(r.id) ?? 0,
         lastEventAction: latest?.action ?? null,
         lastEventAt: latest?.createdAt ?? null,
+        smId: r.smId,
+        smName,
+        submittedBy: r.submittedBy,
+        submitterName,
+        currentStageKey,
+        currentStageSequence: r.currentStageSequence,
+        totalStages: r.totalStages,
       };
     }),
   };
@@ -135,13 +216,15 @@ export async function getMyRequest(
 ): Promise<RequestDetail | null> {
   if (!/^[0-9a-fA-F-]{36}$/.test(requestId)) return null;
 
-  const [request] = await db
-    .select()
+  const [row] = await db
+    .select({ request: correctionRequest, submitterName: user.name })
     .from(correctionRequest)
-    .where(and(eq(correctionRequest.id, requestId), eq(correctionRequest.submittedBy, actor.id)))
+    .leftJoin(user, eq(user.id, correctionRequest.submittedBy))
+    .where(and(eq(correctionRequest.id, requestId), visibleRequestCondition(actor)))
     .limit(1);
 
-  if (!request) return null;
+  if (!row) return null;
+  const request = row.request;
 
   const [events, attachments] = await Promise.all([
     db
@@ -158,6 +241,7 @@ export async function getMyRequest(
 
   return {
     request,
+    submitterName: row.submitterName,
     events: events.map((e) => ({
       id: e.id,
       action: e.action,
@@ -250,6 +334,20 @@ export type CounterpartyRow = {
  * question is "does this reassignment touch my book", and a book belongs to an
  * SM_ID, not to a person. The `submitted_by` clause is an exclusion, not the
  * scope.
+ *
+ * ## Why `sm_id <> actor.smId` joined it
+ *
+ * `visibleRequestCondition` now also matches `sm_id = actor.smId`, so a mapping
+ * request raised for this rep BY THEIR MANAGER satisfies both this query and
+ * "My requests" — and the rep would read their own claim twice, once as theirs
+ * and once as something being done to them. `submitted_by <> actor.id` no
+ * longer covers that case on its own, because the submitter is the manager.
+ *
+ * Excluding on the same column the other query includes on is what keeps the two
+ * lists disjoint by construction. A row where this rep's code is on the OTHER
+ * side is untouched: for a CLAIM_IN `sm_id` is the claimant's, for a
+ * TRANSFER_OUT it is the current holder's, so the counterparty is never the one
+ * named by `sm_id`.
  */
 export async function listCounterpartyRequests(actor: SessionUser): Promise<CounterpartyRow[]> {
   // Same reasoning as `scopedRecordCondition`: a sales account with no SM_ID is
@@ -280,6 +378,9 @@ export async function listCounterpartyRequests(actor: SessionUser): Promise<Coun
         eq(correctionRequest.category, 'MAPPING'),
         inArray(correctionRequest.status, [...COUNTERPARTY_STATUSES]),
         ne(correctionRequest.submittedBy, actor.id),
+        // …and not one raised for this rep's own book by their manager, which
+        // "My requests" above now shows. See the docblock.
+        ne(correctionRequest.smId, smId),
         // Either side. A rep can be the one losing the sale or the one gaining
         // it, and which of the two is a property of the row, not of the query.
         or(eq(salesRecord.smId, smId), eq(correctionRequest.proposedValue, smId)),
@@ -317,7 +418,7 @@ export async function countMyRequestsByStatus(
   const rows = await db
     .select({ status: correctionRequest.status, value: count() })
     .from(correctionRequest)
-    .where(eq(correctionRequest.submittedBy, actor.id))
+    .where(visibleRequestCondition(actor))
     .groupBy(correctionRequest.status);
 
   const out: Record<string, number> = {};

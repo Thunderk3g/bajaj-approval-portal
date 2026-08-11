@@ -10,6 +10,7 @@ import {
   findSalesUserBySmId,
   notifyMany,
   recordLink,
+  requestRecipients,
   type NotificationInput,
 } from '@/lib/notifications/service';
 import { CATEGORY_FIELDS, FIELD_BY_KEY, fieldLabel } from '@/lib/fields';
@@ -385,25 +386,36 @@ export async function applyCorrectionToRecord(
   };
 }
 
-/** Sends the submitter's own decision notice unless a mapping notice covers it. */
+/**
+ * Sends the decision notice to whoever raised it AND to the rep whose book it
+ * is, unless a mapping notice already covers that person.
+ *
+ * The Map keyed on userId is what makes "one row per person per event" true
+ * regardless of how many of these overlap: a rep who raised their own mapping
+ * transfer is the submitter, the owner and the losing party, and still gets
+ * exactly one notification. `requestRecipients` collapses the first two, the Map
+ * collapses the third.
+ */
 export async function notifySubmitterOfApproval(
   tx: DbTransaction,
-  request: { id: string; appsNo: string; submittedBy: string },
+  request: { id: string; appsNo: string; submittedBy: string; smId: string },
   applied: RecordApplication,
   remarks: string | null,
 ): Promise<void> {
   const { notifications } = applied;
 
-  // The submitter's decision notice is skipped when a MAPPING_* row already
-  // reached them: both link to the same reassignment and the mapping wording is
-  // strictly more informative, so sending both is noise, not redundancy.
-  if (!notifications.has(request.submittedBy)) {
-    notifications.set(request.submittedBy, {
-      userId: request.submittedBy,
+  // The decision notice is skipped for anyone a MAPPING_* row already reached:
+  // both link to the same reassignment and the mapping wording is strictly more
+  // informative, so sending both is noise, not redundancy.
+  for (const recipient of await requestRecipients(request, tx)) {
+    if (notifications.has(recipient.userId)) continue;
+
+    notifications.set(recipient.userId, {
+      userId: recipient.userId,
       type: 'CORRECTION_APPROVED',
       title: `Correction approved — ${request.appsNo}`,
       body: `${applied.label} is now "${applied.newValue ?? '(empty)'}".${remarks ? ` Approver: ${remarks}` : ''}`,
-      link: `/sales/requests/${request.id}`,
+      link: recipient.link,
     });
   }
 
