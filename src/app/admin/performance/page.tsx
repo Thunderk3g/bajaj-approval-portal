@@ -20,6 +20,9 @@ export default async function AdminPerformancePage({
       params={await searchParams}
       basePath="/admin/performance"
       rungs={['sm', 'tl', 'acm']}
+      // The rep and team-leader rungs drill in; the area-manager rung has no
+      // matching record filter, so those rows stay plain text.
+      recordsBasePath="/admin/records"
       title="Performance"
       description="Issuance, refusal and share of logins, across everything imported. Switch the rung to read the same figures by rep, by team leader or by area manager."
       totalsLabel="Every record imported"

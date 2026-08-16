@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { manpower, manpowerOverride } from '@/db/schema';
 import type { DbTransaction } from '@/lib/audit/log';
+import { isPlaceholderCode } from '@/lib/roster/placeholders';
 import type { ChainKey, StageDraft } from './chains';
 
 /**
@@ -94,7 +95,19 @@ export async function mappingShapeFor(
   submitterSmId: string,
   counterpartySmId: string | null,
 ): Promise<MappingShape> {
-  if (!counterpartySmId) return 'DIY';
+  // A bucket code is not a person, and it is the ONE case the roster answers
+  // "yes" to. The Manpower sheet names each bucket at all three rungs — the live
+  // row is `{sm_id:'DIY', tl_id:'DIY', ccm_id:'DIY'}` — so `placementOf` returns
+  // a placement with a truthy `tl_id` and the test below reads it as a real team
+  // on the other side. Every actual DIY claim therefore classified as
+  // BETWEEN_TEAMS, whose fourth rung resolves ACM_OF_SM for the code `DIY`,
+  // finds no account and falls to the administrators: the MAPPING_DIY chain
+  // could never fire for the records it exists for.
+  //
+  // Refused HERE rather than after the lookup so submission and any chain
+  // preview classify through one line, and so the roster round trip is skipped
+  // for a code whose answer is already known.
+  if (!counterpartySmId || isPlaceholderCode(counterpartySmId)) return 'DIY';
 
   const counterparty = await placementOf(tx, counterpartySmId);
 

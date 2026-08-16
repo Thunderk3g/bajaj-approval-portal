@@ -88,11 +88,26 @@ export type CorrectionStatus = (typeof CORRECTION_STATUSES)[number];
  */
 const SM_ID_FILTER_ROLES: readonly Role[] = ['admin', 'tl', 'acm'];
 
+/**
+ * Roles allowed to narrow the grid to one team.
+ *
+ * The same reasoning as `SM_ID_FILTER_ROLES`, one rung up: only somebody whose
+ * scope spans several TEAMS can ask "just this team", and it is only safe for
+ * somebody `recordWhere` already bounds. An ACM qualifies on both counts. A TL
+ * does not qualify on the first — they lead exactly one team, so filtering their
+ * own grid by team leader is either a no-op or an empty list, and offering it
+ * would suggest they can reach a team they cannot. A sales user is excluded for
+ * the same reason they are excluded from `smId`.
+ */
+const TL_ID_FILTER_ROLES: readonly Role[] = ['admin', 'acm'];
+
 export type RecordFilters = {
   q: string | null;
   batchId: string | null;
   /** Admin, TL and ACM only. Null for every other role — see `parseRecordFilters`. */
   smId: string | null;
+  /** Admin and ACM only — the team leader drill-down. Null for everyone else. */
+  tlId: string | null;
   status: string | null;
   issuedFrom: string | null;
   issuedTo: string | null;
@@ -107,6 +122,7 @@ export const EMPTY_FILTERS: RecordFilters = Object.freeze({
   q: null,
   batchId: null,
   smId: null,
+  tlId: null,
   status: null,
   issuedFrom: null,
   issuedTo: null,
@@ -143,6 +159,7 @@ const SCHEMA = {
   q: text(120),
   batchId: uuid,
   smId: text(64),
+  tlId: text(64),
   status: text(64),
   issuedFrom: isoDate,
   issuedTo: isoDate,
@@ -172,6 +189,7 @@ export function parseRecordFilters(
 
   const status = read(SCHEMA.status, 'status');
   const smId = SM_ID_FILTER_ROLES.includes(viewer.role) ? read(SCHEMA.smId, 'smId') : null;
+  const tlId = TL_ID_FILTER_ROLES.includes(viewer.role) ? read(SCHEMA.tlId, 'tlId') : null;
 
   return {
     q: read(SCHEMA.q, 'q'),
@@ -179,6 +197,9 @@ export function parseRecordFilters(
     // Uppercased to match the CHECK constraint on sales_record.sm_id: a
     // lowercase filter value would silently match nothing at all.
     smId: smId ? smId.toUpperCase() : null,
+    // Same reason: the roster stores tl_id uppercase, and `teamSmIds` compares
+    // it verbatim — a lowercase code would resolve to an empty team.
+    tlId: tlId ? tlId.toUpperCase() : null,
     status: status ? status.toUpperCase() : null,
     issuedFrom: read(SCHEMA.issuedFrom, 'issuedFrom'),
     issuedTo: read(SCHEMA.issuedTo, 'issuedTo'),
@@ -196,6 +217,7 @@ export function hasActiveFilters(filters: RecordFilters): boolean {
     filters.q !== null ||
     filters.batchId !== null ||
     filters.smId !== null ||
+    filters.tlId !== null ||
     filters.status !== null ||
     filters.issuedFrom !== null ||
     filters.issuedTo !== null ||
@@ -211,6 +233,7 @@ export function filterFormValues(filters: RecordFilters): Record<string, string>
     q: filters.q ?? '',
     batchId: filters.batchId ?? '',
     smId: filters.smId ?? '',
+    tlId: filters.tlId ?? '',
     status: filters.status ?? '',
     issuedFrom: filters.issuedFrom ?? '',
     issuedTo: filters.issuedTo ?? '',
@@ -226,6 +249,7 @@ export const FILTER_KEYS = [
   'q',
   'batchId',
   'smId',
+  'tlId',
   'status',
   'issuedFrom',
   'issuedTo',

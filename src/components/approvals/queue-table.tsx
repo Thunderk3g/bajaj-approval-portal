@@ -29,21 +29,37 @@ function AgeBadge({ days }: { days: number }) {
  * every future column had to be added twice, and the two would drift the first
  * time somebody forgot.
  *
- * `homeStatus` is the second difference, and it is not structural but semantic:
- * the two queues work on different statuses. It defaults to the approver's,
- * matching `basePath`, so the pair cannot be half-configured by a caller that
- * sets one and forgets the other.
+ * `decidable` is the second difference, and it is not structural but semantic:
+ * it says whether the rows on THIS page are ones the viewer may act on.
+ *
+ * It used to be `homeStatus`, a status compared per row — the approver's queue
+ * checkboxed VERIFIED rows and the verifier's checkboxed PENDING ones. That
+ * stopped being true when a chain could hold more than two rungs: VERIFIED is
+ * now set after any non-final rung passes, so it also covers requests sitting
+ * with two managers and a second verifier, and a status could no longer answer
+ * "may this person act on this row". Whether a row is actionable is a fact about
+ * the QUERY that produced it — the `MINE` scope selects on the open stage — so
+ * the flag belongs at the page level, where it is asked once instead of guessed
+ * per row.
  */
 export function QueueTable({
   rows,
   basePath = '/approver',
   homeStatus = APPROVABLE_STATUS,
   selectable = false,
+  decidable = false,
 }: {
   rows: QueueRow[];
   basePath?: string;
   /** The status this queue exists to work on — chips are suppressed for it. */
   homeStatus?: string;
+  /**
+   * True when every row on this page is at the viewer's own step, which is what
+   * the `MINE` scope guarantees and what no other scope does. Off by default so
+   * a caller that forgets it gets a read-only table rather than checkboxes on
+   * rows the engine will refuse.
+   */
+  decidable?: boolean;
   /**
    * Renders the batch-selection column. Off by default, so the table is
    * unchanged anywhere it is read rather than worked.
@@ -88,17 +104,17 @@ export function QueueTable({
         {rows.map((r) => (
           <tr key={r.id} className="hover:bg-slate-50">
             {/*
-              A checkbox only on rows this queue can actually act on.
+              A checkbox only where the page as a whole is actionable.
 
-              In the OPEN scope the list mixes all three open statuses, and a
-              batch of them would come back mostly failed — an approver
-              selecting a PENDING row is asking for a decision the verifier gate
-              refuses. An absent checkbox says that before the click rather than
-              after it, and it says it in the same place the status chip does.
+              Any scope other than `MINE` deliberately mixes rungs, and a batch
+              drawn from one would come back mostly refused — selecting a row
+              parked with somebody else's step is asking for a decision the
+              engine declines. An absent checkbox says that before the click
+              rather than after it.
             */}
             {selectable ? (
               <Td>
-                {r.status === homeStatus ? (
+                {decidable ? (
                   <input
                     type="checkbox"
                     name="requestIds"

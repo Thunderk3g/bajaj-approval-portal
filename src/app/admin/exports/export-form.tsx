@@ -3,6 +3,7 @@
 import { useActionState } from 'react';
 import { useFormStatus } from 'react-dom';
 import { generateExportAction } from '@/lib/export/actions';
+import { formatDate } from '@/lib/format';
 import { Alert, Button, Card, Field, Input, Select } from '@/components/ui';
 import type { ActionResult } from '@/lib/result';
 import type { GeneratedExport } from '@/lib/export/service';
@@ -66,9 +67,7 @@ export function ExportForm({
               {batches.map((batch) => (
                 <option key={batch.id} value={batch.id}>
                   {batch.name}
-                  {batch.committedAt
-                    ? ` — ${new Date(batch.committedAt).toISOString().slice(0, 10)}`
-                    : ''}
+                  {batch.committedAt ? ` — ${formatDate(batch.committedAt)}` : ''}
                 </option>
               ))}
             </Select>

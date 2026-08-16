@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { requireRoleOrRedirect } from '@/lib/auth/page';
-import { loadHierarchyTree, loadUnplacedReps } from '@/lib/hierarchy/actions';
+import { loadHierarchyTree, loadUnplacedReps } from '@/lib/hierarchy/queries';
 import { listHierarchyGaps } from '@/lib/hierarchy/queries';
 import { Alert, Badge, Card, LinkButton, PageHeader, Table, Td, Th } from '@/components/ui';
 import { PeopleTabs } from '@/components/admin/people-tabs';
@@ -35,7 +35,14 @@ export default async function HierarchyPage() {
     listHierarchyGaps(),
   ]);
 
-  const unprovisioned = gaps.filter((gap) => gap.kind !== 'SM_UNPLACED');
+  // Named explicitly rather than as "everything that is not SM_UNPLACED": this
+  // card is about missing ACCOUNTS, and a third gap kind added later would
+  // otherwise be rendered here under a heading that does not describe it.
+  const unprovisioned = gaps.filter(
+    (gap) => gap.kind === 'TL_UNPROVISIONED' || gap.kind === 'ACM_UNPROVISIONED',
+  );
+
+  const mismatched = gaps.filter((gap) => gap.kind === 'TEAM_ACM_MISMATCH');
 
   // Reps who still carry a reporting line but have fallen off the latest sheet.
   // The tree excludes them, so without this count they vanish from the screen
@@ -91,6 +98,21 @@ export default async function HierarchyPage() {
             </tbody>
           </Table>
         </Card>
+      ) : null}
+
+      {mismatched.length > 0 ? (
+        <Alert tone="warning" title="Reps whose two reporting lines disagree">
+          <p className="mb-1.5">
+            {mismatched.length} rep{mismatched.length === 1 ? '' : 's'} name a team leader who
+            reports to a different area manager than the rep&apos;s own row does. Both managers can
+            see their policies — a rep is never hidden by this — but the same business counts in two
+            clusters until one of the two columns is corrected on the Manpower sheet, or by moving
+            the rep on the tree below.
+          </p>
+          <p className="font-mono text-[12px]">
+            {mismatched.map((gap) => `${gap.code}${gap.name ? ` (${gap.name})` : ''}`).join(' · ')}
+          </p>
+        </Alert>
       ) : null}
 
       {orphaned > 0 ? (

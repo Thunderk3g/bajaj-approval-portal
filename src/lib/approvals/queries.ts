@@ -13,6 +13,9 @@ import {
 } from '@/db/schema';
 import { ageInDays } from '@/lib/format';
 import { pageCount } from '@/lib/pagination';
+import { scopedRecordCondition, type SessionUser } from '@/lib/auth/rbac';
+import { likePattern } from '@/lib/records/query';
+import { actorStageCondition } from '@/lib/workflows/engine';
 import {
   HISTORY_ACTIONS,
   OPEN_QUEUE_STATUSES,
@@ -23,10 +26,17 @@ import {
 /**
  * Approver reads — spec sections 9 and 9.1.
  *
- * No SM_ID scoping appears anywhere in this file, and that is deliberate rather
- * than an omission: `scopedRecordCondition` already returns `undefined` for the
- * approver role (spec 4.1), and an approver who could only see part of the queue
- * would leave the rest unreviewable by anyone.
+ * The queue and history are unscoped, and that is deliberate rather than an
+ * omission: `scopedRecordCondition` already returns `undefined` for the approver
+ * role (spec 4.1), and an approver who could only see part of the queue would
+ * leave the rest unreviewable by anyone.
+ *
+ * `getRequestDetail` is NOT in that category and takes a viewer, because it grew
+ * two callers the rest of this file was never written for — the TL and ACM
+ * request screens. Those roles are scoped, and reading a request by id alone
+ * handed either of them any request in the company: client name, policy number,
+ * premium, both mapping counterparties, the record's whole version history and
+ * every remark on it. See the note above the function.
  */
 
 const submitter = alias(user, 'submitter');
@@ -42,7 +52,10 @@ const attachmentCount = sql<number>`(
 
 function searchCondition(q: string | undefined): SQL | undefined {
   if (!q) return undefined;
-  const pattern = `%${q}%`;
+  // Escaped, not interpolated: an unescaped `%` or `_` from the search box is a
+  // wildcard, so searching for `100%` matched every row. `likePattern` is the
+  // record grid's escaper and is shared rather than restated.
+  const pattern = likePattern(q);
   return or(
     ilike(correctionRequest.appsNo, pattern),
     ilike(correctionRequest.smId, pattern),
@@ -88,12 +101,21 @@ export type Page<T> = {
 export async function listQueue(
   filters: QueueFilters,
   page: { page: number; pageSize: number; offset: number },
+  // `viewer`, not `actor`: this module binds `actor` to a `user` table alias
+  // used by the history query, and a parameter of that name shadows it.
+  viewer: { id: string; role: string },
 ): Promise<Page<QueueRow>> {
-  const statuses =
-    filters.scope === 'OPEN' ? OPEN_QUEUE_STATUSES : ([filters.scope] as const);
+  // `MINE` reads the stage table, every other scope reads the status column.
+  // See QUEUE_SCOPES for why those stopped being the same question.
+  const scopeCondition =
+    filters.scope === 'MINE'
+      ? actorStageCondition(viewer)
+      : inArray(correctionRequest.status, [
+          ...(filters.scope === 'OPEN' ? OPEN_QUEUE_STATUSES : ([filters.scope] as const)),
+        ]);
 
   const where = and(
-    inArray(correctionRequest.status, [...statuses]),
+    scopeCondition,
     filters.category ? eq(correctionRequest.category, filters.category) : undefined,
     searchCondition(filters.q),
   );
@@ -165,32 +187,43 @@ export async function listQueue(
  * verification: the rep has been waiting since they submitted, and an SLA that
  * restarted at each stage would report a three-week-old request as one day old.
  */
-export async function queueCounts(): Promise<{
+export async function queueCounts(viewer: { id: string; role: string }): Promise<{
   awaitingDecision: number;
   awaitingVerification: number;
   returned: number;
   oldestDays: number;
 }> {
-  const rows = await db
-    .select({
-      status: correctionRequest.status,
-      total: sql<number>`count(*)::int`,
-      oldest: sql<Date | null>`min(${correctionRequest.submittedAt})`.mapWith(
-        correctionRequest.submittedAt,
-      ),
-    })
-    .from(correctionRequest)
-    .where(inArray(correctionRequest.status, [...OPEN_QUEUE_STATUSES]))
-    .groupBy(correctionRequest.status);
+  const [rows, [mine]] = await Promise.all([
+    db
+      .select({
+        status: correctionRequest.status,
+        total: sql<number>`count(*)::int`,
+      })
+      .from(correctionRequest)
+      .where(inArray(correctionRequest.status, [...OPEN_QUEUE_STATUSES]))
+      .groupBy(correctionRequest.status),
+    // "Awaiting MY decision" now means exactly that. Counted off the stage table
+    // rather than off `status = 'VERIFIED'`, which since the N-stage engine also
+    // covers requests parked with two managers and a second verifier — work the
+    // approver was being shown, invited to act on, and then refused.
+    db
+      .select({
+        total: sql<number>`count(*)::int`,
+        oldest: sql<Date | null>`min(${correctionRequest.submittedAt})`.mapWith(
+          correctionRequest.submittedAt,
+        ),
+      })
+      .from(correctionRequest)
+      .where(actorStageCondition(viewer)),
+  ]);
 
   const of = (status: string) => rows.find((r) => r.status === status);
-  const verified = of('VERIFIED');
 
   return {
-    awaitingDecision: verified?.total ?? 0,
+    awaitingDecision: mine?.total ?? 0,
     awaitingVerification: of('PENDING')?.total ?? 0,
     returned: of('RETURNED')?.total ?? 0,
-    oldestDays: verified?.oldest ? ageInDays(verified.oldest) : 0,
+    oldestDays: mine?.oldest ? ageInDays(mine.oldest) : 0,
   };
 }
 
@@ -237,8 +270,8 @@ export async function listHistory(
     filters.to ? lte(correctionEvent.createdAt, new Date(`${filters.to}T23:59:59.999Z`)) : undefined,
     filters.q
       ? or(
-          ilike(correctionRequest.appsNo, `%${filters.q}%`),
-          ilike(correctionRequest.smId, `%${filters.q}%`),
+          ilike(correctionRequest.appsNo, likePattern(filters.q)),
+          ilike(correctionRequest.smId, likePattern(filters.q)),
         )
       : undefined,
   );
@@ -302,7 +335,31 @@ export type MappingContext = {
 
 export type RequestDetail = NonNullable<Awaited<ReturnType<typeof getRequestDetail>>>;
 
-export async function getRequestDetail(requestId: string) {
+/**
+ * One request, in full, for whoever is entitled to read it.
+ *
+ * The viewer argument is required rather than optional, and that is the fix
+ * itself. This function was written for the approver and verifier screens, both
+ * of which read globally, so it selected by id alone. The TL and ACM request
+ * screens were later added as callers — and those roles are scoped. A team
+ * leader who followed a notification link, or simply changed the UUID in the
+ * address bar, was served any request in the company: the customer's name and
+ * policy number, the premium, both sides of a mapping claim, the record's entire
+ * version history and every remark anyone had written on it. Only the decision
+ * form was gated; the reading was not.
+ *
+ * An optional parameter would have left the same hole open by default for the
+ * next caller. Required means a new screen cannot be written without answering
+ * "on whose behalf", which is the only question that matters here.
+ *
+ * `scopedRecordCondition` composes straight into the WHERE because the query
+ * already inner-joins `sales_record`: it is `undefined` for the three global
+ * roles, so their behaviour is unchanged, and an `sm_id IN (…)` predicate for
+ * everyone else. Out-of-scope returns null, which every caller renders as
+ * `notFound()` — deliberately indistinguishable from a request that does not
+ * exist, the same rule `getRecord` follows.
+ */
+export async function getRequestDetail(viewer: SessionUser, requestId: string) {
   const [row] = await db
     .select({
       request: correctionRequest,
@@ -327,7 +384,7 @@ export async function getRequestDetail(requestId: string) {
     .leftJoin(reviewer, eq(reviewer.id, correctionRequest.reviewedBy))
     .leftJoin(checker, eq(checker.id, correctionRequest.verifiedBy))
     .leftJoin(period, eq(period.id, correctionRequest.periodId))
-    .where(eq(correctionRequest.id, requestId))
+    .where(and(eq(correctionRequest.id, requestId), scopedRecordCondition(viewer)))
     .limit(1);
 
   if (!row) return null;

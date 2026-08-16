@@ -11,6 +11,7 @@ import { getMyRequest } from '@/lib/corrections/queries';
 import { requireSalesActor } from '@/lib/corrections/session';
 import { formatDateTime, orDash } from '@/lib/format';
 import { ACCEPT_ATTRIBUTE, MAX_PROOFS_PER_REQUEST } from '@/lib/storage/files';
+import { ChainProgress } from '@/components/approvals/chain-progress';
 import { ResubmitForm, WithdrawButton } from '@/components/corrections/request-actions';
 import { ProofList, RequestTimeline } from '@/components/corrections/request-detail-parts';
 import { Alert, Badge, Card, StatusBadge } from '@/components/ui';
@@ -130,8 +131,19 @@ export default async function RequestDetailPage({
             />
           ) : null}
 
+          {/*
+            The rung it is sitting on, for the person waiting on it.
+
+            The reviewers have had this since the chain became configurable; the
+            rep, who is the only one with nothing to do but wait, could see the
+            timeline and not who was holding it. Access is already settled —
+            `getMyRequest` returned above or this page did not render — so the
+            component's own read is scoped by the id it is given.
+          */}
+          <ChainProgress requestId={request.id} />
+
           <Card
-            title="Where it has got to"
+            title="Timeline"
             description="Every step this request has been through, and what was said at each."
           >
             <RequestTimeline events={events} />

@@ -159,3 +159,57 @@ export async function listCorrections(
     .limit(page.limit)
     .offset(page.offset);
 }
+
+/* ------------------------------------------------- steps waiting on an admin */
+
+export type StuckStage = {
+  requestId: string;
+  appsNo: string;
+  smId: string;
+  stageKey: string;
+  resolverKey: string;
+  sequence: number;
+  totalStages: number;
+  submittedAt: Date;
+};
+
+/**
+ * The rungs that resolved to nobody and are therefore the administrators' to clear.
+ *
+ * The engine's documented behaviour when a hierarchy rung cannot be resolved —
+ * the roster places the rep under no team leader, or names a manager who has no
+ * portal account — is to open the rung anyway, pin nobody to it, notify the
+ * administrators and let only them decide it. Every part of that worked except
+ * the last: there was no list, and the notification linked to a route that did
+ * not exist, so "the step falls to the administrators" meant in practice that
+ * the request stopped dead and nothing on any screen said so.
+ *
+ * `assigned_user_id is null and resolver_key <> 'ROLE'` is the whole definition,
+ * and it is the same predicate `actorStageCondition` uses for its admin arm —
+ * one fact, asked by the list and by the gate.
+ *
+ * Read-only oversight is this module's rule and this is the documented exception
+ * to it: nobody else can clear these, so an admin screen that only reported them
+ * would report a queue with no way out.
+ */
+export async function listStuckStages(limit = 50): Promise<StuckStage[]> {
+  const rows = await db.execute<StuckStage>(sql`
+    select s.request_id      as "requestId",
+           r.apps_no         as "appsNo",
+           r.sm_id           as "smId",
+           s.stage_key       as "stageKey",
+           s.resolver_key    as "resolverKey",
+           s.sequence        as "sequence",
+           r.total_stages    as "totalStages",
+           r.submitted_at    as "submittedAt"
+      from correction_request_stage s
+      join correction_request r on r.id = s.request_id
+     where s.status = 'ACTIVE'
+       and s.assigned_user_id is null
+       and s.resolver_key <> 'ROLE'
+     order by r.submitted_at asc
+     limit ${limit}
+  `);
+
+  return ((rows as unknown as { rows?: StuckStage[] }).rows ?? (rows as unknown as StuckStage[]));
+}

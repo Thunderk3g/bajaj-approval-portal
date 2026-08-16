@@ -129,11 +129,25 @@ export type BulkOutcome = {
  * since an approver landing on a list they cannot act on would be a queue that
  * lies about its own depth.
  */
-export const QUEUE_SCOPES = ['VERIFIED', 'PENDING', 'RETURNED', 'OPEN'] as const;
+/**
+ * `MINE` supersedes `VERIFIED` as the approver's working scope.
+ *
+ * `VERIFIED` was "awaiting my decision" while every chain was verifier →
+ * approver. It is now set after ANY non-final rung passes, so on the shipped
+ * `MAPPING_BETWEEN_TEAMS` chain (TL → ACM → V2 → ACM → APPROVER) it also covers
+ * requests sitting with two managers and a second verifier — none of which the
+ * approver may decide. The queue counted them, offered the button, and the
+ * engine refused the click. `MINE` asks the stage table, so the list and the
+ * gate agree by construction. `VERIFIED` is kept, relabelled honestly, because
+ * a pile that never shrinks is still how an approver spots a stalled rung above
+ * them.
+ */
+export const QUEUE_SCOPES = ['MINE', 'VERIFIED', 'PENDING', 'RETURNED', 'OPEN'] as const;
 export type QueueScope = (typeof QUEUE_SCOPES)[number];
 
 export const QUEUE_SCOPE_LABELS: Record<QueueScope, string> = {
-  VERIFIED: 'Awaiting my decision',
+  MINE: 'Awaiting my decision',
+  VERIFIED: 'Past the first check — not necessarily yours',
   PENDING: 'Awaiting verification — not yours yet',
   RETURNED: 'Returned — awaiting the submitter',
   OPEN: 'Everything open',
@@ -193,7 +207,7 @@ export type SearchParams = Record<string, string | string[] | undefined>;
 
 export function parseQueueFilters(params: SearchParams) {
   return {
-    scope: pick(params.scope, QUEUE_SCOPES) ?? ('VERIFIED' as QueueScope),
+    scope: pick(params.scope, QUEUE_SCOPES) ?? ('MINE' as QueueScope),
     category: pick(params.category, CORRECTION_CATEGORIES),
     q: one(params.q),
   };

@@ -30,15 +30,15 @@ export default async function VerifierQueuePage({
 }: {
   searchParams: Promise<SearchParams>;
 }) {
-  await requireRoleOrRedirect('verifier');
+  const viewer = await requireRoleOrRedirect('verifier');
 
   const params = await searchParams;
   const filters = parseVerifierQueueFilters(params);
   const page = parsePageParams(params);
 
   const [queue, counts] = await Promise.all([
-    listVerifierQueue(filters, page),
-    verifierQueueCounts(),
+    listVerifierQueue(filters, page, viewer),
+    verifierQueueCounts(viewer),
   ]);
 
   return (
@@ -50,10 +50,11 @@ export default async function VerifierQueuePage({
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
-          label="Awaiting verification"
-          value={counts.pending}
-          tone={counts.pending > 0 ? 'warning' : 'default'}
-          href="/verifier/queue?scope=PENDING"
+          label="At my step"
+          value={counts.mine}
+          hint="Yours to verify now, at any rung of the chain"
+          tone={counts.mine > 0 ? 'warning' : 'default'}
+          href="/verifier/queue?scope=MINE"
         />
         <StatCard
           label="Oldest waiting"
@@ -62,9 +63,9 @@ export default async function VerifierQueuePage({
           tone={counts.oldestDays >= 7 ? 'danger' : 'default'}
         />
         <StatCard
-          label="With approvers"
+          label="Past the first check"
           value={counts.verified}
-          hint="Verified — no longer yours"
+          hint="Somewhere further up the chain — not necessarily with an approver"
           href="/verifier/queue?scope=VERIFIED"
         />
         <StatCard
@@ -120,17 +121,27 @@ export default async function VerifierQueuePage({
         </Button>
       </FilterBar>
 
-      {/* homeStatus, because this table defaults to the approver's. The
-          verifier works on PENDING; without this every row in their own queue
-          would wear a redundant PENDING chip — and, now, would offer a checkbox
-          on rows a verifier has already passed on. */}
+      {/* `homeStatus` still suppresses the redundant PENDING chip on the
+          verifier's own rows. Selection, though, is no longer a status question:
+          the `MINE` scope is the set of rungs this verifier may decide, and on a
+          three-rung chain that includes VERIFIED rows sitting at a second
+          verification step — which the old `status === 'PENDING'` filter left
+          unselectable and, before the queue itself was fixed, unreachable. */}
       <BulkDecisions
         stage="verifier"
-        appsNoById={Object.fromEntries(
-          queue.rows.filter((r) => r.status === 'PENDING').map((r) => [r.id, r.appsNo]),
-        )}
+        appsNoById={
+          filters.scope === 'MINE'
+            ? Object.fromEntries(queue.rows.map((r) => [r.id, r.appsNo]))
+            : {}
+        }
       >
-        <QueueTable rows={queue.rows} basePath="/verifier" homeStatus="PENDING" selectable />
+        <QueueTable
+          rows={queue.rows}
+          basePath="/verifier"
+          homeStatus="PENDING"
+          selectable
+          decidable={filters.scope === 'MINE'}
+        />
       </BulkDecisions>
 
       <Pagination

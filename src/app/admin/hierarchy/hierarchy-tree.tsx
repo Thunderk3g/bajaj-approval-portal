@@ -6,8 +6,8 @@ import {
   clearRepOverrideAction,
   moveRepToTeamAction,
   moveTeamToManagerAction,
-  type TeamNode,
 } from '@/lib/hierarchy/actions';
+import type { TeamNode } from '@/lib/hierarchy/queries';
 import {
   Alert,
   Badge,

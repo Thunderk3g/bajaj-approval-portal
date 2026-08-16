@@ -82,17 +82,64 @@ export const GLOBAL_READ_ROLES: readonly Role[] = ['admin', 'approver', 'verifie
  * while hiding them from the new one. `coalesce` is the same precedence
  * `resolveHierarchy` applies, restated here in SQL because this runs as a
  * subquery inside somebody else's WHERE.
+ *
+ * Three unions, because the roster is FLAT and one column of it is not the whole
+ * tree. Each closes a way a manager was blind to business they answer for:
+ *
+ *   the reps named directly   the original predicate, and the common case.
+ *
+ *   the manager's own code    a working TL or ACM books policies themselves, so
+ *                             their own SM_ID owns records. Usually the sheet also
+ *                             carries a self-row for them and the first union
+ *                             already catches it — but not always: the July
+ *                             workbook has `503576` existing only as three other
+ *                             reps' CCM_ID, with no row of its own. Naming the
+ *                             code directly makes the case that has a self-row and
+ *                             the case that does not behave identically, which is
+ *                             the only way a manager cannot lose their own
+ *                             production to a roster shape they never see.
+ *
+ *   the reps under my TLs     `ccm_id` only. A rep row states its TL and its ACM
+ *                             independently, and the two can disagree: three reps
+ *                             in the July roster name TL `ICCSP82423` while naming
+ *                             a DIFFERENT area manager than that TL's own row
+ *                             does. Under the direct predicate alone the TL's own
+ *                             area manager could not see a single policy of that
+ *                             team — the reported "an ACM cannot see what the team
+ *                             leaders under him issued", exactly.
+ *
+ * The last union deliberately WIDENS rather than picking a winner between the two
+ * disagreeing columns. Code cannot know which of them is the typo, and the cost of
+ * guessing wrong is a manager silently blind to a team; the cost of the union is
+ * that an inconsistent rep counts in two clusters until somebody fixes the sheet.
+ * `listHierarchyGaps` reports that disagreement as `TEAM_ACM_MISMATCH` so it is
+ * fixed in the data rather than papered over here.
  */
 export function teamSmIds(column: 'tl_id' | 'ccm_id', code: string): SQL {
-  const overridden =
-    column === 'tl_id'
-      ? sql`coalesce(o.tl_id, m.tl_id)`
-      : sql`coalesce(o.ccm_id, m.ccm_id)`;
+  if (column === 'tl_id') {
+    return sql`(
+      select m.sm_id from manpower m
+      left join manpower_override o on o.sm_id = m.sm_id
+      where coalesce(o.tl_id, m.tl_id) = ${code}
+      union
+      select ${code}::text
+    )`;
+  }
 
   return sql`(
     select m.sm_id from manpower m
     left join manpower_override o on o.sm_id = m.sm_id
-    where ${overridden} = ${code}
+    where coalesce(o.ccm_id, m.ccm_id) = ${code}
+    union
+    select ${code}::text
+    union
+    select m2.sm_id from manpower m2
+    left join manpower_override o2 on o2.sm_id = m2.sm_id
+    where coalesce(o2.tl_id, m2.tl_id) in (
+      select m3.sm_id from manpower m3
+      left join manpower_override o3 on o3.sm_id = m3.sm_id
+      where coalesce(o3.ccm_id, m3.ccm_id) = ${code}
+    )
   )`;
 }
 

@@ -5,7 +5,18 @@ import { z } from 'zod';
 import { requireSession } from '@/lib/auth/rbac';
 import { AuthzError } from '@/lib/auth/errors';
 import { fail, ok, type ActionResult } from '@/lib/result';
-import { decideStage } from './engine';
+// `.` — the barrel — and never `./engine`, which is where this import used to
+// point. The front door is what runs `import '@/lib/hierarchy/register'`, and
+// that import is the only thing that puts `TL_OF_SM` and `ACM_OF_SM` in the
+// resolver registry. Reaching past it loaded the state machine with an empty
+// registry, so this action — the ONE path a team leader or area manager's
+// decision travels — answered every hierarchy rung with `No resolver is
+// registered for "ACM_OF_SM"`, refused the decision, and left the rung open and
+// annotated as unroutable. Submission worked, because `corrections/service.ts`
+// imports the barrel; nothing could then move past a manager.
+// tests/integration/resolver-registration.test.ts asserts this for every entry
+// point rather than trusting the next importer to notice.
+import { decideStage } from '.';
 import { WorkflowError } from './errors';
 
 /**

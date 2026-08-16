@@ -1,7 +1,11 @@
 import { eq } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { correctionRequest, salesRecord } from '@/db/schema';
-import { decideStage, type DecideStageOutcome } from '@/lib/workflows/engine';
+// The barrel, not `@/lib/workflows/engine` — see the note in decide-action.ts.
+// A verifier clearing rung zero of a mapping chain has to OPEN the TL rung after
+// it, and opening it resolves `TL_OF_SM`, which is registered only by the front
+// door.
+import { decideStage, type DecideStageOutcome } from '@/lib/workflows';
 import { WorkflowError } from '@/lib/workflows/errors';
 import { ApprovalError, type DecisionActor } from '@/lib/approvals/record-apply';
 

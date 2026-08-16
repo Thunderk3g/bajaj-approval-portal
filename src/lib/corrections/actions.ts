@@ -59,6 +59,18 @@ async function readFiles(form: FormData, key = 'files'): Promise<ProofUpload[] |
  */
 const RAISING_ROLES = ['sales', 'tl', 'acm'] as const;
 
+/**
+ * Every list a raise, a resubmit or a withdrawal can change.
+ *
+ * `RAISING_ROLES` above is the reason there is more than one: a team leader and
+ * an area manager raise for their people, and "Requests I raised" is their copy
+ * of the rep's list. Revalidating only `/sales/*`, as this did, left a manager
+ * looking at a cached list that did not contain the request they had just
+ * raised — which reads as the raise having failed. `decide-action.ts`
+ * revalidates both sides for the same reason.
+ */
+const RAISER_LIST_PATHS = ['/sales/requests', '/tl/requests', '/acm/requests'] as const;
+
 export async function submitCorrectionAction(
   form: FormData,
 ): Promise<ActionResult<{ id: string }>> {
@@ -78,7 +90,7 @@ export async function submitCorrectionAction(
   });
 
   if (result.ok) {
-    revalidatePath('/sales/requests');
+    for (const path of RAISER_LIST_PATHS) revalidatePath(path);
     revalidatePath('/sales');
   }
 
@@ -103,8 +115,10 @@ export async function resubmitCorrectionAction(
   });
 
   if (result.ok) {
-    revalidatePath('/sales/requests');
-    revalidatePath(`/sales/requests/${requestId}`);
+    for (const path of RAISER_LIST_PATHS) {
+      revalidatePath(path);
+      revalidatePath(`${path}/${requestId}`);
+    }
   }
 
   return result;
@@ -122,8 +136,10 @@ export async function withdrawCorrectionAction(
   });
 
   if (result.ok) {
-    revalidatePath('/sales/requests');
-    revalidatePath(`/sales/requests/${requestId}`);
+    for (const path of RAISER_LIST_PATHS) {
+      revalidatePath(path);
+      revalidatePath(`${path}/${requestId}`);
+    }
   }
 
   return result;

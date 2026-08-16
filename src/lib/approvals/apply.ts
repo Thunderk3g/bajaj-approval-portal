@@ -1,4 +1,7 @@
-import { decideStage, decideStageWithin, type DecideStageOutcome } from '@/lib/workflows/engine';
+// The barrel, not `@/lib/workflows/engine`: importing the engine directly skips
+// `import '@/lib/hierarchy/register'` and leaves `TL_OF_SM`/`ACM_OF_SM`
+// unregistered on this module graph — see the note in decide-action.ts.
+import { decideStage, decideStageWithin, type DecideStageOutcome } from '@/lib/workflows';
 import { WorkflowError } from '@/lib/workflows/errors';
 import type { DbTransaction } from '@/lib/audit/log';
 import { ApprovalError, type ApprovalErrorCode, type DecisionActor } from './record-apply';

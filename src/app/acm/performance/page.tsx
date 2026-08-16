@@ -23,6 +23,10 @@ export default async function AreaManagerPerformancePage({
       // came for; the rep rung is the same records expanded one level down.
       rungs={['tl', 'sm']}
       rungTabs={{ tl: 'My team leaders', sm: 'Every rep' }}
+      // The drill-down the report was missing: a team leader's row links to that
+      // team's policies, a rep's row to that rep's. The filter is ANDed with this
+      // account's own cluster scope, so the link narrows and never widens.
+      recordsBasePath="/acm/records"
       title="Cluster performance"
       description="Your team leaders side by side, expandable to every rep beneath them. Login share is each row's share of your cluster's logins, not of the company's."
       totalsLabel="My cluster"

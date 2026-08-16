@@ -3,7 +3,8 @@ import { requireRole } from '@/lib/auth/rbac';
 import { Alert, Badge, Card, DetailRow, StatusBadge } from '@/components/ui';
 import { ageInDays, formatDateTime, orDash } from '@/lib/format';
 import { getRequestDetail } from '@/lib/approvals/queries';
-import { APPROVABLE_STATUS, previewTarget } from '@/lib/approvals/apply';
+import { previewTarget } from '@/lib/approvals/apply';
+import { openStageFor } from '@/lib/workflows/engine';
 import { DecisionForm } from '@/components/approvals/decision-form';
 import { ChainProgress } from '@/components/approvals/chain-progress';
 import {
@@ -34,34 +35,34 @@ export default async function RequestDecisionPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  await requireRole('approver');
+  const viewer = await requireRole('approver');
 
   const { id } = await params;
-  const detail = await getRequestDetail(id);
+  const detail = await getRequestDetail(viewer, id);
   if (!detail) notFound();
 
   const { request, record, mapping } = detail;
   const preview = previewTarget(request, record);
   const age = ageInDays(request.submittedAt);
 
-  // APPROVABLE_STATUS, not a literal, and specifically not 'PENDING'.
+  // The OPEN RUNG, not the status — the third and final version of this gate.
   //
-  // This read used to be `status === 'PENDING'`, which was correct until the
-  // verifier stage landed and stopped being correct in the same commit. After it,
-  // a request an approver may act on is VERIFIED — `decideWithin` locks on
-  // `WHERE status = APPROVABLE_STATUS` — so the one state where approval is legal
-  // was the one state that rendered "this request cannot be decided again". The
-  // approver had no approve button precisely when the request was ready.
+  // It was `status === 'PENDING'`, which the verifier stage broke; then
+  // `status === APPROVABLE_STATUS` (VERIFIED), which the N-stage engine broke in
+  // the same way, because `advance` now sets VERIFIED after ANY non-final rung.
+  // On `MAPPING_BETWEEN_TEAMS` (TL → ACM → V2 → ACM → APPROVER) a request parked
+  // with a team leader is VERIFIED, so this screen offered the approve button
+  // and the engine refused the click.
   //
-  // Importing the constant rather than swapping one literal for another is the
-  // actual fix: the gate now has a single definition, and a future change to it
-  // moves this screen with it instead of leaving the two to disagree in silence.
-  const isOpen = request.status === APPROVABLE_STATUS;
+  // Asking which rung is open ends the pattern: the button appears exactly when
+  // `assertMayDecide` would allow it, because both now read the stage table.
+  const stage = await openStageFor(request.id, viewer);
+  const isOpen = stage?.isMine ?? false;
 
-  // PENDING is no longer "decided" — it is waiting for the verifier, which is a
-  // different sentence from the one the decided branch prints. Without this the
+  // Open, but at somebody else's rung — work still climbing towards the approver
+  // rather than a request that has been decided. Without the distinction the
   // approver is told a request they will later act on "cannot be decided again".
-  const awaitingVerification = request.status === 'PENDING';
+  const awaitingUpstream = Boolean(stage) && !isOpen;
 
   const caution =
     mapping && !mapping.claimInRoster
@@ -110,10 +111,11 @@ export default async function RequestDecisionPage({
           >
             {isOpen ? (
               <DecisionForm requestId={request.id} caution={caution} />
-            ) : awaitingVerification ? (
+            ) : awaitingUpstream ? (
               <Alert tone="info" title="Not yet with you">
-                A verifier has to check this request against its proof before it can be approved. It
-                will appear in your queue once they do. Nothing is required from you until then.
+                This request is open at the <strong>{stage?.stageKey}</strong> step
+                {stage ? ` (${stage.sequence + 1} of ${request.totalStages})` : ''}. It reaches you
+                once every step before yours has passed it. Nothing is required from you until then.
               </Alert>
             ) : (
               <div className="space-y-3">

@@ -29,12 +29,28 @@ export function formatDate(value: string | Date | null | undefined): string {
   return `${String(d.getUTCDate()).padStart(2, '0')} ${month} ${d.getUTCFullYear()}`;
 }
 
-/** Timestamps render in the viewer's locale; they are true instants, not dates. */
+/**
+ * The one timezone every timestamp in this portal is read in.
+ *
+ * Pinned rather than left to the host. Without it `toLocaleString` renders in
+ * whatever zone the process happens to run in — IST on a developer's laptop,
+ * UTC inside the container — so the same instant reads 5.5 hours apart
+ * depending on where it was rendered, and shifts on redeploy with nothing on
+ * screen to say it moved. The business runs on one clock; so does the display.
+ *
+ * Not the viewer's zone either: an approval timestamp is evidence, quoted
+ * between people on a call, and two people reading the same audit row have to
+ * see the same time.
+ */
+const BUSINESS_TIME_ZONE = 'Asia/Kolkata';
+
+/** Timestamps are true instants, not dates — rendered on the business clock. */
 export function formatDateTime(value: Date | string | null | undefined): string {
   if (!value) return '—';
   const d = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(d.getTime())) return String(value);
   return d.toLocaleString('en-IN', {
+    timeZone: BUSINESS_TIME_ZONE,
     day: '2-digit',
     month: 'short',
     year: 'numeric',

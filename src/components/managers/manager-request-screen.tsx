@@ -1,8 +1,6 @@
 import { notFound } from 'next/navigation';
-import { eq, and } from 'drizzle-orm';
-import { db } from '@/db/client';
-import { correctionRequestStage } from '@/db/schema';
 import type { SessionUser } from '@/lib/auth/rbac';
+import { openStageFor } from '@/lib/workflows/engine';
 import { Alert, Badge, Card, StatusBadge } from '@/components/ui';
 import { ageInDays, formatDateTime, orDash } from '@/lib/format';
 import { getRequestDetail } from '@/lib/approvals/queries';
@@ -37,10 +35,12 @@ export async function ManagerRequestScreen({
   requestId,
 }: {
   user: SessionUser;
-  role: 'tl' | 'acm';
+  role: 'tl' | 'acm' | 'admin';
   requestId: string;
 }) {
-  const detail = await getRequestDetail(requestId);
+  // Scoped by the viewer: a team leader who edits the UUID in the address bar
+  // gets a 404, not another cluster's customer and premium figures.
+  const detail = await getRequestDetail(user, requestId);
   if (!detail) notFound();
 
   const { request, record, mapping } = detail;
@@ -48,21 +48,15 @@ export async function ManagerRequestScreen({
   const drift = await liveValueDrifted(request.id);
   const age = ageInDays(request.submittedAt);
 
-  // The open rung, and whether it is THIS manager's. Read rather than inferred
+  // The open rung, and whether it is THIS person's. Read rather than inferred
   // from the role: a chain can route to two different ACMs, and "an area manager
   // may act" is not the same claim as "you may act".
-  const [active] = await db
-    .select()
-    .from(correctionRequestStage)
-    .where(
-      and(
-        eq(correctionRequestStage.requestId, requestId),
-        eq(correctionRequestStage.status, 'ACTIVE'),
-      ),
-    )
-    .limit(1);
-
-  const isMine = Boolean(active && active.assignedUserId === user.id);
+  //
+  // Through `openStageFor` rather than comparing `assignedUserId` here, so the
+  // administrators' case is covered by the same statement: a rung that resolved
+  // to nobody pins no user, and an admin is the only one allowed to clear it.
+  const active = await openStageFor(requestId, user);
+  const isMine = active?.isMine ?? false;
 
   const cautions: string[] = [];
 
@@ -88,8 +82,8 @@ export async function ManagerRequestScreen({
     <>
       <RequestHero
         appsNo={request.appsNo}
-        backHref={`/${role}/queue`}
-        backLabel="My approvals"
+        backHref={role === 'admin' ? '/admin/corrections' : `/${role}/queue`}
+        backLabel={role === 'admin' ? 'Corrections' : 'My approvals'}
         badges={
           <>
             <CategoryBadge category={request.category} />

@@ -51,6 +51,9 @@ const NAV: Record<Role, readonly NavItem[]> = {
   sales: [
     { href: '/sales', label: 'Dashboard' },
     { href: '/sales/records', label: 'My records' },
+    // Next to the records rather than next to the requests: it is a place to
+    // find business, and raising the claim is what you do after you found it.
+    { href: '/sales/pool', label: 'Unassigned pool' },
     { href: '/sales/leads', label: 'My leads' },
     { href: '/sales/requests', label: 'My requests' },
     { href: '/sales/performance', label: 'My performance' },
@@ -74,8 +77,13 @@ const NAV: Record<Role, readonly NavItem[]> = {
     // queue: that one is work waiting on them, this one is work they started
     // and are waiting on somebody else for.
     { href: '/tl/requests', label: 'Requests I raised' },
+    // "Anywhere under me", as opposed to the queue's "waiting on me". A request
+    // parked two rungs above this manager is invisible in their queue by design
+    // and is exactly what a rep chases them about.
+    { href: '/tl/requests/team', label: 'Open in my team' },
     { href: '/tl/requests/new', label: 'Raise a request' },
     { href: '/tl/records', label: 'Team records' },
+    { href: '/tl/pool', label: 'Unassigned pool' },
     { href: '/tl/team', label: 'My team' },
     { href: '/tl/performance', label: 'Performance' },
     { href: '/tl/mapping', label: 'Book mapping' },
@@ -84,8 +92,10 @@ const NAV: Record<Role, readonly NavItem[]> = {
     { href: '/acm', label: 'Dashboard' },
     { href: '/acm/queue', label: 'My approvals' },
     { href: '/acm/requests', label: 'Requests I raised' },
+    { href: '/acm/requests/team', label: 'Open in my teams' },
     { href: '/acm/requests/new', label: 'Raise a request' },
     { href: '/acm/records', label: 'Team records' },
+    { href: '/acm/pool', label: 'Unassigned pool' },
     { href: '/acm/team', label: 'My teams' },
     { href: '/acm/performance', label: 'Performance' },
     { href: '/acm/mapping', label: 'Book mapping' },

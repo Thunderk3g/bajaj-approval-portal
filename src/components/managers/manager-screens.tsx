@@ -88,10 +88,25 @@ export async function ManagerDashboard({ user, role }: { user: SessionUser; role
         <StatCard
           label={words.team}
           value={summary.teamSize}
-          hint={`${words.teamOne}s beneath you`}
+          hint={
+            role === 'acm'
+              ? `${summary.teamLeaders} team leader${summary.teamLeaders === 1 ? '' : 's'} · ${summary.teamSize} people`
+              : `${words.teamOne}s beneath you`
+          }
           href={`/${role}/team`}
         />
-        <StatCard label="Open in team" value={summary.openInTeam} hint="Raised and not yet decided" />
+        {/* Was a number with nothing behind it: the one question a manager opens
+            this screen to ask — where is my team's work stuck — had no answer. */}
+        <StatCard
+          label="Open in team"
+          value={summary.openInTeam}
+          hint={
+            summary.openInTeam === 0
+              ? 'Nothing your people raised is in flight'
+              : 'Raised and not yet decided'
+          }
+          href={`/${role}/requests/team`}
+        />
         <StatCard
           label="Without a login"
           value={summary.repsWithoutAccounts}
@@ -101,6 +116,7 @@ export async function ManagerDashboard({ user, role }: { user: SessionUser; role
               : 'Ask an administrator to provision them'
           }
           tone={summary.repsWithoutAccounts > 0 ? 'warning' : 'default'}
+          href={`/${role}/team`}
         />
       </div>
 
@@ -433,26 +449,67 @@ export async function ManagerTeam({ user, role }: { user: SessionUser; role: Rol
             {team.map((member) => (
               <tr key={member.smId} className="hover:bg-slate-50">
                 <Td>
-                  <span className="font-mono font-medium text-slate-900">{member.smId}</span>
+                  {/* The point of the screen is to get from a person to their
+                      book; the code used to be inert text and the manager had to
+                      retype it into the records filter. */}
+                  <Link
+                    href={`/${role}/records?smId=${encodeURIComponent(member.smId)}`}
+                    className="font-mono font-medium text-slate-900 underline underline-offset-2 hover:text-slate-600"
+                  >
+                    {member.smId}
+                  </Link>
                 </Td>
-                <Td>{orDash(member.smName)}</Td>
+                <Td>
+                  {orDash(member.smName)}
+                  {member.isTeamLeader ? (
+                    <span className="ml-2 align-middle">
+                      <Badge tone="info">Team leader</Badge>
+                    </span>
+                  ) : null}
+                </Td>
                 {role === 'acm' ? (
                   <Td>
-                    <span className="font-mono text-xs">{orDash(member.tlId)}</span>
+                    {member.tlId ? (
+                      <>
+                        {/* Name first, code beneath: an area manager knows their
+                            team leaders by name, and a column of bare codes made
+                            them look the team up one at a time. */}
+                        <Link
+                          href={`/acm/records?tlId=${encodeURIComponent(member.tlId)}`}
+                          className="text-slate-900 underline underline-offset-2 hover:text-slate-600"
+                        >
+                          {member.tlName ?? member.tlId}
+                        </Link>
+                        <div className="mt-0.5 font-mono text-xs text-slate-500">{member.tlId}</div>
+                      </>
+                    ) : (
+                      <span className="text-amber-800">On no team</span>
+                    )}
                   </Td>
                 ) : null}
                 <Td>{orDash(member.location)}</Td>
                 <Td className="text-right tabular-nums">{member.recordCount}</Td>
                 <Td className="text-right tabular-nums">
                   {member.openRequests > 0 ? (
-                    <span className="font-medium text-amber-700">{member.openRequests}</span>
+                    <Link
+                      href={`/${role}/requests/team?smId=${encodeURIComponent(member.smId)}`}
+                      className="font-medium text-amber-700 underline underline-offset-2"
+                    >
+                      {member.openRequests}
+                    </Link>
                   ) : (
                     member.openRequests
                   )}
                 </Td>
                 <Td>
-                  {member.hasAccount ? (
+                  {/* Three states, not two. "No account" told a manager to ask for
+                      something that already existed whenever the person had merely
+                      been deactivated — and, before the account lookup matched
+                      manager codes, whenever the person was a team leader. */}
+                  {member.account === 'ACTIVE' ? (
                     <StatusBadge status="ACTIVE" />
+                  ) : member.account === 'INACTIVE' ? (
+                    <Badge tone="neutral">Deactivated</Badge>
                   ) : (
                     <Badge tone="warning">No account</Badge>
                   )}

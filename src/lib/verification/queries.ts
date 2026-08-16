@@ -12,6 +12,7 @@ import {
 import { ageInDays } from '@/lib/format';
 import { pageCount } from '@/lib/pagination';
 import type { Page, QueueRow } from '@/lib/approvals/queries';
+import { actorStageCondition } from '@/lib/workflows/engine';
 import {
   VERIFIER_HISTORY_ACTIONS,
   VERIFIER_OPEN_STATUSES,
@@ -55,12 +56,22 @@ export type VerifierQueueRow = QueueRow & {
 export async function listVerifierQueue(
   filters: VerifierQueueFilters,
   page: { page: number; pageSize: number; offset: number },
+  // `viewer`, not `actor`: this module already binds `actor` to a `user` table
+  // alias used by the history query, and a parameter of that name shadows it.
+  viewer: { id: string; role: string },
 ): Promise<Page<VerifierQueueRow>> {
-  const statuses =
-    filters.scope === 'OPEN' ? VERIFIER_OPEN_STATUSES : ([filters.scope] as const);
+  // `MINE` reads the stage table; every other scope is still a status question.
+  // See the note on VERIFIER_QUEUE_SCOPES for why the two cannot be the same
+  // question once a chain has more than two rungs.
+  const scopeCondition =
+    filters.scope === 'MINE'
+      ? actorStageCondition(viewer)
+      : inArray(correctionRequest.status, [
+          ...(filters.scope === 'OPEN' ? VERIFIER_OPEN_STATUSES : ([filters.scope] as const)),
+        ]);
 
   const where = and(
-    inArray(correctionRequest.status, [...statuses]),
+    scopeCondition,
     filters.category ? eq(correctionRequest.category, filters.category) : undefined,
     searchCondition(filters.q),
   );
@@ -128,32 +139,48 @@ export async function listVerifierQueue(
  * it is the number they handed on, and a figure that keeps climbing is how a
  * verifier notices the approver stage has stalled behind them.
  */
-export async function verifierQueueCounts(): Promise<{
+export async function verifierQueueCounts(viewer: { id: string; role: string }): Promise<{
+  mine: number;
   pending: number;
   verified: number;
   returned: number;
   oldestDays: number;
 }> {
-  const rows = await db
-    .select({
-      status: correctionRequest.status,
-      total: sql<number>`count(*)::int`,
-      oldest: sql<Date | null>`min(${correctionRequest.submittedAt})`.mapWith(
-        correctionRequest.submittedAt,
-      ),
-    })
-    .from(correctionRequest)
-    .where(inArray(correctionRequest.status, [...VERIFIER_OPEN_STATUSES]))
-    .groupBy(correctionRequest.status);
+  const [rows, [minePart]] = await Promise.all([
+    db
+      .select({
+        status: correctionRequest.status,
+        total: sql<number>`count(*)::int`,
+        oldest: sql<Date | null>`min(${correctionRequest.submittedAt})`.mapWith(
+          correctionRequest.submittedAt,
+        ),
+      })
+      .from(correctionRequest)
+      .where(inArray(correctionRequest.status, [...VERIFIER_OPEN_STATUSES]))
+      .groupBy(correctionRequest.status),
+    // The headline number, and the only one that survives a chain longer than
+    // two rungs: the requests whose OPEN stage is this verifier's. `oldestDays`
+    // is taken from it rather than from PENDING for the same reason — a request
+    // ageing at a second verification rung was previously reported as nobody's.
+    db
+      .select({
+        total: sql<number>`count(*)::int`,
+        oldest: sql<Date | null>`min(${correctionRequest.submittedAt})`.mapWith(
+          correctionRequest.submittedAt,
+        ),
+      })
+      .from(correctionRequest)
+      .where(actorStageCondition(viewer)),
+  ]);
 
   const of = (status: string) => rows.find((r) => r.status === status);
-  const pending = of('PENDING');
 
   return {
-    pending: pending?.total ?? 0,
+    mine: minePart?.total ?? 0,
+    pending: of('PENDING')?.total ?? 0,
     verified: of('VERIFIED')?.total ?? 0,
     returned: of('RETURNED')?.total ?? 0,
-    oldestDays: pending?.oldest ? ageInDays(pending.oldest) : 0,
+    oldestDays: minePart?.oldest ? ageInDays(minePart.oldest) : 0,
   };
 }
 
@@ -264,11 +291,11 @@ export type VerifierSummary = {
 };
 
 export async function getVerifierSummary(
-  viewerId: string,
+  viewer: { id: string; role: string },
   now: number = Date.now(),
 ): Promise<VerifierSummary> {
   const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
-  const counts = await verifierQueueCounts();
+  const counts = await verifierQueueCounts(viewer);
 
   const [oldest] = await db
     .select({
@@ -281,7 +308,7 @@ export async function getVerifierSummary(
 
   const [week] = await db
     .select({
-      mine: sql<number>`count(*) filter (where ${correctionEvent.actorId} = ${viewerId})::int`,
+      mine: sql<number>`count(*) filter (where ${correctionEvent.actorId} = ${viewer.id})::int`,
       all: sql<number>`count(*)::int`,
     })
     .from(correctionEvent)

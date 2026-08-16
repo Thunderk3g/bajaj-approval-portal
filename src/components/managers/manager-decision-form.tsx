@@ -21,30 +21,51 @@ export function ManagerDecisionForm({
 }: {
   requestId: string;
   stageKey: string;
-  role: 'tl' | 'acm';
+  /**
+   * `admin` is here because a rung that resolves to nobody — no roster
+   * placement, or a manager with no account — is decidable only by an
+   * administrator (`assertMayDecide`), and until now nothing in the product
+   * offered them that decision. They have no queue of their own, so they go back
+   * to the corrections list instead.
+   */
+  role: 'tl' | 'acm' | 'admin';
   caution: string | null;
 }) {
   const router = useRouter();
   const [remarks, setRemarks] = useState('');
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Kept apart from `error`, as on the verifier's and approver's forms.
+   *
+   * "You have not typed remarks" is a fact about the box directly above the
+   * buttons, and rendering it as a banner put it where nothing points at the
+   * control that has to change — a reader with the textarea in view gets a red
+   * panel somewhere else on the card. `Field` renders it under the input and
+   * the two states have different lifetimes: a server refusal clears on the
+   * next attempt, this one clears the moment the field is filled in.
+   */
+  const [remarkErrors, setRemarkErrors] = useState<string[] | undefined>(undefined);
   const [pending, startTransition] = useTransition();
 
   function decide(decision: 'ADVANCE' | 'RETURN') {
+    setError(null);
+    setRemarkErrors(undefined);
+
     // Required on a return and only on a return: the rep has to know what to
     // change, and demanding a note to approve would train everyone to type "ok".
     if (decision === 'RETURN' && !remarks.trim()) {
-      setError('Say what needs to change — the rep only sees this note.');
+      setRemarkErrors(['Say what needs to change — the rep only sees this note.']);
       return;
     }
 
-    setError(null);
     startTransition(async () => {
       const result = await decideStageAction({ requestId, decision, remarks: remarks.trim() || null });
       if (!result.ok) {
         setError(result.error);
+        setRemarkErrors(result.fieldErrors?.remarks);
         return;
       }
-      router.push(`/${role}/queue`);
+      router.push(role === 'admin' ? '/admin/corrections' : `/${role}/queue`);
       router.refresh();
     });
   }
@@ -57,6 +78,7 @@ export function ManagerDecisionForm({
         label="Remarks"
         htmlFor="remarks"
         hint="Required when you send it back. Optional when you pass it on."
+        error={remarkErrors}
       >
         <Textarea
           id="remarks"

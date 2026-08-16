@@ -225,8 +225,13 @@ export async function loadCoverage(scope: CoverageScope = {}): Promise<BatchCove
       policies,
       attributed,
       unattributed: policies - attributed,
-      acms: ordered.length,
-      tls: ordered.reduce((n, g) => n + g.teams.length, 0),
+      // Real codes only. The grouping above builds a synthetic group and a
+      // synthetic team for "the roster places them under nobody", which is what
+      // the not-placed bucket on the screen is drawn from — counting those as
+      // people reported one more area manager and several more team leaders
+      // than the company has, and the header is read as a headcount.
+      acms: ordered.filter((g) => g.acmId !== null).length,
+      tls: ordered.reduce((n, g) => n + g.teams.filter((t) => t.tlId !== null).length, 0),
       reps,
     },
   };

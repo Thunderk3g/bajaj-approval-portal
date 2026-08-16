@@ -19,6 +19,7 @@ import {
   listBatchOptions,
   listRecords,
   listStatusOptions,
+  listTlOptions,
 } from '@/lib/records/query';
 import { listRecordVersions } from '@/lib/records/versions';
 
@@ -82,20 +83,42 @@ export async function ManagerRecords({
   // roster rather than `distinct sales_record.sm_id` means a rep with no rows
   // this month is still offered, and the two screens cannot disagree about who
   // reports to this manager.
-  const [{ rows, total }, gapTotal, statusOptions, batchOptions, team] = await Promise.all([
-    listRecords(user, filters, page),
-    countRecords(user, { ...EMPTY_FILTERS, gap: 'ANY' }),
-    listStatusOptions(user),
-    listBatchOptions(user),
-    listTeam(user),
-  ]);
+  const [{ rows, total }, gapTotal, statusOptions, batchOptions, team, tlOptions] =
+    await Promise.all([
+      listRecords(user, filters, page),
+      countRecords(user, { ...EMPTY_FILTERS, gap: 'ANY' }),
+      listStatusOptions(user),
+      listBatchOptions(user),
+      listTeam(user),
+      // Empty for a TL without a query — `TL_ID_FILTER_ROLES` excludes them, so
+      // the picker below never renders and the parser would drop `?tlId=` anyway.
+      listTlOptions(user),
+    ]);
 
   const tlBySmId =
     role === 'acm' ? new Map(team.map((member) => [member.smId, member.tlId])) : undefined;
 
+  // Said out loud, because a filter arriving from a link on the performance
+  // report is one the manager never touched a control to set — a grid quietly
+  // showing 93 of 315 rows with no explanation reads as missing data.
+  const drilledTl = filters.tlId
+    ? (tlOptions.find((option) => option.tlId === filters.tlId) ?? { tlId: filters.tlId, tlName: null })
+    : null;
+
   return (
     <section className="space-y-4">
-      <PageHeader title={words.title} description={words.description} />
+      <PageHeader
+        title={
+          drilledTl ? `${drilledTl.tlName ?? drilledTl.tlId}'s team records` : words.title
+        }
+        description={
+          drilledTl
+            ? `Narrowed to the team led by ${drilledTl.tlId}${
+                drilledTl.tlName ? ` (${drilledTl.tlName})` : ''
+              }, including that team leader's own book. Clear the Team leader filter to see all of ${words.scope} again.`
+            : words.description
+        }
+      />
 
       <div className="grid gap-3 sm:grid-cols-3">
         <StatCard label={`Records in ${words.scope}`} value={total.toLocaleString('en-IN')} />
@@ -124,6 +147,11 @@ export async function ManagerRecords({
         // hand-typed SM_ID from another team narrows to nothing.
         showSmId
         smIdOptions={team.map((member) => ({ smId: member.smId, smName: member.smName }))}
+        // One rung up, and only for the role whose scope spans several teams —
+        // a TL leading exactly one team would be offered a filter that either
+        // changes nothing or empties the grid.
+        showTlId={role === 'acm'}
+        tlIdOptions={tlOptions}
         statusOptions={statusOptions}
         batchOptions={batchOptions}
       />

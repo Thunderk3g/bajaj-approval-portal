@@ -1,7 +1,12 @@
 import type { ReactElement } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '@/db/client';
-import { correctionRequest, salesRecord, salesRecordVersion } from '@/db/schema';
+import {
+  correctionRequest,
+  correctionRequestStage,
+  salesRecord,
+  salesRecordVersion,
+} from '@/db/schema';
 import { APPROVABLE_STATUS } from '@/lib/approvals/apply';
 import type { SessionUser } from '@/lib/auth/rbac';
 import { makeUser, truncateAll } from '../helpers/db';
@@ -126,6 +131,22 @@ async function seedQueue(statuses: Array<'PENDING' | 'VERIFIED' | 'RETURNED'>, r
       })
       .returning();
 
+    // The open rung. `MINE` selects on this and nothing else, so a seed without
+    // it would make every stage-scoped assertion below vacuously empty.
+    //
+    // Deliberately the reviewer's OWN role at every status, including RETURNED:
+    // that is the combination a status gate could never express and the one the
+    // old per-row `status === homeStatus` filter got wrong in both directions.
+    await db.insert(correctionRequestStage).values({
+      requestId: request.id,
+      sequence: 0,
+      stageKey: role === 'approver' ? 'APPROVER' : 'V1',
+      resolverKey: 'ROLE',
+      resolverConfig: { role },
+      canReject: role === 'approver',
+      status: 'ACTIVE',
+    });
+
     byStatus.set(status, [...(byStatus.get(status) ?? []), request.id]);
   }
 
@@ -166,32 +187,45 @@ describe('the approver queue offers batching for exactly the rows it can decide'
     session.user = null;
   });
 
+  it('checkboxes every row of the MINE scope, and the bar names the same ones', async () => {
+    // The positive half. Every row here is at this approver's own rung — which
+    // is exactly what `MINE` selects for — so all of them are batchable
+    // regardless of the coarse status they happen to carry.
+    const seeded = await seedQueue(['PENDING', 'VERIFIED', 'RETURNED', 'VERIFIED'], 'approver');
+    const everything = [...seeded.values()].flat();
+
+    const { barIds, boxIds } = await renderQueue('@/app/approver/queue/page', { scope: 'MINE' });
+
+    expect(new Set(boxIds)).toEqual(new Set(barIds));
+    expect(new Set(boxIds)).toEqual(new Set(everything));
+    expect(boxIds).toHaveLength(4);
+  });
+
   it('checkboxes and the batch bar name the same requests', async () => {
-    // Scope OPEN, so the list deliberately MIXES all three open statuses. This
-    // is the only scope where the two predicates can disagree observably, which
-    // is why it is the one under test.
+    // Scope OPEN, which deliberately mixes rungs. Selection is now a property of
+    // the SCOPE rather than of each row's status — only `MINE` is guaranteed to
+    // contain rungs the viewer may decide — so the correct answer here is that
+    // nothing is selectable at all, and the two predicates must agree on that
+    // just as strictly as they agreed on a subset before.
     const seeded = await seedQueue(['PENDING', 'VERIFIED', 'RETURNED', 'VERIFIED'], 'approver');
 
     const { barIds, boxIds } = await renderQueue('@/app/approver/queue/page', { scope: 'OPEN' });
 
-    const decidable = seeded.get(APPROVABLE_STATUS)!;
-    expect(new Set(boxIds)).toEqual(new Set(decidable));
-    expect(new Set(barIds)).toEqual(new Set(decidable));
+    expect(new Set(boxIds)).toEqual(new Set(barIds));
+    expect(boxIds).toEqual([]);
 
-    // Stated separately from the two set comparisons above. Those could both
-    // hold against a future edit that changed one predicate and the seed
-    // together; this says the mixed list really was mixed.
-    expect(boxIds).toHaveLength(2);
+    // Stated separately, so this case cannot pass by seeding an empty queue:
+    // the mixed list really was mixed.
+    expect(seeded.get(APPROVABLE_STATUS)).toHaveLength(2);
   });
 
-  it('offers no checkbox on a request still with the verifier', async () => {
+  it('offers no checkbox on a request parked at somebody else s rung', async () => {
     const seeded = await seedQueue(['PENDING'], 'approver');
 
     const { boxIds } = await renderQueue('@/app/approver/queue/page', { scope: 'OPEN' });
 
-    // A PENDING row is upstream of the approver. Batched, every one of them
-    // would come back refused by the verifier gate — the absent checkbox says so
-    // before the click rather than after it.
+    // Batched, every one of these would come back refused by the engine — the
+    // absent checkbox says so before the click rather than after it.
     expect(boxIds).toEqual([]);
     expect(seeded.get('PENDING')).toHaveLength(1);
   });
@@ -212,23 +246,39 @@ describe('the approver queue offers batching for exactly the rows it can decide'
   });
 });
 
-describe('the verifier queue batches on its own home status', () => {
+describe('the verifier queue batches on its own open rung', () => {
   beforeEach(async () => {
     await truncateAll();
     session.user = null;
   });
 
-  it('offers checkboxes for PENDING, not for what it has already passed on', async () => {
+  /**
+   * The case the old status gate got wrong, now asserted from the other side.
+   *
+   * Every request here is seeded with an ACTIVE verifier rung, and one of them
+   * carries status VERIFIED — the shape a three-rung chain produces once the
+   * first verification passes and a SECOND verification step opens. The old
+   * filter (`status === 'PENDING'`) refused that row a checkbox and, before the
+   * queue itself was fixed, refused to list it at all: a rung open, decidable by
+   * this very person, and offered by no screen in the product.
+   */
+  it('offers checkboxes for every rung that is open to it, whatever the status says', async () => {
     const seeded = await seedQueue(['PENDING', 'VERIFIED', 'PENDING'], 'verifier');
+    const everything = [...seeded.values()].flat();
+
+    const { barIds, boxIds } = await renderQueue('@/app/verifier/queue/page', { scope: 'MINE' });
+
+    expect(new Set(boxIds)).toEqual(new Set(barIds));
+    expect(new Set(boxIds)).toEqual(new Set(everything));
+    expect(boxIds).toContain(seeded.get('VERIFIED')![0]);
+  });
+
+  it('offers no checkbox in a scope that mixes other people rungs', async () => {
+    await seedQueue(['PENDING', 'VERIFIED', 'PENDING'], 'verifier');
 
     const { barIds, boxIds } = await renderQueue('@/app/verifier/queue/page', { scope: 'OPEN' });
 
-    // The two stages work on different statuses, and the shared table takes that
-    // as a prop. A verifier batching VERIFIED rows would be trying to re-verify
-    // work already sitting with an approver.
-    const mine = seeded.get('PENDING')!;
-    expect(new Set(boxIds)).toEqual(new Set(mine));
-    expect(new Set(barIds)).toEqual(new Set(mine));
-    expect(boxIds).not.toContain(seeded.get('VERIFIED')![0]);
+    expect(boxIds).toEqual([]);
+    expect(barIds).toEqual([]);
   });
 });

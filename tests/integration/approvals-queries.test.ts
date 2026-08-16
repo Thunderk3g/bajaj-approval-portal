@@ -6,7 +6,7 @@ import { getRequestDetail, listHistory, listQueue, queueCounts } from '@/lib/app
 import { applyApproval, previewTarget, returnRequest } from '@/lib/approvals/apply';
 import { parseHistoryFilters, parseQueueFilters } from '@/lib/approvals/schemas';
 import { verifyRequest } from '@/lib/verification/apply';
-import { makeUser, truncateAll } from '../helpers/db';
+import { makeUser, sessionFor, truncateAll } from '../helpers/db';
 
 /**
  * The read layer runs against a real database for one reason: a correlated
@@ -74,16 +74,31 @@ async function seed() {
     uploadedBy: rep.id,
   });
 
-  return { rep, approver, verifier, record, request };
+  return { rep, approverRow, approver, verifier, record, request };
 }
 
 describe('the pending queue (spec 9)', () => {
   beforeEach(truncateAll);
 
+  /**
+   * Explicit `scope: 'OPEN'`, not the default.
+   *
+   * The default is now `MINE`, which reads the STAGE table — and these cases
+   * seed a request row directly rather than through `submitCorrection`, so it
+   * has no materialised stages at all. That is the right seed for what they
+   * test (the projection, the ageing, the search) and the wrong one for scope
+   * semantics, which `queue-bulk-gate.test.ts` and `approver-page-gate.test.ts`
+   * cover against real stage rows. Naming the scope keeps each file testing one
+   * thing.
+   */
   it('lists open requests oldest first with ageing, submitter and proof count', async () => {
-    const { request } = await seed();
+    const { request, approverRow } = await seed();
 
-    const queue = await listQueue(parseQueueFilters({}), page);
+    const queue = await listQueue(
+      parseQueueFilters({ scope: 'OPEN' }),
+      page,
+      sessionFor(approverRow),
+    );
 
     expect(queue.total).toBe(1);
     expect(queue.rows[0].id).toBe(request.id);
@@ -94,26 +109,28 @@ describe('the pending queue (spec 9)', () => {
   });
 
   it('separates what needs a decision from what is waiting on the submitter', async () => {
-    const { approver, request } = await seed();
+    const { approver, approverRow, request } = await seed();
+    const session = sessionFor(approverRow);
 
     await returnRequest({ requestId: request.id, actor: approver, remarks: 'Attach the mandate.' });
 
-    expect((await listQueue(parseQueueFilters({}), page)).total).toBe(0);
-    expect((await listQueue(parseQueueFilters({ scope: 'RETURNED' }), page)).total).toBe(1);
-    expect((await listQueue(parseQueueFilters({ scope: 'OPEN' }), page)).total).toBe(1);
+    expect((await listQueue(parseQueueFilters({ scope: 'VERIFIED' }), page, session)).total).toBe(0);
+    expect((await listQueue(parseQueueFilters({ scope: 'RETURNED' }), page, session)).total).toBe(1);
+    expect((await listQueue(parseQueueFilters({ scope: 'OPEN' }), page, session)).total).toBe(1);
 
-    const counts = await queueCounts();
+    const counts = await queueCounts(session);
     expect(counts).toMatchObject({ awaitingDecision: 0, awaitingVerification: 0, returned: 1 });
   });
 
   it('filters by category and searches across application, rep and client', async () => {
-    await seed();
+    const { approverRow } = await seed();
+    const session = sessionFor(approverRow);
 
-    expect((await listQueue(parseQueueFilters({ category: 'MAPPING' }), page)).total).toBe(0);
-    expect((await listQueue(parseQueueFilters({ category: 'AUTOPAY' }), page)).total).toBe(1);
-    expect((await listQueue(parseQueueFilters({ q: 'Meera' }), page)).total).toBe(1);
-    expect((await listQueue(parseQueueFilters({ q: '61675' }), page)).total).toBe(1);
-    expect((await listQueue(parseQueueFilters({ q: 'nobody' }), page)).total).toBe(0);
+    expect((await listQueue(parseQueueFilters({ scope: 'OPEN', category: 'MAPPING' }), page, session)).total).toBe(0);
+    expect((await listQueue(parseQueueFilters({ scope: 'OPEN', category: 'AUTOPAY' }), page, session)).total).toBe(1);
+    expect((await listQueue(parseQueueFilters({ scope: 'OPEN', q: 'Meera' }), page, session)).total).toBe(1);
+    expect((await listQueue(parseQueueFilters({ scope: 'OPEN', q: '61675' }), page, session)).total).toBe(1);
+    expect((await listQueue(parseQueueFilters({ scope: 'OPEN', q: 'nobody' }), page, session)).total).toBe(0);
   });
 });
 
@@ -161,9 +178,9 @@ describe('the decision screen payload (spec 7.2, 9)', () => {
   beforeEach(truncateAll);
 
   it('carries the request, record, proofs and timeline in one read', async () => {
-    const { request, record } = await seed();
+    const { request, record, approverRow } = await seed();
 
-    const detail = await getRequestDetail(request.id);
+    const detail = await getRequestDetail(sessionFor(approverRow), request.id);
     expect(detail).not.toBeNull();
     expect(detail!.record.id).toBe(record.id);
     expect(detail!.submitterName).toBe('Priya Sales');
@@ -179,7 +196,7 @@ describe('the decision screen payload (spec 7.2, 9)', () => {
   });
 
   it('shows both reps side by side on a mapping claim, roster and account included', async () => {
-    const { rep, record } = await seed();
+    const { rep, record, approverRow } = await seed();
     await db.insert(manpower).values({ smId: 'C2CM21350', smName: 'Ravi Kumar' });
     const claimant = await makeUser({ role: 'sales', smId: 'C2CM21350', name: 'Ravi Kumar' });
 
@@ -199,7 +216,7 @@ describe('the decision screen payload (spec 7.2, 9)', () => {
       })
       .returning();
 
-    const detail = await getRequestDetail(claim.id);
+    const detail = await getRequestDetail(sessionFor(approverRow), claim.id);
     expect(detail!.mapping).toMatchObject({
       currentSmId: OWNER,
       currentAccount: { name: 'Priya Sales', email: rep.email },
@@ -211,7 +228,7 @@ describe('the decision screen payload (spec 7.2, 9)', () => {
   });
 
   it('reports an unapplicable proposal instead of throwing on the read path', async () => {
-    const { rep, record } = await seed();
+    const { rep, record, approverRow } = await seed();
 
     const [broken] = await db
       .insert(correctionRequest)
@@ -227,7 +244,7 @@ describe('the decision screen payload (spec 7.2, 9)', () => {
       })
       .returning();
 
-    const detail = await getRequestDetail(broken.id);
+    const detail = await getRequestDetail(sessionFor(approverRow), broken.id);
     const preview = previewTarget(detail!.request, detail!.record);
     expect(preview.problem).toMatch(/date/i);
   });

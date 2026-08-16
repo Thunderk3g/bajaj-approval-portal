@@ -13,7 +13,6 @@ import {
 } from '@/lib/approvals/schemas';
 import { QueueTable } from '@/components/approvals/queue-table';
 import { BulkDecisions } from '@/components/approvals/bulk-decisions';
-import { APPROVABLE_STATUS } from '@/lib/approvals/apply';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,13 +29,16 @@ export default async function QueuePage({
 }: {
   searchParams: Promise<SearchParams>;
 }) {
-  await requireRoleOrRedirect('approver');
+  const viewer = await requireRoleOrRedirect('approver');
 
   const params = await searchParams;
   const filters = parseQueueFilters(params);
   const page = parsePageParams(params);
 
-  const [queue, counts] = await Promise.all([listQueue(filters, page), queueCounts()]);
+  const [queue, counts] = await Promise.all([
+    listQueue(filters, page, viewer),
+    queueCounts(viewer),
+  ]);
 
   return (
     <>
@@ -49,9 +51,9 @@ export default async function QueuePage({
         <StatCard
           label="Awaiting decision"
           value={counts.awaitingDecision}
-          hint="Verified and yours to decide"
+          hint="At your step, and yours to decide"
           tone={counts.awaitingDecision > 0 ? 'warning' : 'default'}
-          href="/approver/queue?scope=VERIFIED"
+          href="/approver/queue?scope=MINE"
         />
         <StatCard
           label="Oldest waiting"
@@ -129,11 +131,17 @@ export default async function QueuePage({
       */}
       <BulkDecisions
         stage="approver"
-        appsNoById={Object.fromEntries(
-          queue.rows.filter((r) => r.status === APPROVABLE_STATUS).map((r) => [r.id, r.appsNo]),
-        )}
+        // Every row of the MINE scope is by definition at this approver's own
+        // step, and no row of any other scope is. Selecting on the row's status
+        // was the old proxy for that, and it stopped being true once VERIFIED
+        // could also mean "parked with a manager two rungs below me".
+        appsNoById={
+          filters.scope === 'MINE'
+            ? Object.fromEntries(queue.rows.map((r) => [r.id, r.appsNo]))
+            : {}
+        }
       >
-        <QueueTable rows={queue.rows} selectable />
+        <QueueTable rows={queue.rows} selectable decidable={filters.scope === 'MINE'} />
       </BulkDecisions>
 
       <Pagination

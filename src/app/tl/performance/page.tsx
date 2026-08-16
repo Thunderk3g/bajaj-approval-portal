@@ -23,6 +23,7 @@ export default async function TeamLeaderPerformancePage({
       // records by team leader would be a table with a single row.
       rungs={['sm']}
       rungTabs={{ sm: 'My reps' }}
+      recordsBasePath="/tl/records"
       title="Team performance"
       description="Every rep on your team, and your team's own total. Issuance is issued over logins; login share is that rep's share of the team's logins, so the column adds to 100%."
       totalsLabel="My team"

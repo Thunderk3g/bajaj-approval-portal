@@ -1,20 +1,32 @@
 import type { ReactElement } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '@/db/client';
-import { correctionRequest, correctionStatusEnum, salesRecord, salesRecordVersion } from '@/db/schema';
+import {
+  correctionRequest,
+  correctionRequestStage,
+  correctionStatusEnum,
+  salesRecord,
+  salesRecordVersion,
+} from '@/db/schema';
 import { APPROVABLE_STATUS } from '@/lib/approvals/apply';
 import type { SessionUser } from '@/lib/auth/rbac';
 import { makeUser, truncateAll } from '../helpers/db';
 
 /**
- * The approver's decision screen renders its form for exactly one status.
+ * The approver's decision screen renders its form when its own rung is open.
  *
- * This file exists because its absence shipped a bug. The decision form was
- * gated on `status === 'PENDING'`, which was right until the verifier stage
- * landed and wrong from that same commit onward: after it, an approvable request
- * is VERIFIED, so the one state where approval is legal was the one state that
- * rendered "this request cannot be decided again". An approver had no approve
- * button precisely when the request was ready for them.
+ * This file exists because its absence shipped a bug, and it has now caught the
+ * SECOND instance of the same one. The form was first gated on
+ * `status === 'PENDING'`, which the verifier stage broke; then on
+ * `status === APPROVABLE_STATUS` (VERIFIED), which the N-stage engine broke the
+ * same way, because `advance` sets VERIFIED after ANY non-final rung passes. On
+ * a five-rung mapping chain a request parked with a team leader is VERIFIED, so
+ * the screen offered an approve button that `assertMayDecide` then refused.
+ *
+ * A status can no longer answer "is this mine". The gate is the ACTIVE row in
+ * `correction_request_stage`, and these tests seed that row explicitly — which
+ * is why every case below says which rung is open rather than which status the
+ * request holds.
  *
  * The whole suite stayed green through that, and the reason is worth stating,
  * because it is the thing this file fixes rather than the bug itself. The DOMAIN
@@ -78,7 +90,10 @@ function textOf(node: unknown): string {
   return Object.values(props).map(textOf).join(' ');
 }
 
-async function seed(status: (typeof correctionStatusEnum.enumValues)[number]) {
+async function seed(
+  status: (typeof correctionStatusEnum.enumValues)[number],
+  openStage: 'APPROVER' | 'V1' | null = 'APPROVER',
+) {
   const rep = await makeUser({ role: 'sales', smId: OWNER, name: 'Shikha Singh' });
   const approver = await makeUser({ role: 'approver', smId: null, name: 'Anand Approver' });
 
@@ -121,8 +136,23 @@ async function seed(status: (typeof correctionStatusEnum.enumValues)[number]) {
       proposedValue: 'No',
       description: 'Mandate was cancelled by the customer.',
       status,
+      totalStages: 2,
     })
     .returning();
+
+  // The open rung, which is now the whole gate. `null` means no stage is open —
+  // a decided or withdrawn request — and is the shape the sweep below uses.
+  if (openStage) {
+    await db.insert(correctionRequestStage).values({
+      requestId: request.id,
+      sequence: openStage === 'APPROVER' ? 1 : 0,
+      stageKey: openStage,
+      resolverKey: 'ROLE',
+      resolverConfig: { role: openStage === 'APPROVER' ? 'approver' : 'verifier' },
+      canReject: openStage === 'APPROVER',
+      status: 'ACTIVE',
+    });
+  }
 
   return request.id;
 }
@@ -138,9 +168,9 @@ describe('the approver decision screen', () => {
     session.user = null;
   });
 
-  it('offers the decision form for a verified request', async () => {
+  it('offers the decision form when the approver rung is the open one', async () => {
     const { DecisionForm } = await import('@/components/approvals/decision-form');
-    const tree = await render(await seed(APPROVABLE_STATUS));
+    const tree = await render(await seed(APPROVABLE_STATUS, 'APPROVER'));
 
     expect(contains(tree, DecisionForm)).toBe(true);
   });
@@ -151,14 +181,28 @@ describe('the approver decision screen', () => {
    * verifier — and telling an approver otherwise about a request that will
    * shortly be theirs is the specific wrong sentence that was on screen.
    */
-  it('tells the approver a pending request is still with the verifier, not that it is closed', async () => {
+  it('tells the approver an earlier rung is open, not that the request is closed', async () => {
     const { DecisionForm } = await import('@/components/approvals/decision-form');
-    const tree = await render(await seed('PENDING'));
+    const tree = await render(await seed('PENDING', 'V1'));
     const text = textOf(tree);
 
     expect(contains(tree, DecisionForm)).toBe(false);
-    expect(text).toContain('verifier');
+    // Names the rung that is actually open, so the approver knows who to chase.
+    expect(text).toContain('V1');
     expect(text).not.toContain('cannot be decided again');
+  });
+
+  /**
+   * The case a STATUS gate could not express at all, and the reason it had to
+   * go: VERIFIED with somebody else's rung open. Under the old gate this
+   * rendered the approve button, and the engine refused the click.
+   */
+  it('refuses the form for a VERIFIED request whose open rung belongs to someone else', async () => {
+    const { DecisionForm } = await import('@/components/approvals/decision-form');
+    const tree = await render(await seed(APPROVABLE_STATUS, 'V1'));
+
+    expect(contains(tree, DecisionForm)).toBe(false);
+    expect(textOf(tree)).toContain('V1');
   });
 
   /**
@@ -171,26 +215,26 @@ describe('the approver decision screen', () => {
    * deliberately rather than by omission.
    */
   for (const status of correctionStatusEnum.enumValues) {
-    if (status === APPROVABLE_STATUS) continue;
-
-    it(`refuses to offer the decision form for a ${status} request`, async () => {
+    it(`refuses to offer the decision form for a ${status} request with no open rung`, async () => {
       const { DecisionForm } = await import('@/components/approvals/decision-form');
-      const tree = await render(await seed(status));
+      const tree = await render(await seed(status, null));
 
       expect(contains(tree, DecisionForm)).toBe(false);
     });
   }
 
-  it('gates on the same constant the database locks on', async () => {
-    // Not tautological: it pins the direction of the dependency. The page imports
-    // APPROVABLE_STATUS from the module that owns the lock predicate, so the two
-    // cannot drift. If someone replaces that import with a literal, the tests
-    // above keep passing today and silently stop tracking the gate tomorrow.
+  it('reads the open rung rather than any status literal', async () => {
+    // Not tautological: it pins the direction of the dependency. Twice now the
+    // page has been gated on a status that was correct the day it was written
+    // and quietly wrong a release later. Asking the stage table is the only form
+    // of this gate that cannot go stale, so the source is asserted to keep
+    // asking it — a literal creeping back in would leave every case above green
+    // while the screen stopped tracking the engine again.
     const pageSource = await import('node:fs/promises').then((fs) =>
       fs.readFile('src/app/approver/requests/[id]/page.tsx', 'utf8'),
     );
 
-    expect(pageSource).toContain('APPROVABLE_STATUS');
-    expect(pageSource).not.toMatch(/const isOpen = request\.status === '/);
+    expect(pageSource).toContain('openStageFor');
+    expect(pageSource).not.toMatch(/const isOpen = request\.status/);
   });
 });

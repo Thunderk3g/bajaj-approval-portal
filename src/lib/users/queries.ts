@@ -1,6 +1,7 @@
 import { and, count, desc, eq, ilike, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { manpower, manpowerOverride, roleEnum, user } from '@/db/schema';
+import { likePattern } from '@/lib/records/query';
 import { buildRoster, byRungThenCode, type RosterEntry } from '@/lib/roster/entries';
 import type { UserRole } from './schema';
 
@@ -49,7 +50,11 @@ export async function listUsers(
 
   const q = options.q?.trim();
   if (q) {
-    const pattern = `%${q}%`;
+    // Escaped, not interpolated: a hand-built `%${q}%` reads the admin's term as
+    // a pattern, so searching for `_` matches every name and `%` matches the
+    // whole table. Imported rather than re-derived — one escaping rule, one
+    // place for it to be wrong.
+    const pattern = likePattern(q);
     const match = or(
       ilike(user.name, pattern),
       ilike(user.email, pattern),

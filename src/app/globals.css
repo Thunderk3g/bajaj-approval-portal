@@ -80,14 +80,33 @@ code, kbd, samp, pre, .font-mono {
   font-family: var(--font-mono), ui-monospace, monospace;
 }
 
-a {
-  color: var(--c-ink);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
+/* `@layer base`, and the layer is the whole point.
+ *
+ * Tailwind v4 puts its utilities in a cascade layer. Unlayered CSS beats every
+ * layered rule regardless of specificity, so a bare `a { }` here outranked
+ * `text-white` and `no-underline` on every anchor in the application — a plain
+ * element selector defeating a utility, which is the opposite of how the two are
+ * supposed to compose.
+ *
+ * It was not theoretical. The selected tab of the performance screen's "Group
+ * by" control is a `LinkButton` carrying `text-white` on a slate-900 background;
+ * it computed to `rgb(15,23,42)` and the label was invisible against its own
+ * fill. Every `LinkButton variant="primary"` in the product had the same defect,
+ * and every nav link rendered underlined despite asking not to be.
+ *
+ * Inside the layer these are what they were meant to be: defaults a utility can
+ * override. Anything that wants a bare link still gets one; anything that says
+ * `no-underline` now gets that instead. */
+@layer base {
+  a {
+    color: var(--c-ink);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
 
-a:hover {
-  color: var(--c-muted);
+  a:hover {
+    color: var(--c-muted);
+  }
 }
 
 /* A visible focus ring on everything reachable by keyboard. The default ring is

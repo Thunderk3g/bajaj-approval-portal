@@ -75,6 +75,7 @@ export async function PerformanceScreen({
   | 'totalsLabel'
   | 'emptyTitle'
   | 'emptyDescription'
+  | 'recordsBasePath'
   | 'children'
 >) {
   const parsed = parsePerformanceParams(params, rungs);
@@ -124,6 +125,17 @@ export type PerformanceViewProps = {
   totalsLabel: string;
   emptyTitle: string;
   emptyDescription: string;
+  /**
+   * The record grid these rows drill into, e.g. `/acm/records`. Omit and the
+   * rows render as plain text.
+   *
+   * This page answers "who issued how much"; the question it always provokes is
+   * "issued WHAT", and until this existed there was no way to get from a team
+   * leader's row to that team leader's 93 policies. The link carries `?tlId=` or
+   * `?smId=`, both of which `recordWhere` ANDs with the reader's own scope — so
+   * the link cannot reach further than the page the reader is already on.
+   */
+  recordsBasePath?: string;
   /** Rendered above the table — a cluster note, a warning, a link out. */
   children?: React.ReactNode;
 };
@@ -295,7 +307,12 @@ export function PerformanceView(props: PerformanceViewProps) {
             </thead>
             <tbody>
               {rows.map((row) => (
-                <PerformanceRowCells key={row.code ?? 'unplaced'} row={row} totals={totals} />
+                <PerformanceRowCells
+                  key={row.code ?? 'unplaced'}
+                  row={row}
+                  totals={totals}
+                  href={drillHref(props.recordsBasePath, report.rung, row.code)}
+                />
               ))}
             </tbody>
           </Table>
@@ -311,14 +328,43 @@ export function PerformanceView(props: PerformanceViewProps) {
   );
 }
 
+/**
+ * The record grid a row drills into, or null when there is nothing to link to.
+ *
+ * Null for the ACM rung — the record filters carry no `acmId`, and a link that
+ * silently ignored half its query string would be worse than plain text. Null
+ * for the unplaced bucket too: `code === null` is the absence of a code, so
+ * there is no team or rep to narrow to.
+ */
+function drillHref(
+  basePath: string | undefined,
+  rung: PerformanceRung,
+  code: string | null,
+): string | null {
+  if (!basePath || code === null) return null;
+  const key = rung === 'tl' ? 'tlId' : rung === 'sm' ? 'smId' : null;
+  return key ? `${basePath}?${key}=${encodeURIComponent(code)}` : null;
+}
+
 /** One rep, team leader or area manager. */
 function PerformanceRowCells({
   row,
   totals,
+  href,
 }: {
   row: PerformanceRow;
   totals: PerformanceReport['totals'];
+  /** Where this row's policies live, or null to render the label as plain text. */
+  href: string | null;
 }) {
+  const label = (
+    <>
+      {/* An identifier is text: monospaced, left-aligned, never a number. */}
+      <span className="font-mono text-[12px] text-slate-900">{row.code}</span>
+      {row.name ? <span className="ml-2 text-slate-700">{row.name}</span> : null}
+    </>
+  );
+
   return (
     <tr>
       <Td>
@@ -329,12 +375,16 @@ function PerformanceRowCells({
               — no Manpower row names these policies
             </span>
           </span>
+        ) : href ? (
+          <Link
+            href={href}
+            className="underline decoration-slate-300 underline-offset-2 hover:decoration-slate-900"
+            title={`Show every application logged by ${row.name ?? row.code}`}
+          >
+            {label}
+          </Link>
         ) : (
-          <>
-            {/* An identifier is text: monospaced, left-aligned, never a number. */}
-            <span className="font-mono text-[12px] text-slate-900">{row.code}</span>
-            {row.name ? <span className="ml-2 text-slate-700">{row.name}</span> : null}
-          </>
+          label
         )}
       </Td>
       <Td className="text-right tabular-nums">{n(row.logins)}</Td>

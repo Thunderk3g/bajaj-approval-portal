@@ -98,12 +98,24 @@ export const bulkVerifierDecisionSchema = z.discriminatedUnion('decision', [
  * is shown so a verifier can see whether the approver stage is draining.
  * RETURNED is waiting on the rep.
  */
-export const VERIFIER_QUEUE_SCOPES = ['PENDING', 'VERIFIED', 'RETURNED', 'OPEN'] as const;
+/**
+ * `MINE` is not a status, and that is the point of it.
+ *
+ * The other four ask `correction_request.status`, which describes a two-rung
+ * world: `PENDING` meant "with the verifier" only while the verifier was rung
+ * zero and the approver was rung one. The shipped chains are longer —
+ * `ISSUANCE_DATE` is V1 → V2 → APPROVER — and a request the first verifier
+ * cleared is `VERIFIED` with a SECOND verifier rung open, which the status
+ * scopes describe as somebody else's work. `MINE` asks the stage table instead
+ * and is therefore the only scope that answers "what can I actually decide".
+ */
+export const VERIFIER_QUEUE_SCOPES = ['MINE', 'PENDING', 'VERIFIED', 'RETURNED', 'OPEN'] as const;
 export type VerifierQueueScope = (typeof VERIFIER_QUEUE_SCOPES)[number];
 
 export const VERIFIER_SCOPE_LABELS: Record<VerifierQueueScope, string> = {
-  PENDING: 'Awaiting my verification',
-  VERIFIED: 'Verified — awaiting an approver',
+  MINE: 'At my step',
+  PENDING: 'At the first check',
+  VERIFIED: 'Past the first check',
   RETURNED: 'Returned — awaiting the submitter',
   OPEN: 'Everything open',
 };
@@ -129,7 +141,8 @@ function pick<T extends string>(
 
 export function parseVerifierQueueFilters(params: SearchParams) {
   return {
-    scope: pick(params.scope, VERIFIER_QUEUE_SCOPES) ?? ('PENDING' as VerifierQueueScope),
+    // Defaults to the work they can do, not to a status that used to mean that.
+    scope: pick(params.scope, VERIFIER_QUEUE_SCOPES) ?? ('MINE' as VerifierQueueScope),
     category: pick(params.category, CORRECTION_CATEGORIES),
     q: one(params.q),
   };

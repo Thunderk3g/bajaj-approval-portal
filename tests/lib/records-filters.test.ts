@@ -38,6 +38,7 @@ describe('filter parsing (spec 9.1)', () => {
       q: 'Sharma',
       batchId: '11111111-2222-4333-8444-555555555555',
       smId: 'ICCSP90766',
+      tlId: null,
       status: 'ISSUED',
       issuedFrom: '2026-06-01',
       issuedTo: '2026-06-30',

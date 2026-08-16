@@ -1,8 +1,13 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
-import { correctionAttachment, correctionRequest } from '@/db/schema';
+import { correctionAttachment, correctionRequest, salesRecord } from '@/db/schema';
 import { writeAudit } from '@/lib/audit/log';
-import { GLOBAL_READ_ROLES, requireSession, type SessionUser } from '@/lib/auth/rbac';
+import {
+  GLOBAL_READ_ROLES,
+  requireSession,
+  scopedRecordCondition,
+  type SessionUser,
+} from '@/lib/auth/rbac';
 import { PREVIEWABLE_MIME_TYPES, contentDisposition, readStoredProof } from '@/lib/storage/files';
 
 /**
@@ -59,6 +64,33 @@ function canView(user: SessionUser, submittedBy: string): boolean {
   return user.id === submittedBy;
 }
 
+/**
+ * A team leader or area manager whose own team the request concerns.
+ *
+ * Their rung is a review step, and reviewing IS reading the proof against the
+ * claim — the same argument that put `verifier` in `GLOBAL_READ_ROLES`, one level
+ * down. Without this a manager could approve or send back a document they were
+ * served a 404 for, which is not a gate, it is a rubber stamp with extra steps.
+ *
+ * Scoped rather than granted by role: `scopedRecordCondition` is the same
+ * predicate that bounds every record read, so a manager reaches the proofs
+ * attached to their own team's records and no others. Asked as its own query
+ * only when the cheap checks have already failed, so the common paths pay
+ * nothing for it.
+ */
+async function managerMayView(user: SessionUser, requestId: string): Promise<boolean> {
+  if (user.role !== 'tl' && user.role !== 'acm') return false;
+
+  const [hit] = await db
+    .select({ one: sql`1` })
+    .from(correctionRequest)
+    .innerJoin(salesRecord, eq(salesRecord.id, correctionRequest.recordId))
+    .where(and(eq(correctionRequest.id, requestId), scopedRecordCondition(user)))
+    .limit(1);
+
+  return Boolean(hit);
+}
+
 export async function GET(
   request: Request,
   context: { params: Promise<{ attachmentId: string }> },
@@ -95,7 +127,9 @@ export async function GET(
     .limit(1);
 
   if (!row) return notFound();
-  if (!canView(user, row.submittedBy)) return notFound();
+  if (!canView(user, row.submittedBy) && !(await managerMayView(user, row.requestId))) {
+    return notFound();
+  }
 
   let bytes: Buffer;
   try {

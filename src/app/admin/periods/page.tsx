@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { requireRoleOrRedirect } from '@/lib/auth/page';
 import { listPeriodSummaries } from '@/lib/periods/queries';
-import { formatDateTime, orDash } from '@/lib/format';
+import { formatDate, formatDateTime, orDash } from '@/lib/format';
 import {
   Alert,
   Badge,
@@ -104,8 +104,8 @@ export default async function PeriodsPage() {
                   <tr key={p.id} className="hover:bg-slate-50">
                     <Td>
                       <span className="font-medium whitespace-nowrap text-slate-900">{p.label}</span>
-                      <div className="mt-0.5 font-mono text-[11px] whitespace-nowrap text-slate-500">
-                        {p.startsOn} → {p.endsOn}
+                      <div className="mt-0.5 text-[11px] whitespace-nowrap text-slate-500">
+                        {formatDate(p.startsOn)} → {formatDate(p.endsOn)}
                       </div>
                     </Td>
                     <Td>

@@ -163,10 +163,120 @@ export async function resolveApprover(
   return { status: 'RESOLVED', userId: account.id, code, name: account.name };
 }
 
+/* ------------------------------------------------------------------- tree */
+
+export type TeamNode = {
+  tlId: string;
+  tlName: string | null;
+  acmId: string | null;
+  acmName: string | null;
+  location: string | null;
+  reps: Array<{
+    smId: string;
+    smName: string | null;
+    overridden: boolean;
+    /** The sheet's own team for this rep, when an override has moved them. */
+    sheetTlId: string | null;
+  }>;
+};
+
+/**
+ * The whole tree, grouped for the screen: area manager → team leader → reps.
+ *
+ * One query and a grouping pass rather than a query per level. The roster is ~230
+ * rows; a nested fetch would be 30-odd round trips to render one page.
+ *
+ * Lives here rather than in ./actions.ts, where it used to: that file is
+ * `'use server'`, which turned this read into an unauthenticated endpoint serving
+ * the entire org chart. It is called by one admin server component, which is
+ * exactly what a query module is for.
+ */
+export async function loadHierarchyTree(): Promise<TeamNode[]> {
+  const rows = await db
+    .select({
+      smId: manpower.smId,
+      smName: manpower.smName,
+      location: manpower.location,
+      sheetTlId: manpower.tlId,
+      tlName: manpower.tlName,
+      ccmName: manpower.ccmName,
+      overrideTlId: manpowerOverride.tlId,
+      overrideCcmId: manpowerOverride.ccmId,
+      effectiveTlId: sql<string | null>`coalesce(${manpowerOverride.tlId}, ${manpower.tlId})`,
+      effectiveCcmId: sql<string | null>`coalesce(${manpowerOverride.ccmId}, ${manpower.ccmId})`,
+    })
+    .from(manpower)
+    .leftJoin(manpowerOverride, eq(manpowerOverride.smId, manpower.smId))
+    .where(
+      and(
+        eq(manpower.isOrphan, false),
+        sql`${manpower.tlId} is not null`,
+        // The sheet's two bucket rows name themselves as their own team leader and
+        // area manager, so without this the tree grows a one-person "DIY" team and
+        // a one-person "111222-UN" team that an admin can drag people into.
+        notInArray(manpower.smId, PLACEHOLDER_CODE_LIST),
+      ),
+    )
+    .orderBy(manpower.smId);
+
+  const byTeam = new Map<string, TeamNode>();
+
+  for (const row of rows) {
+    const tlId = row.effectiveTlId;
+    if (!tlId) continue;
+
+    if (!byTeam.has(tlId)) {
+      byTeam.set(tlId, {
+        tlId,
+        tlName: row.sheetTlId === tlId ? row.tlName : null,
+        acmId: row.effectiveCcmId,
+        acmName: row.effectiveCcmId === row.overrideCcmId ? null : row.ccmName,
+        location: row.location,
+        reps: [],
+      });
+    }
+
+    const team = byTeam.get(tlId)!;
+    // A team's name comes from a rep the sheet actually places there; a rep moved
+    // in by an override carries their old team's name.
+    if (!team.tlName && row.sheetTlId === tlId) team.tlName = row.tlName;
+
+    team.reps.push({
+      smId: row.smId,
+      smName: row.smName,
+      overridden: Boolean(row.overrideTlId || row.overrideCcmId),
+      sheetTlId: row.sheetTlId,
+    });
+  }
+
+  return [...byTeam.values()].sort((a, b) => {
+    const byAcm = (a.acmId ?? '').localeCompare(b.acmId ?? '');
+    return byAcm !== 0 ? byAcm : a.tlId.localeCompare(b.tlId);
+  });
+}
+
+/** Reps the roster places under nobody — the ones a drag cannot reach yet. */
+export async function loadUnplacedReps(): Promise<Array<{ smId: string; smName: string | null }>> {
+  return db
+    .select({ smId: manpower.smId, smName: manpower.smName })
+    .from(manpower)
+    .leftJoin(manpowerOverride, eq(manpowerOverride.smId, manpower.smId))
+    .where(
+      and(
+        isNull(manpowerOverride.tlId),
+        isNull(manpower.tlId),
+        // Same reason as the tree: a bucket is not somebody an admin can drag onto
+        // a team, so it must not appear in the list of people waiting to be placed.
+        notInArray(manpower.smId, PLACEHOLDER_CODE_LIST),
+      ),
+    )
+    .orderBy(manpower.smId);
+}
+
 /* ------------------------------------------------------------------- gaps */
 
 export type HierarchyGap = {
-  kind: 'SM_UNPLACED' | 'TL_UNPROVISIONED' | 'ACM_UNPROVISIONED';
+  kind: 'SM_UNPLACED' | 'TL_UNPROVISIONED' | 'ACM_UNPROVISIONED' | 'TEAM_ACM_MISMATCH';
   code: string;
   name: string | null;
   smCount: number;
@@ -246,6 +356,37 @@ export async function listHierarchyGaps(): Promise<HierarchyGap[]> {
           where (u.tl_code = e.ccm_id or u.acm_code = e.ccm_id) and u.is_active = true
        )
      group by e.ccm_id
+    union all
+    -- A rep whose team leader reports to a DIFFERENT area manager than the
+    -- rep's own row names.
+    --
+    -- The roster is flat: each rep row states its team leader and its area
+    -- manager independently, so the two can disagree, and in the July workbook
+    -- three of them do. They name TL ICCSP82423, whose own row places him under
+    -- 282563, while their own ccm_id says 503576.
+    --
+    -- Nothing is broken enough to fail. The rep has a manager at each rung, the
+    -- chains resolve, no screen errors. What it produces is a rep counted in two
+    -- clusters: teamSmIds widens the ACM scope over the team leaders beneath an
+    -- area manager -- deliberately, because the alternative is a manager
+    -- silently blind to a whole team -- and the price of that widening is that
+    -- an inconsistent rep appears in both managers' books until the sheet is
+    -- fixed.
+    --
+    -- Reported rather than resolved in code on purpose. Which of the two columns
+    -- is the typo is not a thing SQL can know, and picking a winner would move
+    -- somebody's book on a guess.
+    select 'TEAM_ACM_MISMATCH' as kind, e.sm_id as code,
+           min(m.sm_name) as name, 1 as sm_count
+      from effective e
+      join manpower m on m.sm_id = e.sm_id
+      join effective lead on lead.sm_id = e.tl_id
+     where e.tl_id is not null
+       and e.sm_id <> e.tl_id
+       and e.tl_id not in ${PLACEHOLDER_CODE_LIST}
+       and e.sm_id not in ${PLACEHOLDER_CODE_LIST}
+       and coalesce(e.ccm_id, '') <> coalesce(lead.ccm_id, '')
+     group by e.sm_id
   `);
 
   const managers = (managerRows as unknown as { rows?: unknown[] }).rows ?? managerRows;

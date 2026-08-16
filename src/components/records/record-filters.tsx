@@ -28,6 +28,9 @@ export type FilterFormProps = {
   pageSize: number;
   showSmId: boolean;
   smIdOptions: Array<{ smId: string; smName: string | null }>;
+  /** The team rung of the same drill-down. ACM and admin only — see `TL_ID_FILTER_ROLES`. */
+  showTlId?: boolean;
+  tlIdOptions?: Array<{ tlId: string; tlName: string | null }>;
   statusOptions: string[];
   batchOptions: Array<{ id: string; label: string }>;
 };
@@ -38,6 +41,8 @@ export function RecordFilterBar({
   pageSize,
   showSmId,
   smIdOptions,
+  showTlId = false,
+  tlIdOptions = [],
   statusOptions,
   batchOptions,
 }: FilterFormProps) {
@@ -125,6 +130,25 @@ export function RecordFilterBar({
             ))}
           </Select>
         </Field>
+
+        {/* Above the rep picker, because that is the order of the hierarchy:
+            pick a team, then a rep inside it. The two are independent filters
+            and both AND with the viewer's scope, so leaving a rep selected
+            while switching team simply narrows to nothing rather than
+            contradicting itself. */}
+        {showTlId ? (
+          <Field label="Team leader" htmlFor="filter-tl">
+            <Select id="filter-tl" value={draft.tlId ?? ''} onChange={(e) => apply({ tlId: e.target.value })}>
+              <option value="">All team leaders</option>
+              {tlIdOptions.map((option) => (
+                <option key={option.tlId} value={option.tlId}>
+                  {option.tlId}
+                  {option.tlName ? ` — ${option.tlName}` : ''}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        ) : null}
 
         {showSmId ? (
           <Field label="SM ID" htmlFor="filter-sm">

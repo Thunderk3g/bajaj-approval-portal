@@ -15,10 +15,10 @@
  */
 
 import { and, asc, count, eq, exists, gte, lte, notInArray, sql, type SQL } from 'drizzle-orm';
-import type { PgColumn } from 'drizzle-orm/pg-core';
+import { alias, type PgColumn } from 'drizzle-orm/pg-core';
 import { db } from '@/db/client';
-import { correctionRequest, manpower, salesRecord, uploadBatch } from '@/db/schema';
-import { scopedRecordCondition, type SessionUser } from '@/lib/auth/rbac';
+import { correctionRequest, manpower, manpowerOverride, salesRecord, uploadBatch } from '@/db/schema';
+import { scopedRecordCondition, teamSmIds, type SessionUser } from '@/lib/auth/rbac';
 import { PLACEHOLDER_CODE_LIST } from '@/lib/roster/placeholders';
 import { ISSUED_STATUS } from '@/lib/records/gaps';
 import type { PageParams } from '@/lib/pagination';
@@ -148,6 +148,21 @@ function recordWhere(viewer: SessionUser, filters: RecordFilters): SQL | undefin
   if (filters.q) conditions.push(searchCondition(filters.q));
   if (filters.batchId) conditions.push(eq(salesRecord.sourceBatchId, filters.batchId));
   if (filters.smId) conditions.push(eq(salesRecord.smId, filters.smId));
+  /**
+   * The team leader drill-down — one more element in this array, never a
+   * replacement for element zero.
+   *
+   * `teamSmIds` is the same subquery `scopedRecordCondition` builds a TL's own
+   * scope from, so the two agree by construction about who is on a team,
+   * including the TL's own book. Because it is ANDed rather than substituted, an
+   * ACM who hand-types a team leader from another cluster gets the intersection
+   * of two disjoint sets — an empty grid — and never that team's rows. The
+   * filter can only ever narrow the scope it is combined with; that is the
+   * whole reason `parseRecordFilters` may hand it out to a manager at all.
+   */
+  if (filters.tlId) {
+    conditions.push(sql`${salesRecord.smId} in ${teamSmIds('tl_id', filters.tlId)}`);
+  }
   if (filters.status) conditions.push(eq(salesRecord.status, filters.status));
   if (filters.issuedFrom) conditions.push(gte(salesRecord.issuedDate, filters.issuedFrom));
   if (filters.issuedTo) conditions.push(lte(salesRecord.issuedDate, filters.issuedTo));
@@ -340,4 +355,53 @@ export async function listSmIdOptions(
     .from(manpower)
     .where(and(eq(manpower.isOrphan, false), notInArray(manpower.smId, PLACEHOLDER_CODE_LIST)))
     .orderBy(asc(manpower.smId));
+}
+
+/**
+ * The team-leader dropdown — the drill-down from "this TL logged 93" to the 93.
+ *
+ * Admin and ACM only, matching `TL_ID_FILTER_ROLES`: a control offering a filter
+ * the parser will discard is a lie about what the screen can do.
+ *
+ * Read off the roster with the `coalesce(override, roster)` precedence the rest
+ * of the codebase uses, so a rep an admin has reassigned is counted under the
+ * team leader they are actually on — the same effective hierarchy `teamSmIds`,
+ * `resolveHierarchy` and the performance report all resolve. Scoped by the
+ * viewer's own cluster, so an area manager is never handed the code of a team
+ * leader outside it.
+ */
+export async function listTlOptions(
+  viewer: SessionUser,
+): Promise<Array<{ tlId: string; tlName: string | null }>> {
+  const acmCode = viewer.role === 'acm' ? (viewer.acmCode ?? null) : null;
+  if (viewer.role !== 'admin' && !acmCode) return [];
+
+  const effectiveTl = sql<string>`coalesce(${manpowerOverride.tlId}, ${manpower.tlId})`;
+
+  /**
+   * The name comes from the LEADER's own roster row, not from the rep's
+   * `tl_name` column.
+   *
+   * `tl_name` records whoever the sheet thought that rep's manager was; once an
+   * override has moved the rep it names a different person than the code beside
+   * it does. Joining code to code is what makes the label survive a reassignment
+   * — the same reason `managerNames` in the performance report is keyed by code.
+   */
+  const leader = alias(manpower, 'leader');
+
+  return db
+    .selectDistinct({ tlId: effectiveTl, tlName: leader.smName })
+    .from(manpower)
+    .leftJoin(manpowerOverride, eq(manpowerOverride.smId, manpower.smId))
+    .leftJoin(leader, sql`${leader.smId} = ${effectiveTl}`)
+    .where(
+      and(
+        acmCode ? sql`${manpower.smId} in ${teamSmIds('ccm_id', acmCode)}` : undefined,
+        sql`${effectiveTl} is not null`,
+        // `DIY` names itself as its own team leader, so without this the digital
+        // channel appears in the picker as a person somebody could drill into.
+        notInArray(effectiveTl, PLACEHOLDER_CODE_LIST),
+      ),
+    )
+    .orderBy(sql`1`);
 }

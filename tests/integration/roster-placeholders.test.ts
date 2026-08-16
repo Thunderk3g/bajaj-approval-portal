@@ -20,7 +20,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { db } from '@/db/client';
 import { manpower, salesRecord } from '@/db/schema';
 import type { SessionUser } from '@/lib/auth/rbac';
-import { loadHierarchyTree, loadUnplacedReps } from '@/lib/hierarchy/actions';
+import { loadHierarchyTree, loadUnplacedReps } from '@/lib/hierarchy/queries';
 import { listHierarchyGaps } from '@/lib/hierarchy/queries';
 import { listSmIdOptions } from '@/lib/records/query';
 import { listRoster, userCounts } from '@/lib/users/queries';

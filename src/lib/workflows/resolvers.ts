@@ -53,6 +53,20 @@ export function registerStageResolver(resolverKey: string, resolver: StageResolv
   RESOLVERS.set(resolverKey, resolver);
 }
 
+/**
+ * Whether a resolver key is known — the registry's only read accessor.
+ *
+ * Exists so the registration can be ASSERTED rather than assumed. Registration
+ * is a module side effect, `resolveStageAuthorization` degrades to UNRESOLVED
+ * when a key is missing rather than throwing, and the two together mean an entry
+ * point that forgot to load the hierarchy resolvers fails as "this step is
+ * waiting on an administrator" — a sentence that reads like a data problem and
+ * is in fact an import specifier. See tests/integration/resolver-registration.test.ts.
+ */
+export function getStageResolver(resolverKey: string): StageResolver | undefined {
+  return RESOLVERS.get(resolverKey);
+}
+
 export async function resolveStageAuthorization(
   ctx: StageContext,
   tx: DbTransaction,

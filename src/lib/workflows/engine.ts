@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, inArray, ne, sql } from 'drizzle-orm';
+import { and, asc, eq, gte, inArray, ne, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db/client';
 import {
   correctionEvent,
@@ -1019,6 +1019,101 @@ async function priorDeciders(tx: DbTransaction, requestId: string): Promise<stri
 }
 
 /* -------------------------------------------------------------- my queue */
+
+/**
+ * "This request's open rung is mine" — as a predicate, for somebody else's WHERE.
+ *
+ * THE correction this module owes the rest of the app. Every queue screen was
+ * written before the N-stage engine and asks `correction_request.status`
+ * instead: the verifier's lists `PENDING`, the approver's lists `VERIFIED`. Those
+ * were the only two states a request could hold when there were exactly two
+ * rungs, and they stopped describing anything the moment a chain could be longer
+ * — `advance` sets `VERIFIED` after ANY non-final rung passes, so it now means
+ * "somewhere past the first gate" and nothing more.
+ *
+ * What that costs, concretely, with the chains this application ships:
+ *
+ *   ISSUANCE_DATE is V1 → V2 → APPROVER. A request the first verifier clears
+ *   becomes VERIFIED with V2 open. The verifier's own queue files it under
+ *   "with approvers, no longer yours" and hides the form; the approver's queue
+ *   counts it as awaiting decision, offers the button, and `assertMayDecide`
+ *   refuses the click. The rung that is actually open is offered by no screen in
+ *   the product, so the request stops — and the only visible symptom is a queue
+ *   depth that will not go down.
+ *
+ * The stage table has always known the answer. `decideStageWithin` authorizes
+ * against exactly these three arms, so a queue built on this predicate offers a
+ * decision if and only if the engine will accept it — the queue and the gate can
+ * no longer disagree, because they are now the same statement asked twice.
+ *
+ * The third arm is the administrators' one. A hierarchy rung that resolved to
+ * nobody — no roster placement, or a manager with no account — opens UNRESOLVED,
+ * pins no user, and is decidable only by an admin (`assertMayDecide`). Until now
+ * nothing listed those, so "the step falls to the administrators" meant it fell
+ * out of the product entirely.
+ */
+export function actorStageCondition(actor: { id: string; role: string }): SQL {
+  return sql`exists (
+    select 1
+      from correction_request_stage acs
+     where acs.request_id = ${correctionRequest.id}
+       and acs.status = 'ACTIVE'
+       and (
+         acs.assigned_user_id = ${actor.id}
+         or (
+           acs.assigned_user_id is null
+           and acs.resolver_key = 'ROLE'
+           and acs.resolver_config ->> 'role' = ${actor.role}
+         )
+         or (
+           ${actor.role} = 'admin'
+           and acs.assigned_user_id is null
+           and acs.resolver_key <> 'ROLE'
+         )
+       )
+  )`;
+}
+
+/**
+ * The open rung of one request, and whether it is this actor's to decide.
+ *
+ * The single-request twin of `actorStageCondition`, so a detail screen decides
+ * whether to render its decision form from the same fact the queue used to list
+ * it — rather than from `status === 'PENDING'` (the verifier screen) or
+ * `status === 'VERIFIED'` (the approver's), each of which is wrong for a chain
+ * longer than two rungs in a different direction.
+ */
+export async function openStageFor(
+  requestId: string,
+  actor: { id: string; role: string },
+): Promise<{ stageKey: string; sequence: number; isMine: boolean } | null> {
+  const [row] = await db
+    .select({
+      stageKey: correctionRequestStage.stageKey,
+      sequence: correctionRequestStage.sequence,
+      assignedUserId: correctionRequestStage.assignedUserId,
+      resolverKey: correctionRequestStage.resolverKey,
+      resolverConfig: correctionRequestStage.resolverConfig,
+    })
+    .from(correctionRequestStage)
+    .where(
+      and(
+        eq(correctionRequestStage.requestId, requestId),
+        eq(correctionRequestStage.status, 'ACTIVE'),
+      ),
+    )
+    .limit(1);
+
+  if (!row) return null;
+
+  const pooledRole = (row.resolverConfig as { role?: string } | null)?.role;
+  const isMine =
+    row.assignedUserId === actor.id ||
+    (row.assignedUserId === null && row.resolverKey === 'ROLE' && pooledRole === actor.role) ||
+    (row.assignedUserId === null && row.resolverKey !== 'ROLE' && actor.role === 'admin');
+
+  return { stageKey: row.stageKey, sequence: row.sequence, isMine };
+}
 
 export type ActionableRow = {
   requestId: string;

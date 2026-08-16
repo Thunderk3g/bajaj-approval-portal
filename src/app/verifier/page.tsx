@@ -17,7 +17,7 @@ const QUEUE = '/verifier/queue';
 
 export default async function VerifierDashboardPage() {
   const user = await requireRoleOrRedirect('verifier');
-  const summary = await getVerifierSummary(user.id);
+  const summary = await getVerifierSummary(user);
   const oldestDays = summary.oldestPendingAt ? ageInDays(summary.oldestPendingAt) : null;
 
   return (

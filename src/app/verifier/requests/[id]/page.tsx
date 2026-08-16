@@ -4,6 +4,7 @@ import { Alert, Badge, Card, DetailRow, StatusBadge } from '@/components/ui';
 import { ageInDays, formatDateTime, orDash } from '@/lib/format';
 import { getRequestDetail } from '@/lib/approvals/queries';
 import { previewTarget } from '@/lib/approvals/apply';
+import { openStageFor } from '@/lib/workflows/engine';
 import { liveValueDrifted } from '@/lib/verification/apply';
 import { VerifyForm } from '@/components/verification/verify-form';
 import { ChainProgress } from '@/components/approvals/chain-progress';
@@ -35,16 +36,23 @@ export default async function VerifyRequestPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  await requireRole('verifier');
+  const viewer = await requireRole('verifier');
 
   const { id } = await params;
-  const detail = await getRequestDetail(id);
+  const detail = await getRequestDetail(viewer, id);
   if (!detail) notFound();
 
   const { request, record, mapping } = detail;
   const preview = previewTarget(request, record);
   const drift = await liveValueDrifted(request.id);
-  const isMine = request.status === 'PENDING';
+  // The OPEN RUNG, not the status. `status === 'PENDING'` described rung zero,
+  // which was the verifier's only while every chain was two rungs long. On
+  // `ISSUANCE_DATE` (V1 → V2 → APPROVER) a request this verifier can decide at
+  // V2 is `VERIFIED`, and this screen used to tell them it was with an approver
+  // and hide the form — leaving the rung open with nothing in the product able
+  // to close it.
+  const stage = await openStageFor(request.id, viewer);
+  const isMine = stage?.isMine ?? false;
   const age = ageInDays(request.submittedAt);
 
   // Ordered by what should stop a verifier first: no evidence at all, then a
@@ -119,20 +127,23 @@ export default async function VerifyRequestPage({
           <>
             <Card
               title="Your decision"
-              description={isMine ? 'Step 1 — the first gate. Nothing is written yet.' : undefined}
+              description={
+                isMine
+                  ? `Step ${(stage?.sequence ?? 0) + 1} of ${request.totalStages} — nothing is written yet.`
+                  : undefined
+              }
             >
               {isMine ? (
                 <VerifyForm requestId={request.id} caution={cautions[0] ?? null} />
               ) : (
                 <div className="space-y-3">
                   <Alert tone="info">
-                    This request is <strong>{request.status}</strong> and is no longer awaiting
-                    verification.
-                    {request.status === 'VERIFIED'
-                      ? ' It is with an approver, who decides whether to apply it.'
-                      : request.status === 'RETURNED'
-                        ? ' It is with the submitter, who can edit and resubmit it on this same request.'
-                        : ''}
+                    {stage
+                      ? `This request is open at the ${stage.stageKey} step, which is not yours to decide.`
+                      : 'This request is finished — there is no open step left on it.'}{' '}
+                    {request.status === 'RETURNED'
+                      ? 'It is with the submitter, who can edit and resubmit it on this same request.'
+                      : ''}
                   </Alert>
                   <dl>
                     <DetailRow label="Verified by">{orDash(detail.verifierName)}</DetailRow>

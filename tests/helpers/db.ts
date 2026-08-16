@@ -2,14 +2,20 @@ import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { user } from '@/db/schema';
-import type { Role } from '@/lib/auth/rbac';
+import type { Role, SessionUser } from '@/lib/auth/rbac';
 
+/**
+ * `manpower_override` is named explicitly: it has no FK to `manpower` —
+ * deliberately, so an admin can stage a reassignment before the sheet catches up
+ * — which also means it does not cascade with it. Left out, one suite's override
+ * silently re-parented the next suite's reps.
+ */
 export async function truncateAll() {
   await db.execute(sql`
     truncate table
       "correction_event", "correction_attachment", "correction_request",
       "sales_record_version", "sales_record", "lead",
-      "upload_batch_row", "upload_batch", "manpower",
+      "upload_batch_row", "upload_batch", "manpower", "manpower_override",
       "period",
       "audit_log", "notification", "excel_export",
       "session", "account", "verification", "user"
@@ -115,4 +121,24 @@ export async function makeUser(overrides: UserOverrides = {}) {
     })
     .returning();
   return row;
+}
+
+/**
+ * A `makeUser` row as the session the query layer expects.
+ *
+ * The two shapes already agree field for field; this exists so a test says
+ * `sessionFor(rep)` rather than casting, and so the day `SessionUser` gains a
+ * field the compiler names every test that has to supply it.
+ */
+export function sessionFor(row: Awaited<ReturnType<typeof makeUser>>): SessionUser {
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    role: row.role as Role,
+    smId: row.smId,
+    tlCode: row.tlCode,
+    acmCode: row.acmCode,
+    isActive: row.isActive,
+  };
 }
