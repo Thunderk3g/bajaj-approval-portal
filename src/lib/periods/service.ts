@@ -105,12 +105,6 @@ export async function periodByCode(code: string, tx?: DbTransaction): Promise<Pe
   return row ?? null;
 }
 
-export async function listPeriods(): Promise<PeriodRow[]> {
-  // By code, not createdAt: periods can be created out of order if an admin
-  // uploads a back-dated file, and the list has to read as a calendar.
-  return db.select().from(period).orderBy(sql`${period.code} desc`);
-}
-
 /**
  * Which period a correction against this record belongs to.
  *

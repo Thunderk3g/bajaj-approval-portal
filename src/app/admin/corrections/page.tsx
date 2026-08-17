@@ -26,6 +26,7 @@ import {
   listStuckStages,
   parseCorrectionFilters,
 } from './query';
+import { RetryRouting } from './retry-routing';
 
 export const metadata: Metadata = {
   title: 'Corrections · Sales Data Review Portal',
@@ -95,6 +96,10 @@ export default async function AdminCorrectionsPage({
                   <span className="ml-auto text-[11px] text-slate-500">
                     raised {formatDateTime(stage.submittedAt)}
                   </span>
+                  {/* The rung may have become routable since it opened — a
+                      manager provisioned, a chain given a name. Nothing else
+                      re-asks that question. */}
+                  <RetryRouting requestId={stage.requestId} />
                 </li>
               ))}
             </ul>

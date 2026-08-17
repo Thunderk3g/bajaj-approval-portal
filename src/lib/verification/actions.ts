@@ -118,8 +118,9 @@ export async function returnFromVerificationAction(
  *
  * The approver's twin, and the same reasoning: `requireRole('verifier')` runs
  * here because the endpoint is reachable without the page, each id travels the
- * unmodified single-request path so `lockPending` still decides who wins a race,
- * and the batch reports per-request rather than collapsing to a total.
+ * unmodified single-request path so the engine's `SELECT ... FOR UPDATE` on the
+ * request row still decides who wins a race, and the batch reports per-request
+ * rather than collapsing to a total.
  *
  * `VerificationOutcome` carries no `warnings`, so `runBulk` contributes none —
  * its `warnings ?? []` is what lets the two stages share it without the verifier

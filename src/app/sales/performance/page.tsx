@@ -14,13 +14,16 @@ import {
 } from '@/components/ui';
 import { AuthzError } from '@/lib/auth/errors';
 import { requireRoleOrRedirect } from '@/lib/auth/page';
+import { OutcomeReasons, PeerComparison } from '@/components/charts/performance-view';
 import {
   formatPercent,
   issuanceRate,
+  loadOutcomeReasons,
   loadRepStanding,
   ratio,
-  refusalRate,
+  rejectionRate,
   resolvePeriodFilter,
+  type OutcomeReason,
   type PerformanceMetrics,
   type RepStanding,
 } from '@/lib/dashboard/performance';
@@ -55,8 +58,12 @@ export default async function SalesPerformancePage({
   const period = await resolvePeriodFilter(requested);
 
   let standing: RepStanding;
+  let reasons: OutcomeReason[] = [];
   try {
-    standing = await loadRepStanding(viewer, period.periodId);
+    [standing, reasons] = await Promise.all([
+      loadRepStanding(viewer, period.periodId),
+      loadOutcomeReasons(viewer, period.periodId),
+    ]);
   } catch (error) {
     if (error instanceof AuthzError) {
       return (
@@ -133,7 +140,7 @@ export default async function SalesPerformancePage({
             tone="warning"
             title={`${n(own.unclassified)} of your applications carry a status the portal does not recognise`}
           >
-            They are counted as pending so that issued, refused and pending still add up to your
+            They are counted as pending so that issued, rejected and pending still add up to your
             logins — but the issuance figure below is understated until somebody says what that
             status means. Worth raising with your team leader.
           </Alert>
@@ -149,10 +156,10 @@ export default async function SalesPerformancePage({
           tone={own.issued > 0 ? 'success' : 'default'}
         />
         <StatCard
-          label="Refused"
-          value={n(own.refused)}
-          hint={`${formatPercent(refusalRate(own))} of my logins`}
-          tone={own.refused > 0 ? 'danger' : 'default'}
+          label="Rejected"
+          value={n(own.rejected)}
+          hint={`${formatPercent(rejectionRate(own))} of my logins`}
+          tone={own.rejected > 0 ? 'danger' : 'default'}
         />
         <StatCard label="My ANP" value={formatMoney(own.anp)} hint={`FP ${formatMoney(own.fp)}`} />
       </div>
@@ -202,7 +209,12 @@ export default async function SalesPerformancePage({
                     </Td>
                   </tr>
                   <Comparison label="Issuance" mine={issuanceRate(own)} theirs={issuanceRate(team)} />
-                  <Comparison label="Refusal" mine={refusalRate(own)} theirs={refusalRate(team)} lowerIsBetter />
+                  <Comparison
+                    label="Rejection"
+                    mine={rejectionRate(own)}
+                    theirs={rejectionRate(team)}
+                    lowerIsBetter
+                  />
                   <tr>
                     <Td>ANP</Td>
                     <Td className="text-right tabular-nums">{formatMoney(own.anp)}</Td>
@@ -221,6 +233,21 @@ export default async function SalesPerformancePage({
           </Card>
         )}
       </div>
+
+      {/* A rank among the team, and not one colleague's row — `loadRepStanding`
+          reduces the peers to a position before they ever reach this page, and
+          it resolves the team from the roster rather than from the URL. */}
+      {standing.standing ? (
+        <div className="mt-4">
+          <PeerComparison standing={standing.standing} />
+        </div>
+      ) : null}
+
+      {reasons.length > 0 ? (
+        <div className="mt-4">
+          <OutcomeReasons reasons={reasons} totals={own} />
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -281,7 +308,7 @@ function StatusRow({ own }: { own: PerformanceMetrics }) {
       <Td className="text-right tabular-nums">{n(own.pending)}</Td>
       <Td className="text-right tabular-nums">—</Td>
       <Td className="text-[11px] text-slate-500">
-        {n(own.issued)} issued + {n(own.refused)} refused + {n(own.pending)} pending ={' '}
+        {n(own.issued)} issued + {n(own.rejected)} rejected + {n(own.pending)} pending ={' '}
         {n(own.logins)} logins
       </Td>
     </tr>

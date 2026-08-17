@@ -28,7 +28,7 @@ export default async function AreaManagerPerformancePage({
       // account's own cluster scope, so the link narrows and never widens.
       recordsBasePath="/acm/records"
       title="Cluster performance"
-      description="Your team leaders side by side, expandable to every rep beneath them. Login share is each row's share of your cluster's logins, not of the company's."
+      description="Your team leaders side by side, expandable to every rep beneath them, and where your cluster sits against the others. An application the sheet marks issued but whose Status 2 says APPROVED counts as pending, and one cancelled in the free-look window counts as rejected."
       totalsLabel="My cluster"
       emptyTitle="No records in your cluster for this period"
       emptyDescription="Your teams' policies appear here once an administrator commits a business dashboard covering this month. A rep placed under no team leader still counts towards your total and is listed as unplaced."

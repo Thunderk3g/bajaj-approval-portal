@@ -1,4 +1,4 @@
-import { and, count, eq, sql } from 'drizzle-orm';
+import { count, eq, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { correctionRequest, period, salesRecord, uploadBatch, user } from '@/db/schema';
 import { LOCKING_STATUSES } from '@/lib/corrections/service';
@@ -66,50 +66,6 @@ export async function listPeriodSummaries(): Promise<PeriodSummary[]> {
     .from(period)
     .leftJoin(user, eq(user.id, period.closedBy))
     .orderBy(sql`${period.code} desc`);
-}
-
-/**
- * What an admin sees before confirming a close.
- *
- * Split by stage, not just totalled. "12 open requests" reads as a reason to
- * wait; "9 awaiting verification, 3 awaiting approval" tells the admin who to
- * chase — and closing does not block any of them anyway, so the only value this
- * has is telling somebody what to do next.
- */
-export type CloseImpact = {
-  label: string;
-  pending: number;
-  verified: number;
-  returned: number;
-  total: number;
-};
-
-export async function closeImpact(periodId: string): Promise<CloseImpact | null> {
-  const [row] = await db
-    .select({ label: period.label })
-    .from(period)
-    .where(eq(period.id, periodId))
-    .limit(1);
-
-  if (!row) return null;
-
-  const rows = await db
-    .select({ status: correctionRequest.status, total: sql<number>`count(*)::int` })
-    .from(correctionRequest)
-    .where(
-      and(
-        eq(correctionRequest.periodId, periodId),
-        sql`${correctionRequest.status} in ('PENDING','VERIFIED','RETURNED')`,
-      ),
-    )
-    .groupBy(correctionRequest.status);
-
-  const of = (status: string) => rows.find((r) => r.status === status)?.total ?? 0;
-  const pending = of('PENDING');
-  const verified = of('VERIFIED');
-  const returned = of('RETURNED');
-
-  return { label: row.label, pending, verified, returned, total: pending + verified + returned };
 }
 
 /**

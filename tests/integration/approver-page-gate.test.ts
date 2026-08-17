@@ -30,10 +30,11 @@ import { makeUser, truncateAll } from '../helpers/db';
  *
  * The whole suite stayed green through that, and the reason is worth stating,
  * because it is the thing this file fixes rather than the bug itself. The DOMAIN
- * gate was never wrong — `decideWithin` locks on
- * `WHERE status = APPROVABLE_STATUS` and `verification-flow.test.ts` covers it
- * thoroughly. Only the screen disagreed with it, and nothing anywhere looked at
- * the screen. A gate asserted on one side of a boundary is not asserted.
+ * gate was never wrong — `decideStageWithin` takes the request row `FOR UPDATE`
+ * and then asks `assertMayDecide` about the ACTIVE stage, and
+ * `verification-flow.test.ts` covers it thoroughly. Only the screen disagreed
+ * with it, and nothing anywhere looked at the screen. A gate asserted on one
+ * side of a boundary is not asserted.
  *
  * So these tests deliberately do NOT re-test the domain rule. They test that the
  * page agrees with it, for every status the enum can hold — including the ones

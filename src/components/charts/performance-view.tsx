@@ -18,14 +18,20 @@ import type { SessionUser } from '@/lib/auth/rbac';
 import { formatMoney } from '@/lib/format';
 import {
   RUNG_LABELS,
+  OUTCOMES,
   formatPercent,
   issuanceRate,
+  loadManagerStanding,
+  loadOutcomeReasons,
   loadPerformance,
   loginShare,
   parsePerformanceParams,
-  refusalRate,
+  rejectionRate,
   resolvePeriodFilter,
   sortPerformanceRows,
+  type OutcomeReason,
+  type PeerStanding,
+  type PerformanceMetrics,
   type PerformanceParams,
   type PerformanceReport,
   type PerformanceRow,
@@ -82,9 +88,22 @@ export async function PerformanceScreen({
   const period = await resolvePeriodFilter(parsed.period);
   const view = { ...parsed, period: period.code };
 
+  // The manager's own code, or null for an admin — an admin is not a competitor
+  // in the ranking and has the whole table in front of them anyway.
+  const peerRung = viewer.role === 'tl' ? 'tl' : viewer.role === 'acm' ? 'acm' : null;
+  const peerCode = viewer.role === 'tl' ? viewer.tlCode : viewer.role === 'acm' ? viewer.acmCode : null;
+
   let report: PerformanceReport;
+  let standing: PeerStanding | null = null;
+  let reasons: OutcomeReason[] = [];
   try {
-    report = await loadPerformance({ viewer, rung: view.rung, periodId: period.periodId });
+    [report, standing, reasons] = await Promise.all([
+      loadPerformance({ viewer, rung: view.rung, periodId: period.periodId }),
+      peerRung && peerCode
+        ? loadManagerStanding(peerRung, peerCode, period.periodId)
+        : Promise.resolve(null),
+      loadOutcomeReasons(viewer, period.periodId),
+    ]);
   } catch (error) {
     // The only refusal reachable here is a manager account whose roster code was
     // never filled in. That is an administrator's fix, not a crash — spelled out
@@ -104,7 +123,17 @@ export async function PerformanceScreen({
     throw error;
   }
 
-  return <PerformanceView {...rest} report={report} view={view} rungs={rungs} periods={period.options} />;
+  return (
+    <PerformanceView
+      {...rest}
+      report={report}
+      view={view}
+      rungs={rungs}
+      periods={period.options}
+      standing={standing}
+      reasons={reasons}
+    />
+  );
 }
 
 export type PeriodOption = { code: string; label: string; status: string };
@@ -138,11 +167,17 @@ export type PerformanceViewProps = {
   recordsBasePath?: string;
   /** Rendered above the table — a cluster note, a warning, a link out. */
   children?: React.ReactNode;
+  /** Where this manager's own book sits among their peers. Null for an admin. */
+  standing?: PeerStanding | null;
+  /** The `status_2` behind each outcome — why the pending are pending. */
+  reasons?: readonly OutcomeReason[];
 };
 
 export function PerformanceView(props: PerformanceViewProps) {
   const { report, view, basePath, periods, totalsLabel } = props;
   const { totals } = report;
+  const standing = props.standing ?? null;
+  const reasons = props.reasons ?? [];
 
   const rows = sortPerformanceRows(report.rows, totals, view.sort, view.dir);
   const selectedPeriod = periods.find((p) => p.code === view.period);
@@ -238,10 +273,10 @@ export function PerformanceView(props: PerformanceViewProps) {
               totals.unclassified === 1 ? 'application carries' : 'applications carry'
             } a status this portal does not recognise`}
           >
-            Issued, refused and pending always add up to logins, so these are counted as pending.
-            They are neither ISSUED nor REJECTED nor PENDING, which means the source file has
-            started using a fourth value — the issuance and refusal percentages below are
-            understated until somebody says what it means.
+            Issued, rejected and pending always add up to logins, so these are counted as pending —
+            the reading that cannot overstate production. They are none of ISSUED, PENDING or
+            REJECTED, which means the source file has started using a fourth value, and the
+            issuance percentage below is understated until somebody says what it means.
           </Alert>
         </div>
       ) : null}
@@ -255,14 +290,38 @@ export function PerformanceView(props: PerformanceViewProps) {
           tone={totals.issued > 0 ? 'success' : 'default'}
         />
         <StatCard
-          label="Refused"
-          value={n(totals.refused)}
-          hint={`${formatPercent(refusalRate(totals))} refusal`}
-          tone={totals.refused > 0 ? 'danger' : 'default'}
+          label="Rejected"
+          value={n(totals.rejected)}
+          hint={`${formatPercent(rejectionRate(totals))} — declined, postponed or cancelled`}
+          tone={totals.rejected > 0 ? 'danger' : 'default'}
         />
-        <StatCard label="Pending" value={n(totals.pending)} hint="Neither issued nor refused" />
+        <StatCard label="Pending" value={n(totals.pending)} hint="Still in flight" />
         <StatCard label="ANP" value={formatMoney(totals.anp)} hint={`FP ${formatMoney(totals.fp)}`} />
       </div>
+
+      {/* The invariant, on screen. Every one of these is read off Status 2, and
+          a reader who adds the three cards up is entitled to get the first one. */}
+      <p className="mt-2 text-[11px] text-slate-500">
+        {n(totals.issued)} issued + {n(totals.rejected)} rejected + {n(totals.pending)} pending ={' '}
+        {n(totals.logins)} logins. The outcome is{' '}
+        <span className="font-mono text-[11px] text-slate-700">Status</span>, corrected by{' '}
+        <span className="font-mono text-[11px] text-slate-700">Status 2</span> in the two cases the
+        sheet leaves standing at issued: an application whose Status 2 is APPROVED is still pending,
+        and one whose Status 2 is FREELOOK CANCEL was cancelled inside the free-look window and is
+        not production.
+      </p>
+
+      {standing ? (
+        <div className="mt-4">
+          <PeerComparison standing={standing} />
+        </div>
+      ) : null}
+
+      {reasons.length > 0 ? (
+        <div className="mt-4">
+          <OutcomeReasons reasons={reasons} totals={totals} />
+        </div>
+      ) : null}
 
       {props.children ? <div className="mt-4">{props.children}</div> : null}
 
@@ -288,11 +347,11 @@ export function PerformanceView(props: PerformanceViewProps) {
                 <SortHeader view={view} href={href} column="issuance">
                   Issuance
                 </SortHeader>
-                <SortHeader view={view} href={href} column="refused" numeric>
-                  Refused
+                <SortHeader view={view} href={href} column="rejected" numeric>
+                  Rejected
                 </SortHeader>
-                <SortHeader view={view} href={href} column="refusal">
-                  Refusal
+                <SortHeader view={view} href={href} column="rejection">
+                  Rejection
                 </SortHeader>
                 <SortHeader view={view} href={href} column="pending" numeric>
                   Pending
@@ -395,14 +454,185 @@ function PerformanceRowCells({
       <Td className="min-w-[7.5rem]">
         <Meter value={issuanceRate(row)} tone="positive" />
       </Td>
-      <Td className="text-right tabular-nums">{n(row.refused)}</Td>
+      <Td className="text-right tabular-nums">{n(row.rejected)}</Td>
       <Td className="min-w-[7.5rem]">
-        <Meter value={refusalRate(row)} tone="negative" />
+        <Meter value={rejectionRate(row)} tone="negative" />
       </Td>
       <Td className="text-right tabular-nums">{n(row.pending)}</Td>
       <Td className="text-right tabular-nums">{formatMoney(row.anp)}</Td>
       <Td className="text-right tabular-nums">{formatMoney(row.fp)}</Td>
     </tr>
+  );
+}
+
+const RANK_SUBJECT: Record<PerformanceRung, { own: string; peers: string; field: string }> = {
+  // A rep is ranked inside their own team, so the pooled rate beside the median
+  // is the TEAM's, not the company's. Saying "across the company" there would be
+  // a different number under the same words.
+  sm: { own: 'You', peers: 'the reps on your team', field: 'across your team' },
+  tl: { own: 'Your team', peers: 'every team in the company', field: 'across the company' },
+  acm: { own: 'Your cluster', peers: 'every cluster in the company', field: 'across the company' },
+};
+
+/** 1st, 2nd, 3rd — a rank reads as a rank, not as a quantity. */
+function ordinal(value: number): string {
+  const tens = value % 100;
+  const suffix = tens >= 11 && tens <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][value % 10] ?? 'th';
+  return `${value}${suffix}`;
+}
+
+/**
+ * Where this book sits among its peers — a position, never a leaderboard.
+ *
+ * The product owner asked how their team compares with the other teams, and the
+ * honest answer to that is a rank and a middle. It is deliberately NOT a list of
+ * the other teams: `loadManagerStanding` reduces the peer rows to these four
+ * numbers before they leave the query, so this card cannot name anybody even if
+ * a later edit wanted it to.
+ *
+ * Median and pooled average are both here because they answer different
+ * questions — the median is the typical team, the average is the company's own
+ * issuance rate, and a team above one and below the other is a real and
+ * informative position to be in.
+ */
+export function PeerComparison({ standing }: { standing: PeerStanding }) {
+  const subject = RANK_SUBJECT[standing.rung];
+  const versus = standing.median === null || standing.rate === null
+    ? null
+    : (standing.rate - standing.median) * 100;
+
+  return (
+    <Card
+      title={`${subject.own} against ${subject.peers}`}
+      description="Ranked on issuance — issued over logins. Nobody else's figures are shown, only where you sit among them."
+    >
+      <div className="-m-4 grid gap-px bg-slate-100 sm:grid-cols-3">
+        <div className="bg-white p-4">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.07em] text-slate-500">
+            Rank
+          </p>
+          <p className="mt-1 text-[25px] leading-tight font-semibold tracking-[-0.02em] tabular-nums text-slate-900">
+            {standing.rank === null ? '—' : ordinal(standing.rank)}
+          </p>
+          <p className="mt-1 text-[11px] text-slate-500">
+            {standing.rank === null
+              ? 'nothing logged, so there is no position to hold'
+              : `of ${n(standing.peers)} with business this period`}
+          </p>
+        </div>
+        <div className="bg-white p-4">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.07em] text-slate-500">
+            My issuance
+          </p>
+          <p className="mt-1 text-[25px] leading-tight font-semibold tracking-[-0.02em] tabular-nums text-slate-900">
+            {formatPercent(standing.rate)}
+          </p>
+          <p className="mt-1 text-[11px] text-slate-500">
+            {versus === null ? (
+              'no median to compare against'
+            ) : (
+              <>
+                {Math.abs(versus).toFixed(1)} points{' '}
+                {versus === 0 ? 'level with' : versus > 0 ? 'above' : 'below'} the median
+                <span className="ml-1.5">
+                  <Badge tone={versus >= 0 ? 'success' : 'warning'}>
+                    {versus >= 0 ? 'ahead' : 'behind'}
+                  </Badge>
+                </span>
+              </>
+            )}
+          </p>
+        </div>
+        <div className="bg-white p-4">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.07em] text-slate-500">
+            The field
+          </p>
+          <p className="mt-1 text-[25px] leading-tight font-semibold tracking-[-0.02em] tabular-nums text-slate-900">
+            {formatPercent(standing.median)}
+          </p>
+          <p className="mt-1 text-[11px] text-slate-500">
+            median · {formatPercent(standing.average)} {subject.field}
+          </p>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+const OUTCOME_LABEL = { issued: 'Issued', pending: 'Pending', rejected: 'Rejected' } as const;
+
+/**
+ * What is behind each outcome — the answer to "why is this one stuck".
+ *
+ * Three statuses is the vocabulary the business uses, but a decline, a
+ * postponement and a free-look cancellation are three different problems with
+ * three different remedies, and folding them into one REJECTED count without
+ * this panel would lose that. Pending is the same in reverse: `FR-AR` means the
+ * file is with underwriting and `C_OFFER` means the customer has an offer to
+ * accept, and those are different phone calls to make. Even ISSUED has a reason
+ * worth reading — a `PRE-UNITIZE` policy is issued with its units not yet
+ * allotted.
+ *
+ * A blank Status 2 is the common case on a pending row — 297 of 375 in the June
+ * file — and renders as an em dash. It is the absence of a reason, and printing
+ * anything else there would be inventing one.
+ */
+export function OutcomeReasons({
+  reasons,
+  totals,
+}: {
+  reasons: readonly OutcomeReason[];
+  totals: PerformanceMetrics;
+}) {
+  const shown = OUTCOMES.filter((outcome) => reasons.some((row) => row.outcome === outcome));
+  if (shown.length === 0) return null;
+
+  return (
+    <Card
+      title="Why they sit where they do"
+      description="The Status 2 behind each outcome — Rejected · PSTPNE6 is a postponement, Pending · C_OFFER is an offer with the customer. The outcome is one count; the remedy is not."
+    >
+      <div className="-m-4 grid gap-px bg-slate-100 sm:grid-cols-3">
+        {shown.map((outcome) => {
+          const rows = reasons.filter((row) => row.outcome === outcome);
+          const total = totals[outcome];
+
+          return (
+            <div key={outcome} className="bg-white p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-500">
+                {OUTCOME_LABEL[outcome]} · {n(total)}
+              </p>
+              <ul className="mt-2 space-y-1">
+                {rows.map((row) => (
+                  <li
+                    key={row.reason ?? 'blank'}
+                    className="flex items-baseline gap-2 text-[12px] text-slate-700"
+                  >
+                    {row.reason === null ? (
+                      <span className="text-slate-400" title="The sheet records no reason">
+                        —
+                      </span>
+                    ) : (
+                      <span className="font-mono text-[11px] text-slate-900">{row.reason}</span>
+                    )}
+                    <span className="ml-auto tabular-nums">{n(row.count)}</span>
+                    <span className="w-[3.5rem] shrink-0 text-right tabular-nums text-slate-500">
+                      {formatPercent(total > 0 ? row.count / total : null)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {rows.some((row) => row.reason === null) ? (
+                <p className="mt-2 text-[11px] text-slate-500">
+                  &mdash; is an application whose Status 2 the sheet left blank: pending with no
+                  reason recorded.
+                </p>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </Card>
   );
 }
 

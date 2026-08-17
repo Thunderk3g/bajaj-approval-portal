@@ -25,7 +25,7 @@ export default async function TeamLeaderPerformancePage({
       rungTabs={{ sm: 'My reps' }}
       recordsBasePath="/tl/records"
       title="Team performance"
-      description="Every rep on your team, and your team's own total. Issuance is issued over logins; login share is that rep's share of the team's logins, so the column adds to 100%."
+      description="Every rep on your team, your team's own total, and where that total sits against the other teams. An application the sheet marks issued but whose Status 2 says APPROVED counts as pending, and one cancelled in the free-look window counts as rejected."
       totalsLabel="My team"
       emptyTitle="No records for your team in this period"
       emptyDescription="Your reps' policies appear here once an administrator commits a business dashboard covering this month. If the roster has just changed, a rep moved onto your team brings their records with them."

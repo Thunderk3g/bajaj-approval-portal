@@ -24,7 +24,7 @@ export default async function AdminPerformancePage({
       // matching record filter, so those rows stay plain text.
       recordsBasePath="/admin/records"
       title="Performance"
-      description="Issuance, refusal and share of logins, across everything imported. Switch the rung to read the same figures by rep, by team leader or by area manager."
+      description="Issuance, rejection and share of logins, across everything imported, with Status 2 correcting Status where the sheet leaves an approved or free-look-cancelled application standing at issued. Switch the rung to read the same figures by rep, by team leader or by area manager."
       totalsLabel="Every record imported"
       emptyTitle="No records in this period"
       emptyDescription="Commit a business dashboard for this month and every figure on this page fills in. If a month is already committed, widen the period filter to All periods."

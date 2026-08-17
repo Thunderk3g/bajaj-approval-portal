@@ -5,6 +5,7 @@ import {
   correctionRequest,
   correctionRequestStage,
   salesRecord,
+  user as userTable,
 } from '@/db/schema';
 import { writeAudit, type DbTransaction } from '@/lib/audit/log';
 import {
@@ -216,10 +217,11 @@ export async function decideStage(input: DecideStageInput): Promise<DecideStageO
 /**
  * Locks in a fixed order — record, then request, then stage.
  *
- * The order is the deadlock story and it has to match `lockRecordAndRequest` in
- * approvals/apply.ts, because both paths can be live at once during the
- * transition. Two transactions that take the same rows in opposite orders will
- * eventually take each other's first lock and wait forever; taking the record
+ * The order is the deadlock story. Every path that touches both rows takes the
+ * record first, so two concurrent decisions against the same record queue rather
+ * than each holding what the other wants. Two transactions that took the same
+ * rows in opposite orders would eventually take each other's first lock and wait
+ * forever; taking the record
  * first everywhere makes that impossible rather than unlikely.
  */
 /**
@@ -770,12 +772,31 @@ export async function decideStageWithin(
     })
     .where(eq(correctionRequest.id, request.id));
 
+  /**
+   * A verification is a verification at whatever rung it happens.
+   *
+   * This asked `stage.sequence === 0 && stage.resolverConfig?.role === 'verifier'`,
+   * which is the two-rung world's definition and misses in both directions now:
+   *
+   *   - a SECOND verification step (`ISSUANCE_DATE` is V1 → V2 → APPROVER,
+   *     `BAU_TO_BFL` is V3 → V4 → V5 → APPROVER) is not sequence 0, and
+   *   - a step that names a verifier by user id rather than by role pool — which
+   *     is how every seeded V-step is configured — carries no `role` in its
+   *     config at all, so even the first rung failed the test.
+   *
+   * Both wrote ADVANCED, and the verifier's own history and weekly counter
+   * filter on `action = 'VERIFIED'`, so a verifier could clear a step and see no
+   * record of having done it.
+   *
+   * Keyed on the DECIDER's role instead of the stage's shape, which is the same
+   * question `listVerifierHistory` already asks when it joins `actor.role =
+   * 'verifier'` — one fact, asked once. Chains whose stage 0 is a verifier
+   * produce exactly the rows they always did, so history and the timeline are
+   * unchanged for everything that already worked.
+   */
   await tx.insert(correctionEvent).values({
     requestId: request.id,
-    // VERIFIED keeps its exact old meaning — stage 0 of a chain whose stage 0 is
-    // a verifier — so historical rows and the timeline that renders them are
-    // untouched. Every other rung passing is ADVANCED.
-    action: stage.sequence === 0 && stage.resolverConfig?.role === 'verifier' ? 'VERIFIED' : 'ADVANCED',
+    action: input.actor.role === 'verifier' ? 'VERIFIED' : 'ADVANCED',
     actorId: input.actor.id,
     fromStatus: request.status,
     toStatus: 'VERIFIED',
@@ -787,10 +808,7 @@ export async function decideStageWithin(
   await writeAudit(
     {
       actor: input.actor,
-      action:
-        stage.sequence === 0 && stage.resolverConfig?.role === 'verifier'
-          ? 'CORRECTION_VERIFY'
-          : 'CORRECTION_ADVANCE',
+      action: input.actor.role === 'verifier' ? 'CORRECTION_VERIFY' : 'CORRECTION_ADVANCE',
       entityType: 'correction_request',
       entityId: request.id,
       before: { status: request.status, stage: stage.stageKey },
@@ -942,6 +960,8 @@ async function openStage(
     ? `${notice.resubmission ? 'Resubmitted' : 'New'} ${categoryLabel} correction from ${notice.actorName}`
     : `${pending.stageKey}: ${categoryLabel} correction — ${request.appsNo}`;
 
+  const roles = await rolesById(recipients, tx);
+
   const notifications: NotificationInput[] = recipients.map((userId) => ({
     userId,
     type: notice
@@ -951,7 +971,7 @@ async function openStage(
       : ('CORRECTION_VERIFIED' as const),
     title,
     body: `${request.fieldLabel} on application ${request.appsNo}: ${request.originalValue ?? '(blank)'} → ${request.proposedValue}`,
-    link: stageLink(pending, request.id),
+    link: stageLink(pending, request.id, roles.get(userId)),
   }));
 
   await notifyMany(notifications, tx);
@@ -972,7 +992,28 @@ function article(word: string): string {
  * their own space, and a link into somebody else's role prefix is bounced by the
  * guard on arrival — a notification the recipient cannot follow.
  */
-function stageLink(stage: StageRow, requestId: string): string {
+function stageLink(stage: StageRow, requestId: string, recipientRole?: string | null): string {
+  /**
+   * The RECIPIENT's role decides the prefix, not the resolver's shape.
+   *
+   * Resolver shape was a good enough proxy while every named-person rung was a
+   * manager and every pool rung was a verifier or an approver. It stopped being
+   * one the moment a `USER` stage could name anybody: the shipped `MAPPING_DIY`,
+   * `ISSUANCE_DATE` and `BAU_TO_BFL` chains all resolve their V-steps that way,
+   * so a verifier named on one was sent a notification pointing at
+   * `/admin/corrections/…` — a route only an administrator can open. They
+   * followed the link to their own work and were bounced.
+   *
+   * Falling back to the resolver shape keeps every previously-correct link
+   * identical, and the admin route remains the destination for a rung that
+   * resolved to nobody, which is genuinely theirs to clear.
+   */
+  if (recipientRole === 'verifier') return `/verifier/requests/${requestId}`;
+  if (recipientRole === 'approver') return `/approver/requests/${requestId}`;
+  if (recipientRole === 'tl') return `/tl/requests/${requestId}`;
+  if (recipientRole === 'acm') return `/acm/requests/${requestId}`;
+  if (recipientRole === 'admin') return `/admin/corrections/${requestId}`;
+
   const role = stage.resolverKey === 'ROLE' ? stage.resolverConfig?.role : null;
 
   if (role === 'verifier') return `/verifier/requests/${requestId}`;
@@ -982,6 +1023,24 @@ function stageLink(stage: StageRow, requestId: string): string {
   // An unroutable rung falls to the admins, so it must link somewhere they can
   // actually reach.
   return `/admin/corrections/${requestId}`;
+}
+
+/**
+ * The role of each user about to be notified, so their link lands in their own space.
+ *
+ * One query for the whole recipient list rather than one per notification: a
+ * ROLE pool can be every approver in the company.
+ */
+async function rolesById(
+  userIds: readonly string[],
+  tx: DbTransaction,
+): Promise<Map<string, string>> {
+  if (userIds.length === 0) return new Map();
+  const rows = await tx
+    .select({ id: userTable.id, role: userTable.role })
+    .from(userTable)
+    .where(inArray(userTable.id, [...userIds]));
+  return new Map(rows.map((r) => [r.id, r.role as string]));
 }
 
 /**
@@ -1177,4 +1236,191 @@ export async function listActionableForUser(actor: {
     .orderBy(asc(correctionRequest.submittedAt));
 
   return rows;
+}
+
+/* ------------------------------------------------------- routing a stuck rung */
+
+export type RerouteOutcome = {
+  requestId: string;
+  appsNo: string;
+  stageKey: string;
+  routed: boolean;
+  /** Why it still cannot be routed, when `routed` is false. */
+  reason: string | null;
+  notified: number;
+};
+
+/**
+ * Re-resolves an open rung that resolved to nobody when it was opened.
+ *
+ * A request's stages are COPIED from the chain at submission and never re-read —
+ * deliberately, and that rule stays: a chain edited mid-review must not silently
+ * move a request somebody has already opened, and a rep reassigned to a new team
+ * leader must not re-route a decision in flight.
+ *
+ * The rule has one hole, and it is the whole reason this function exists. A rung
+ * that resolved to NOBODY froze nothing worth keeping. The seeded `MAPPING_DIY`,
+ * `ISSUANCE_DATE`, `BAU_TO_BFL`, `OTHERS` and `AGENT_ID` chains all ship with
+ * `USER` stages whose `resolver_config` is `{}` — no person configured — so every
+ * request onto them opens ACTIVE, pinned to nobody, and stops. Naming a verifier
+ * on the chain afterwards fixed the chain and did nothing for the requests
+ * already stranded behind it: they stayed dangling with no way, anywhere in the
+ * product, to get them moving again.
+ *
+ * So: only ever touches a rung that is ACTIVE **and** unresolved — no
+ * `assigned_user_id`, and not a `ROLE` pool (a pool always has an answer, even if
+ * the pool is currently empty). A rung that resolved to a real person is left
+ * exactly alone, which is what preserves the freeze.
+ *
+ * Matched by `stage_key`, not by sequence: an admin who reordered the chain moved
+ * the sequence numbers, and "V2" is the rung a human means. A chain that no
+ * longer contains this rung at all is reported rather than repointed at whatever
+ * now sits in that slot.
+ */
+export async function retryStageRouting(
+  requestId: string,
+  tx?: DbTransaction,
+): Promise<RerouteOutcome | null> {
+  const run = async (executor: DbTransaction): Promise<RerouteOutcome | null> => {
+    const [request] = await executor
+      .select()
+      .from(correctionRequest)
+      .where(eq(correctionRequest.id, requestId))
+      .limit(1);
+
+    if (!request) return null;
+
+    // FOR UPDATE, same as every other stage mutation: two admins clicking retry
+    // on the same row would otherwise both resolve and both notify.
+    const [stage] = await executor
+      .select()
+      .from(correctionRequestStage)
+      .where(
+        and(
+          eq(correctionRequestStage.requestId, requestId),
+          eq(correctionRequestStage.status, 'ACTIVE'),
+        ),
+      )
+      .limit(1)
+      .for('update');
+
+    if (!stage) return null;
+
+    const base = {
+      requestId,
+      appsNo: request.appsNo,
+      stageKey: stage.stageKey,
+      notified: 0,
+    };
+
+    if (stage.assignedUserId || stage.resolverKey === 'ROLE') {
+      return { ...base, routed: true, reason: null, notified: 0 };
+    }
+
+    // Refresh this rung's resolver from the chain as it stands NOW. Without this
+    // the re-resolution would just re-run the same empty config and fail again.
+    const chain = request.chainKey ? await getChain(request.chainKey as ChainKey, executor) : null;
+    const current = chain?.stages.find((s) => s.stageKey === stage.stageKey);
+
+    if (!current) {
+      return {
+        ...base,
+        routed: false,
+        reason: `The ${chain ? chain.chainKey : 'original'} chain no longer has a step called "${stage.stageKey}", so there is nothing to re-read its routing from.`,
+      };
+    }
+
+    const [refreshed] = await executor
+      .update(correctionRequestStage)
+      .set({ resolverKey: current.resolverKey, resolverConfig: current.resolverConfig })
+      .where(eq(correctionRequestStage.id, stage.id))
+      .returning();
+
+    const [record] = await executor
+      .select({ id: salesRecord.id, smId: salesRecord.smId, appsNo: salesRecord.appsNo })
+      .from(salesRecord)
+      .where(eq(salesRecord.id, request.recordId))
+      .limit(1);
+
+    const auth = await resolveStageAuthorization(
+      {
+        request,
+        record: record ?? null,
+        stage: {
+          sequence: refreshed.sequence,
+          stageKey: refreshed.stageKey,
+          resolverKey: refreshed.resolverKey,
+          resolverConfig: refreshed.resolverConfig,
+        },
+      },
+      executor,
+    );
+
+    if (auth.kind === 'UNRESOLVED') {
+      return { ...base, routed: false, reason: auth.reason };
+    }
+
+    const recipients =
+      auth.kind === 'ROLE' ? await activeUserIdsWithRole(auth.role, executor) : auth.userIds;
+    const assignedUserId =
+      auth.kind === 'USERS' && auth.userIds.length === 1 ? auth.userIds[0] : null;
+
+    await executor
+      .update(correctionRequestStage)
+      .set({ assignedUserId })
+      .where(eq(correctionRequestStage.id, refreshed.id));
+
+    // Told now, because they were never told when the rung opened — the original
+    // notification went to the administrators as an unroutable step.
+    const categoryLabel =
+      CATEGORY_LABELS[request.category as CorrectionCategory] ?? request.category;
+
+    const roles = await rolesById(recipients, executor);
+
+    await notifyMany(
+      recipients.map((userId) => ({
+        userId,
+        type: 'CORRECTION_VERIFIED' as const,
+        title: `${refreshed.stageKey}: ${categoryLabel} correction — ${request.appsNo}`,
+        body: `${request.fieldLabel} on application ${request.appsNo}: ${request.originalValue ?? '(blank)'} → ${request.proposedValue}. This step was waiting to be routed and is now yours.`,
+        link: stageLink(refreshed, request.id, roles.get(userId)),
+      })),
+      executor,
+    );
+
+    return { ...base, routed: true, reason: null, notified: recipients.length };
+  };
+
+  return tx ? run(tx) : db.transaction(run);
+}
+
+/**
+ * Every stranded rung on a given chain, re-resolved after the chain was edited.
+ *
+ * The admin-facing half of `retryStageRouting`: naming a verifier on a chain is
+ * the moment the requests waiting on that chain become routable, so it is the
+ * moment to route them. Failures are collected rather than thrown — a chain edit
+ * must not be rolled back because one of the requests behind it is still
+ * unroutable for an unrelated reason.
+ */
+export async function retryRoutingForChain(chainKey: ChainKey): Promise<RerouteOutcome[]> {
+  const stranded = await db
+    .select({ requestId: correctionRequestStage.requestId })
+    .from(correctionRequestStage)
+    .innerJoin(correctionRequest, eq(correctionRequest.id, correctionRequestStage.requestId))
+    .where(
+      and(
+        eq(correctionRequestStage.status, 'ACTIVE'),
+        sql`${correctionRequestStage.assignedUserId} is null`,
+        ne(correctionRequestStage.resolverKey, 'ROLE'),
+        eq(correctionRequest.chainKey, chainKey),
+      ),
+    );
+
+  const outcomes: RerouteOutcome[] = [];
+  for (const row of stranded) {
+    const outcome = await retryStageRouting(row.requestId).catch(() => null);
+    if (outcome) outcomes.push(outcome);
+  }
+  return outcomes;
 }

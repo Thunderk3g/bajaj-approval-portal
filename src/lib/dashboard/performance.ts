@@ -11,14 +11,19 @@
  * The definitions, stated once so a reader never has to infer them:
  *
  *   Logins    every row. A row existing IS an application logged.
- *   Issued    status = ISSUED, the same predicate the gap counts use.
- *   Refused   status = REJECTED.
- *   Pending   the remainder — logins − issued − refused, so the three ALWAYS
+ *   Issued    the EFFECTIVE status is ISSUED — `status`, corrected by `status_2`
+ *             where the sheet leaves an approved or free-look-cancelled
+ *             application standing at issued. The one definition lives in
+ *             `./sql` and every screen reads it; nothing here restates it.
+ *   Rejected  the effective status is REJECTED: a decline, a postponement or a
+ *             free-look cancellation. One outcome, three reasons, so the reason
+ *             travels with the count — `loadOutcomeReasons`.
+ *   Pending   the remainder — logins − issued − rejected, so the three ALWAYS
  *             sum back to logins. `status` is free text, so a fourth value is a
  *             thing that can happen; it lands in Pending rather than vanishing,
  *             and `unclassified` counts it so the screen can say so out loud.
  *   Issuance% issued / logins
- *   Refusal%  refused / logins
+ *   Rejection% rejected / logins
  *   Share%    this row's logins / the SCOPED total logins. "Login percentage"
  *             for one person has no other defensible reading — a person has no
  *             denominator of their own — and the scoped total is what makes a
@@ -34,7 +39,7 @@
  * be telling a manager somebody sold nothing when in fact nobody knows.
  */
 
-import { and, eq, isNotNull, sql, type SQL } from 'drizzle-orm';
+import { and, eq, isNotNull, sql, type AnyColumn, type SQL } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { manpower, manpowerOverride, salesRecord } from '@/db/schema';
 import { AuthzError } from '@/lib/auth/errors';
@@ -46,12 +51,20 @@ import {
 } from '@/lib/auth/rbac';
 import { resolveHierarchy } from '@/lib/hierarchy/queries';
 import { PLACEHOLDER_CODE_LIST } from '@/lib/roster/placeholders';
-import { ISSUED_CONDITION, countAll, countFiltered } from './sql';
+import {
+  EFFECTIVE_STATUS,
+  OUTCOME_CONDITION,
+  OUTCOME_REASON,
+  UNCLASSIFIED_CONDITION,
+  countAll,
+  countFiltered,
+  type Outcome,
+} from './sql';
 
-/** The refusal side of the same free-text column `ISSUED_STATUS` reads. */
-export const REFUSED_STATUS = 'REJECTED';
-/** The one status that is neither an outcome nor an anomaly — still in flight. */
-export const PENDING_STATUS = 'PENDING';
+// Re-exported so a screen rendering the three buckets imports one module, not
+// two: `./sql` is the SQL layer and no component has any business reaching into
+// it for a list of strings.
+export { OUTCOMES, type Outcome } from './sql';
 
 export type PerformanceRung = 'sm' | 'tl' | 'acm';
 
@@ -65,11 +78,11 @@ export const RUNG_LABELS: Record<PerformanceRung, string> = {
 export type PerformanceMetrics = {
   logins: number;
   issued: number;
-  refused: number;
-  /** logins − issued − refused. Includes `unclassified`. */
+  rejected: number;
+  /** logins − issued − rejected. Includes `unclassified`. */
   pending: number;
   /**
-   * Rows whose status is none of ISSUED / REJECTED / PENDING.
+   * Rows whose `status` is none of ISSUED / PENDING / REJECTED.
    *
    * Zero here is the normal case and the number is only ever surfaced when it is
    * not zero — but it must be surfaced, because otherwise a status the import
@@ -126,8 +139,8 @@ export function issuanceRate(row: PerformanceMetrics): number | null {
   return ratio(row.issued, row.logins);
 }
 
-export function refusalRate(row: PerformanceMetrics): number | null {
-  return ratio(row.refused, row.logins);
+export function rejectionRate(row: PerformanceMetrics): number | null {
+  return ratio(row.rejected, row.logins);
 }
 
 /** This row's share of the SCOPED total — the only sane per-person "login %". */
@@ -138,7 +151,7 @@ export function loginShare(row: PerformanceMetrics, totals: PerformanceMetrics):
 export const ZERO_METRICS: PerformanceMetrics = {
   logins: 0,
   issued: 0,
-  refused: 0,
+  rejected: 0,
   pending: 0,
   unclassified: 0,
   // Two decimals like every other money string in the app, so an empty scope
@@ -163,7 +176,7 @@ export function sumMetrics(rows: readonly PerformanceMetrics[]): PerformanceMetr
   for (const row of rows) {
     total.logins += row.logins;
     total.issued += row.issued;
-    total.refused += row.refused;
+    total.rejected += row.rejected;
     total.pending += row.pending;
     total.unclassified += row.unclassified;
     anp += toPaise(row.anp);
@@ -194,10 +207,10 @@ export const PERFORMANCE_SORTS = [
   'name',
   'logins',
   'issued',
-  'refused',
+  'rejected',
   'pending',
   'issuance',
-  'refusal',
+  'rejection',
   'share',
   'anp',
   'fp',
@@ -295,14 +308,14 @@ export function sortPerformanceRows(
         return row.logins;
       case 'issued':
         return row.issued;
-      case 'refused':
-        return row.refused;
+      case 'rejected':
+        return row.rejected;
       case 'pending':
         return row.pending;
       case 'issuance':
         return issuanceRate(row);
-      case 'refusal':
-        return refusalRate(row);
+      case 'rejection':
+        return rejectionRate(row);
       case 'share':
         return loginShare(row, totals);
       case 'anp':
@@ -337,21 +350,37 @@ export function sortPerformanceRows(
 
 /* ----------------------------------------------------------------- the SQL */
 
-const STATUS = sql`upper(btrim(coalesce(${salesRecord.status}, '')))`;
+/**
+ * The five figures, selected identically wherever they are read.
+ *
+ * One object rather than four copies: the report, a rep's own row, a rep's team
+ * and the peer sets all count the same things, and a predicate restated per
+ * query is a predicate one of them will eventually be missing.
+ */
+const OUTCOME_COLUMNS = {
+  logins: countAll,
+  issued: countFiltered(OUTCOME_CONDITION.issued),
+  rejected: countFiltered(OUTCOME_CONDITION.rejected),
+  unclassified: countFiltered(UNCLASSIFIED_CONDITION),
+  // `::text` rather than letting the driver decide: an empty group would
+  // otherwise be null and every consumer would need its own coalesce.
+  anp: sql<string>`coalesce(sum(${salesRecord.anp}), 0)::text`,
+  fp: sql<string>`coalesce(sum(${salesRecord.fp}), 0)::text`,
+};
 
-const REFUSED_CONDITION: SQL = sql`${STATUS} = ${REFUSED_STATUS}`;
+type OutcomeCounts = Omit<PerformanceMetrics, 'pending'>;
 
 /**
- * A status the portal has no name for.
+ * The counts plus the derived remainder.
  *
- * The production workbook carries exactly three, but `status` is free text with
- * no CHECK behind it, so this is the tripwire for a fourth arriving in a future
- * import — see `PerformanceMetrics.unclassified`.
+ * Pending is `logins − issued − rejected` and is never counted directly. That is
+ * what makes the three add up to logins by construction rather than by luck: a
+ * row the taxonomy has no rule for lands in pending instead of falling out of
+ * the totals, and `unclassified` is how the screen says so.
  */
-const UNCLASSIFIED_CONDITION: SQL = sql`${STATUS} not in (${sql.join(
-  [sql`'ISSUED'`, sql`${REFUSED_STATUS}`, sql`${PENDING_STATUS}`],
-  sql`, `,
-)})`;
+function withPending(row: OutcomeCounts): PerformanceMetrics {
+  return { ...row, pending: row.logins - row.issued - row.rejected };
+}
 
 /** True for the source's own buckets: `DIY`, `111222-UN`. */
 const PLACEHOLDER_CONDITION: SQL = sql`upper(btrim(${salesRecord.smId})) in (${sql.join(
@@ -434,14 +463,7 @@ export async function loadPerformance(query: PerformanceQuery): Promise<Performa
         code: sql<string | null>`${key}`,
         placeholder: sql<boolean>`${PLACEHOLDER_CONDITION}`,
         name,
-        logins: countAll,
-        issued: countFiltered(ISSUED_CONDITION),
-        refused: countFiltered(REFUSED_CONDITION),
-        unclassified: countFiltered(UNCLASSIFIED_CONDITION),
-        // `::text` rather than letting the driver decide: an empty group would
-        // otherwise be null and every consumer would need its own coalesce.
-        anp: sql<string>`coalesce(sum(${salesRecord.anp}), 0)::text`,
-        fp: sql<string>`coalesce(sum(${salesRecord.fp}), 0)::text`,
+        ...OUTCOME_COLUMNS,
       })
       .from(salesRecord)
       .leftJoin(manpower, eq(manpower.smId, salesRecord.smId))
@@ -464,18 +486,10 @@ export async function loadPerformance(query: PerformanceQuery): Promise<Performa
 
   for (const row of raw) {
     const entry: PerformanceRow = {
+      ...withPending(row),
       code: row.code,
       name: row.name ?? (row.code ? (names.get(row.code) ?? null) : null),
       placeholder: row.placeholder,
-      logins: row.logins,
-      issued: row.issued,
-      refused: row.refused,
-      // The remainder, not `count(*) filter (status = 'PENDING')`. That is what
-      // makes issued + refused + pending = logins hold by construction.
-      pending: row.logins - row.issued - row.refused,
-      unclassified: row.unclassified,
-      anp: row.anp,
-      fp: row.fp,
     };
     (row.placeholder ? placeholders : rows).push(entry);
   }
@@ -515,6 +529,11 @@ export type RepStanding = {
   teamSize: number;
   tlId: string | null;
   tlName: string | null;
+  /**
+   * Where this rep ranks among their team-mates by issuance — a position and a
+   * middle, never a list. Null when the roster places them under nobody.
+   */
+  standing: PeerStanding | null;
 };
 
 /**
@@ -536,40 +555,32 @@ export async function loadRepStanding(
   const node = await resolveHierarchy(viewer.smId);
   const tlId = node?.tlId ?? null;
 
-  const [own, team, teamSize] = await Promise.all([
+  const inTeam = tlId ? sql`${salesRecord.smId} in ${teamSmIds('tl_id', tlId)}` : undefined;
+
+  const [own, team, teamSize, peers] = await Promise.all([
     aggregate(and(viewerScope(viewer), period)),
-    tlId
-      ? aggregate(and(sql`${salesRecord.smId} in ${teamSmIds('tl_id', tlId)}`, period))
-      : aggregate(and(viewerScope(viewer), period)),
+    tlId ? aggregate(and(inTeam, period)) : aggregate(and(viewerScope(viewer), period)),
     tlId ? rosterTeamSize(tlId) : Promise.resolve(node ? 1 : 0),
+    // The peers' rows never leave this function — `peerStanding` reduces them to
+    // a rank and a median before anything is returned. That is what lets a rep
+    // be told they are 4th of 11 without being shown the other ten.
+    inTeam ? rates(and(inTeam, period), salesRecord.smId) : Promise.resolve([]),
   ]);
 
-  return { own, team, teamSize, tlId, tlName: node?.tlName ?? null };
+  return {
+    own,
+    team,
+    teamSize,
+    tlId,
+    tlName: node?.tlName ?? null,
+    standing: tlId ? peerStanding('sm', peers, viewer.smId) : null,
+  };
 }
 
-/** The same five figures, ungrouped. */
+/** The same figures, ungrouped. */
 async function aggregate(where: SQL | undefined): Promise<PerformanceMetrics> {
-  const [row] = await db
-    .select({
-      logins: countAll,
-      issued: countFiltered(ISSUED_CONDITION),
-      refused: countFiltered(REFUSED_CONDITION),
-      unclassified: countFiltered(UNCLASSIFIED_CONDITION),
-      anp: sql<string>`coalesce(sum(${salesRecord.anp}), 0)::text`,
-      fp: sql<string>`coalesce(sum(${salesRecord.fp}), 0)::text`,
-    })
-    .from(salesRecord)
-    .where(where);
-
-  return {
-    logins: row.logins,
-    issued: row.issued,
-    refused: row.refused,
-    pending: row.logins - row.issued - row.refused,
-    unclassified: row.unclassified,
-    anp: row.anp,
-    fp: row.fp,
-  };
+  const [row] = await db.select(OUTCOME_COLUMNS).from(salesRecord).where(where);
+  return withPending(row);
 }
 
 /**
@@ -595,4 +606,148 @@ async function rosterTeamSize(tlId: string): Promise<number> {
     );
 
   return row?.total ?? 0;
+}
+
+/* ------------------------------------------------------ standing among peers */
+
+export type PeerStanding = {
+  /** What the peers ARE: `tl` means "the other team leaders". */
+  rung: PerformanceRung;
+  /** The subject's own issuance rate, or null when they logged nothing. */
+  rate: number | null;
+  /**
+   * 1-based, ties sharing a place — 6th of 23. Null when the subject has no rate
+   * of their own, because an unranked subject has no position, not last place.
+   */
+  rank: number | null;
+  /** How many are ranked, the subject included. Anybody with no logins is not. */
+  peers: number;
+  /** The middle peer's rate — the typical team, not the average of the extremes. */
+  median: number | null;
+  /** Pooled: every peer's issued over every peer's logins. */
+  average: number | null;
+};
+
+/** One entity's raw numerator and denominator. Never rendered — reduced first. */
+type PeerRate = { code: string | null; logins: number; issued: number };
+
+/**
+ * A rank, a middle and a pooled average — and nothing that names anybody.
+ *
+ * Pure, so `tests/lib/performance-ratio.test.ts` can pin the tie handling and
+ * the empty cases without a database. The rows going in identify people; the
+ * `PeerStanding` coming out cannot, which is the whole reason this is a
+ * reduction and not a filtered list.
+ */
+export function peerStanding(
+  rung: PerformanceRung,
+  rows: readonly PeerRate[],
+  ownCode: string | null,
+): PeerStanding {
+  // Only an entity with a denominator has a rate, and only a rate can be ranked.
+  // An idle rep is not "worst", they are absent from the scale.
+  const ranked = rows.filter((row) => row.code !== null && row.logins > 0);
+  const rateOf = (row: PeerRate) => row.issued / row.logins;
+
+  const own = ranked.find((row) => row.code === ownCode);
+  const rate = own ? rateOf(own) : null;
+  const sorted = ranked.map(rateOf).sort((a, b) => a - b);
+
+  return {
+    rung,
+    rate,
+    // Competition ranking: two teams on 50.0% are both 19th and the next is 21st.
+    rank: rate === null ? null : ranked.filter((row) => rateOf(row) > rate).length + 1,
+    peers: ranked.length,
+    median: median(sorted),
+    average: ratio(
+      ranked.reduce((total, row) => total + row.issued, 0),
+      ranked.reduce((total, row) => total + row.logins, 0),
+    ),
+  };
+}
+
+function median(sorted: readonly number[]): number | null {
+  if (sorted.length === 0) return null;
+  const middle = sorted.length >> 1;
+  return sorted.length % 2 === 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+/** Logins and issued per key — the only two columns a ranking needs. */
+async function rates(where: SQL | undefined, key: SQL | AnyColumn): Promise<PeerRate[]> {
+  return db
+    .select({
+      code: sql<string | null>`${key}`,
+      logins: countAll,
+      issued: countFiltered(OUTCOME_CONDITION.issued),
+    })
+    .from(salesRecord)
+    .leftJoin(manpower, eq(manpower.smId, salesRecord.smId))
+    .leftJoin(manpowerOverride, eq(manpowerOverride.smId, salesRecord.smId))
+    .where(where)
+    .groupBy(sql`1`);
+}
+
+/**
+ * How one manager's book compares with every other manager at the same rung.
+ *
+ * Deliberately UNSCOPED, and deliberately aggregate-only. "How is my team doing
+ * against the other teams" cannot be answered from inside the asker's own scope
+ * — a rank against yourself is 1 of 1 — so the query spans the company and the
+ * result is reduced to a position, a median and a pooled average before it is
+ * returned. No other manager's code, name or figures come back from here, which
+ * is what makes widening the read defensible: the caller learns where they sit,
+ * not what anybody else did.
+ */
+export async function loadManagerStanding(
+  rung: 'tl' | 'acm',
+  code: string,
+  periodId?: string | null,
+): Promise<PeerStanding> {
+  const rows = await rates(
+    periodId ? eq(salesRecord.periodId, periodId) : undefined,
+    keyExpression(rung),
+  );
+  return peerStanding(rung, rows, code);
+}
+
+/* ----------------------------------------------------------- why it is stuck */
+
+export type OutcomeReason = {
+  outcome: Outcome;
+  /** The `status_2` behind it, or null where the sheet left it blank. */
+  reason: string | null;
+  count: number;
+};
+
+/**
+ * The reasons behind the outcomes — "why is this stuck", answered.
+ *
+ * The taxonomy folds a postponement, a decline and a free-look cancellation into
+ * one REJECTED count because that is the outcome the business named; this is
+ * where the difference between them survives, and it is what puts "Rejected ·
+ * PSTPNE6" on the screen instead of a bare 174. Pending is the same story from
+ * the other side: 297 of the June file's 375 pending rows carry no reason at
+ * all, so `reason` is null and the screen renders an em dash rather than
+ * inventing one.
+ */
+export async function loadOutcomeReasons(
+  viewer: SessionUser,
+  periodId?: string | null,
+): Promise<OutcomeReason[]> {
+  const rows = await db
+    .select({
+      outcome: sql<Outcome>`lower(${EFFECTIVE_STATUS})`,
+      reason: OUTCOME_REASON,
+      count: countAll,
+    })
+    .from(salesRecord)
+    .where(and(viewerScope(viewer), periodId ? eq(salesRecord.periodId, periodId) : undefined))
+    .groupBy(sql`1`, sql`2`);
+
+  // Biggest first, but a blank reason last whatever its size: it is the absence
+  // of an answer, and it would otherwise head the list it fails to explain.
+  return rows.sort(
+    (a, b) => Number(a.reason === null) - Number(b.reason === null) || b.count - a.count,
+  );
 }

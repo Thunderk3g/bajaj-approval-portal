@@ -19,7 +19,7 @@ import { PLACEHOLDER_CODE_LIST } from '@/lib/roster/placeholders';
 import {
   ANOMALY_CONDITION,
   ANY_GAP_CONDITION,
-  ISSUED_CONDITION,
+  OUTCOME_CONDITION,
   countAll,
   countDistinctFiltered,
   countFiltered,
@@ -95,7 +95,7 @@ export async function getAdminDashboard(): Promise<AdminDashboard> {
       db
         .select({
           total: countAll,
-          issued: countFiltered(ISSUED_CONDITION),
+          issued: countFiltered(OUTCOME_CONDITION.issued),
           withGap: countFiltered(ANY_GAP_CONDITION),
           repsWithGap: countDistinctFiltered(salesRecord.smId, REP_GAP_CONDITION),
           anomalies: countFiltered(ANOMALY_CONDITION),

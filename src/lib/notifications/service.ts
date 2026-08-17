@@ -127,14 +127,6 @@ export async function notifyActiveApprovers(
   return notifyActiveRole('approver', input, tx);
 }
 
-/** The first stage of the 2026-07-28 flow: submissions land here, not with approvers. */
-export async function notifyActiveVerifiers(
-  input: Omit<NotificationInput, 'userId'>,
-  tx?: DbTransaction,
-): Promise<number> {
-  return notifyActiveRole('verifier', input, tx);
-}
-
 /**
  * Notifies the sales users whose SM_ID appears in a committed batch, one row
  * each, carrying their own gap count — spec section 10, row 4.

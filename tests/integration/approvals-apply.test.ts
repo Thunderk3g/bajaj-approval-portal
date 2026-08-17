@@ -83,7 +83,7 @@ async function makeRecord(overrides: Partial<typeof salesRecord.$inferInsert> = 
  * would test nothing but the gate, over and over, while the transaction they
  * exist to cover never ran. The default therefore walks the request through
  * verification first — status, columns and timeline event, exactly as
- * `verifyWithin` leaves it.
+ * `verifyRequest` leaves it.
  *
  * Pass `status: 'PENDING'` (and no verifier) to construct the unverified case
  * deliberately; the gate itself is asserted in `the verifier gate` below.

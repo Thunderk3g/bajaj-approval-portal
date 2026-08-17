@@ -95,11 +95,6 @@ export function suggestSheet(sheets: SheetInfo[]): string | null {
   return candidates[0]?.name ?? null;
 }
 
-export function findSheet(sheets: SheetInfo[], wanted: string): SheetInfo | null {
-  const target = wanted.trim().toLowerCase();
-  return sheets.find((s) => s.name.toLowerCase() === target) ?? null;
-}
-
 /**
  * Reads one sheet's cells, with the sheet allowlist that section 6.1 requires.
  *

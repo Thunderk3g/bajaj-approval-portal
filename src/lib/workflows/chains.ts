@@ -1,6 +1,6 @@
 import { and, asc, count, eq, inArray } from 'drizzle-orm';
 import { db } from '@/db/client';
-import { approvalChain, approvalChainStage, correctionRequest } from '@/db/schema';
+import { approvalChain, approvalChainStage, correctionRequest, user } from '@/db/schema';
 import type { DbTransaction } from '@/lib/audit/log';
 import { WorkflowError } from './errors';
 
@@ -99,6 +99,8 @@ export type ChainSummary = {
   isActive: boolean;
   stageCount: number;
   stageKeys: string[];
+  /** Steps that name a person and name nobody — see `listChains`. */
+  unstaffedStageKeys: string[];
   updatedAt: Date;
 };
 
@@ -109,6 +111,38 @@ export async function listChains(): Promise<ChainSummary[]> {
     .from(approvalChainStage)
     .orderBy(asc(approvalChainStage.sequence));
 
+  /**
+   * Which of the people these chains name still exist and can still sign in.
+   *
+   * "Has a `userId`" is NOT the same question as "routes to somebody", and the
+   * gap between them is not hypothetical: every one of the three chains in this
+   * database that looked staffed pointed at a user id that no longer exists, so
+   * `AUTOPAY`, `MAPPING_WITHIN_TEAM` and `MAPPING_BETWEEN_TEAMS` each stranded
+   * their first step while the admin screen showed them as configured. A
+   * deactivated account fails the same way — `activeUserIdsWithRole` and the USER
+   * resolver both require `is_active`.
+   *
+   * One query for every chain rather than one per stage: this is an admin list.
+   */
+  const namedIds = [
+    ...new Set(
+      stages
+        .map((s) => (s.resolverConfig as { userId?: string } | null)?.userId)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
+
+  const live = new Set(
+    namedIds.length === 0
+      ? []
+      : (
+          await db
+            .select({ id: user.id })
+            .from(user)
+            .where(and(inArray(user.id, namedIds), eq(user.isActive, true)))
+        ).map((r) => r.id),
+  );
+
   return chains.map((chain) => {
     const own = stages.filter((s) => s.chainId === chain.id);
     return {
@@ -118,6 +152,27 @@ export async function listChains(): Promise<ChainSummary[]> {
       isActive: chain.isActive,
       stageCount: own.length,
       stageKeys: own.map((s) => s.stageKey),
+      /**
+       * Steps that name a person and then name nobody.
+       *
+       * A `USER` stage with no `userId` in its config resolves to nobody, so
+       * every request routed onto it opens ACTIVE, pinned to no one, and stops
+       * dead. Five of the seeded chains ship in exactly that state, which is how
+       * a team leader raised a claim and watched it go nowhere with no
+       * explanation on any screen. Surfaced on the list because a chain that
+       * cannot route is a chain nobody should be raising requests onto, and the
+       * only place that was previously visible was the stalled request itself.
+       */
+      unstaffedStageKeys: own
+        .filter((s) => {
+          if (s.resolverKey === 'ROLE') return false;
+          // A hierarchy step resolves per request from the roster, so it has no
+          // person to name here and cannot be judged from the chain alone.
+          const config = s.resolverConfig as { userId?: string; smSide?: string } | null;
+          if (config?.smSide) return false;
+          return !config?.userId || !live.has(config.userId);
+        })
+        .map((s) => s.stageKey),
       updatedAt: chain.updatedAt,
     };
   });

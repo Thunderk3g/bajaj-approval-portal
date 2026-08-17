@@ -15,7 +15,7 @@ import { AuthzError } from '@/lib/auth/errors';
 import { scopedRecordCondition, type SessionUser } from '@/lib/auth/rbac';
 import { visibleRequestCondition } from '@/lib/corrections/queries';
 import type { GapType } from '@/lib/records/gaps';
-import { ANY_GAP_CONDITION, ISSUED_CONDITION, countAll, countFiltered, gapCondition } from './sql';
+import { ANY_GAP_CONDITION, OUTCOME_CONDITION, countAll, countFiltered, gapCondition } from './sql';
 
 export type SalesDashboard = {
   smId: string;
@@ -61,7 +61,7 @@ export async function getSalesDashboard(user: SessionUser): Promise<SalesDashboa
     db
       .select({
         total: countAll,
-        issued: countFiltered(ISSUED_CONDITION),
+        issued: countFiltered(OUTCOME_CONDITION.issued),
         withGap: countFiltered(ANY_GAP_CONDITION),
         missingIssuedDate: countFiltered(gapCondition('MISSING_ISSUED_DATE')),
         missingPolicyNo: countFiltered(gapCondition('MISSING_POLICY_NO')),

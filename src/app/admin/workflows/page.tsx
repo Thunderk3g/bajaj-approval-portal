@@ -4,6 +4,7 @@ import { requireRole } from '@/lib/auth/rbac';
 import { AuthzError } from '@/lib/auth/errors';
 import { listChains } from '@/lib/workflows/chains';
 import { Alert, Badge, Card, EmptyState, PageHeader, Table, Td, Th } from '@/components/ui';
+import { ChainToggle } from './chain-toggle';
 
 /**
  * Every approval chain, and what it currently does.
@@ -46,6 +47,16 @@ export default async function WorkflowsPage() {
         </Card>
       ) : (
         <>
+          {chains.some((c) => c.unstaffedStageKeys.length > 0) ? (
+            <Alert tone="warning" title="Some chains have steps with nobody on them">
+              A step below names nobody, or names an account that has since been deleted or
+              deactivated. Either way it resolves to no one: a request routed onto it opens,
+              waits, and moves no further — the administrators are told, and nothing else on any
+              screen says why. Naming somebody here also routes every request already stranded on
+              that step, so they do not have to be raised again.
+            </Alert>
+          ) : null}
+
           <Alert tone="info">
             A step is either a <strong>pool</strong> — anyone holding that role may act — or a{' '}
             <strong>named person</strong> resolved from the roster, such as the team leader of the
@@ -87,14 +98,24 @@ export default async function WorkflowsPage() {
                       ) : (
                         <Badge tone="warning">Off — no new requests</Badge>
                       )}
+                      {chain.unstaffedStageKeys.length > 0 ? (
+                        <div className="mt-1">
+                          <Badge tone="danger">
+                            Nobody on {chain.unstaffedStageKeys.join(', ')}
+                          </Badge>
+                        </div>
+                      ) : null}
                     </Td>
                     <Td>
-                      <Link
-                        className="text-sm font-medium underline"
-                        href={`/admin/workflows/${chain.chainKey}`}
-                      >
-                        Edit
-                      </Link>
+                      <div className="flex items-center gap-3">
+                        <Link
+                          className="text-sm font-medium underline"
+                          href={`/admin/workflows/${chain.chainKey}`}
+                        >
+                          Edit
+                        </Link>
+                        <ChainToggle chainKey={chain.chainKey} isActive={chain.isActive} />
+                      </div>
                     </Td>
                   </tr>
                 ))}

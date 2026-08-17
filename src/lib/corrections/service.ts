@@ -77,9 +77,6 @@ export const LOCKING_STATUSES = ['PENDING', 'VERIFIED', 'RETURNED'] as const;
  */
 export const WITHDRAWABLE_STATUSES = ['PENDING', 'RETURNED'] as const;
 
-/** @deprecated Use LOCKING_STATUSES or WITHDRAWABLE_STATUSES — they are no longer the same set. */
-export const OPEN_STATUSES = WITHDRAWABLE_STATUSES;
-
 export type SubmitCorrectionInput = {
   category: string;
   /** MAPPING only — which way the sale moves. Ignored on every other category. */

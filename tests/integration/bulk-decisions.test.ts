@@ -249,7 +249,7 @@ describe('bulk approval', () => {
   it('refuses the whole batch when the actor is not an approver', async () => {
     const { verifier, requests } = await seed(2, 'VERIFIED');
 
-    // `assertApprover` runs inside each transaction, so a wrong role fails every
+    // `assertMayDecide` runs inside each transaction, so a wrong role fails every
     // request individually rather than being caught once at the edge. The batch
     // path adds no way around it.
     const report = await runBulk(requests, (requestId) =>

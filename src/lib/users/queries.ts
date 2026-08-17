@@ -97,26 +97,6 @@ export async function listUsers(
   return { rows, total: totals?.value ?? 0 };
 }
 
-export async function findUserById(id: string): Promise<UserRow | null> {
-  const [row] = await db
-    .select({
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      smId: user.smId,
-      tlCode: user.tlCode,
-      acmCode: user.acmCode,
-      isActive: user.isActive,
-      createdAt: user.createdAt,
-    })
-    .from(user)
-    .where(eq(user.id, id))
-    .limit(1);
-
-  return row ?? null;
-}
-
 export type RosterWorklistEntry = RosterEntry & {
   accountEmail: string | null;
   accountIsActive: boolean | null;

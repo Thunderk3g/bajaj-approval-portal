@@ -13,7 +13,13 @@ import {
 } from '@/db/schema';
 import { ageInDays } from '@/lib/format';
 import { pageCount } from '@/lib/pagination';
-import { scopedRecordCondition, type SessionUser } from '@/lib/auth/rbac';
+import {
+  GLOBAL_READ_ROLES,
+  scopedRecordCondition,
+  teamSmIds,
+  type SessionUser,
+} from '@/lib/auth/rbac';
+import { AuthzError } from '@/lib/auth/errors';
 import { likePattern } from '@/lib/records/query';
 import { actorStageCondition } from '@/lib/workflows/engine';
 import {
@@ -336,6 +342,57 @@ export type MappingContext = {
 export type RequestDetail = NonNullable<Awaited<ReturnType<typeof getRequestDetail>>>;
 
 /**
+ * A request this viewer is entitled to read — three arms, and each one is load-bearing.
+ *
+ * Scoping this by the RECORD alone was wrong, and wrong in the direction that
+ * hides a manager's own work from them. A mapping claim is by definition raised
+ * against a record the claimant does not yet own: a DIY claim targets a record
+ * whose `sm_id` is the `DIY` bucket, which is in nobody's team. A team leader who
+ * raised one and then clicked it in "Requests I raised" was told the page did not
+ * exist.
+ *
+ *   raised by me          you can always read what you filed, whatever it was
+ *                         filed against. This is the arm the record predicate
+ *                         cannot express and the one whose absence was the bug.
+ *   concerns my people    `correction_request.sm_id` is the rep the request is
+ *                         ABOUT — the destination of a claim, the owner of an
+ *                         autopay fix. That is the question a manager is
+ *                         answerable for, and it is not the same question as who
+ *                         owns the record today.
+ *   the record is mine    keeps a manager able to read a request somebody else
+ *                         raised against a record in their own book — a claim
+ *                         being made ON their team, which they must see coming.
+ *
+ * The global readers short-circuit to `undefined` (no filter) exactly as before,
+ * so the approver and verifier screens are untouched. A team leader from another
+ * cluster still matches none of the three, which is the property this function
+ * was added for: request ids are guessable UUIDs and the payload carries the
+ * customer's name, the premium and the whole version history.
+ */
+function readableRequestCondition(viewer: SessionUser): SQL | undefined {
+  if (GLOBAL_READ_ROLES.includes(viewer.role)) return undefined;
+
+  const raisedByMe = eq(correctionRequest.submittedBy, viewer.id);
+
+  if (viewer.role === 'tl' || viewer.role === 'acm') {
+    const column = viewer.role === 'tl' ? 'tl_id' : 'ccm_id';
+    const code = viewer.role === 'tl' ? viewer.tlCode : viewer.acmCode;
+    // Same refusal as `scopedRecordCondition`: a manager with no code is scoped
+    // to nothing, never to everything.
+    if (!code) throw new AuthzError('FORBIDDEN', `${viewer.role} user has no scoping code`);
+
+    return or(
+      raisedByMe,
+      sql`${correctionRequest.smId} in ${teamSmIds(column, code)}`,
+      scopedRecordCondition(viewer),
+    ) as SQL;
+  }
+
+  if (!viewer.smId) throw new AuthzError('FORBIDDEN', 'Sales user has no SM_ID');
+  return or(raisedByMe, eq(correctionRequest.smId, viewer.smId)) as SQL;
+}
+
+/**
  * One request, in full, for whoever is entitled to read it.
  *
  * The viewer argument is required rather than optional, and that is the fix
@@ -352,12 +409,9 @@ export type RequestDetail = NonNullable<Awaited<ReturnType<typeof getRequestDeta
  * next caller. Required means a new screen cannot be written without answering
  * "on whose behalf", which is the only question that matters here.
  *
- * `scopedRecordCondition` composes straight into the WHERE because the query
- * already inner-joins `sales_record`: it is `undefined` for the three global
- * roles, so their behaviour is unchanged, and an `sm_id IN (…)` predicate for
- * everyone else. Out-of-scope returns null, which every caller renders as
- * `notFound()` — deliberately indistinguishable from a request that does not
- * exist, the same rule `getRecord` follows.
+ * Out-of-scope returns null, which every caller renders as `notFound()` —
+ * deliberately indistinguishable from a request that does not exist, the same
+ * rule `getRecord` follows.
  */
 export async function getRequestDetail(viewer: SessionUser, requestId: string) {
   const [row] = await db
@@ -384,7 +438,7 @@ export async function getRequestDetail(viewer: SessionUser, requestId: string) {
     .leftJoin(reviewer, eq(reviewer.id, correctionRequest.reviewedBy))
     .leftJoin(checker, eq(checker.id, correctionRequest.verifiedBy))
     .leftJoin(period, eq(period.id, correctionRequest.periodId))
-    .where(and(eq(correctionRequest.id, requestId), scopedRecordCondition(viewer)))
+    .where(and(eq(correctionRequest.id, requestId), readableRequestCondition(viewer)))
     .limit(1);
 
   if (!row) return null;

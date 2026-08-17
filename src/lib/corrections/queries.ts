@@ -97,19 +97,6 @@ export type RequestDetail = {
 };
 
 /**
- * The two statuses a submitter can still act on.
- *
- * `correction_status` carries WITHDRAWN as a real member, so the stored status
- * is truthful on its own and no screen has to reconstruct the label from the
- * event stream to avoid calling a rep's own cancellation a rejection.
- */
-export const OPEN_REQUEST_STATUSES = ['PENDING', 'RETURNED'] as const;
-
-export function isOpenRequest(status: string): boolean {
-  return (OPEN_REQUEST_STATUSES as readonly string[]).includes(status);
-}
-
-/**
  * The one definition of "a request this actor may read".
  *
  * Every read in this module goes through it, so widening or narrowing visibility

@@ -43,8 +43,14 @@ export async function seedChains() {
   await seedBootstrapChains();
 }
 
-/** Replaces one chain's stages, for a suite that needs a chain of its own shape. */
-export async function useChain(chainKey: string, stages: Array<Record<string, unknown>>) {
+/**
+ * Replaces one chain's stages, for a suite that needs a chain of its own shape.
+ *
+ * `installChain`, not `useChain`: a function whose name begins with "use" is a
+ * React hook as far as eslint-plugin-react-hooks is concerned, and calling it
+ * inside a test callback trips `rules-of-hooks` and fails the lint run.
+ */
+export async function installChain(chainKey: string, stages: Array<Record<string, unknown>>) {
   const { getChain, setChainStages } = await import('@/lib/workflows/chains');
   const chain = await getChain(chainKey as never);
   if (!chain) throw new Error(`No chain seeded for ${chainKey}`);

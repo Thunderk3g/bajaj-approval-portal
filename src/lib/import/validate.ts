@@ -1,5 +1,5 @@
 import type { RowIssue } from '@/db/schema';
-import { CANONICAL_FIELDS, FIELD_BY_KEY, fieldLabel, type FieldKind } from '@/lib/fields';
+import { CANONICAL_FIELDS, fieldLabel, type FieldKind } from '@/lib/fields';
 import { detectGaps } from '@/lib/records/gaps';
 import { DEFAULT_DATE_FORMAT, normalizeDate, type DateFormat } from './dates';
 import {
@@ -447,11 +447,4 @@ export function buildValidationReport(
       conflicts.length > REPORT_LIST_CAP ||
       skipped.length > REPORT_LIST_CAP,
   };
-}
-
-/** The fields an import is allowed to write, in canonical order. */
-export const IMPORTABLE_FIELD_KEYS: readonly string[] = CANONICAL_FIELDS.map((f) => f.key);
-
-export function isImportableField(key: string): boolean {
-  return FIELD_BY_KEY.has(key);
 }

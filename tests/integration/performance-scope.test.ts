@@ -17,7 +17,12 @@ import { db } from '@/db/client';
 import { manpower, manpowerOverride, period, salesRecord } from '@/db/schema';
 import { AuthzError } from '@/lib/auth/errors';
 import type { SessionUser } from '@/lib/auth/rbac';
-import { loadPerformance, loadRepStanding } from '@/lib/dashboard/performance';
+import {
+  loadManagerStanding,
+  loadOutcomeReasons,
+  loadPerformance,
+  loadRepStanding,
+} from '@/lib/dashboard/performance';
 import { makeUser, truncateAll } from '../helpers/db';
 
 const TL1 = 'TL001';
@@ -32,11 +37,28 @@ let acm: SessionUser;
 let rep: SessionUser;
 let julyId: string;
 
+/**
+ * Counts per Status / Status 2 PAIRING, because the pairing is what decides the
+ * outcome. `status` is the outcome except in the two cases `EFFECTIVE_STATUS`
+ * corrects, and a fixture that only ever set `status` could not tell a working
+ * correction from a missing one.
+ */
 type RowSpec = {
+  /** ISSUED / ISSUED. */
   issued?: number;
-  refused?: number;
+  /** REJECTED / REJECTED. */
+  rejected?: number;
+  /** PENDING / blank — 297 of the June file's 375 pending rows look like this. */
   pending?: number;
-  /** A status the portal has no name for — the tripwire, not the normal case. */
+  /** ISSUED / APPROVED — corrected to PENDING: approved is not issued. */
+  approved?: number;
+  /** ISSUED / FREELOOK CANCEL — corrected to REJECTED: issued, then cancelled. */
+  freelook?: number;
+  /** ISSUED / PRE-UNITIZE — NOT corrected. No rule moves it, so `status` wins. */
+  preUnitize?: number;
+  /** REJECTED / PSTPNE6 — postponed. Already rejected; the reason is what is kept. */
+  postponed?: number;
+  /** A status nobody has a name for — the tripwire, not the normal case. */
   stray?: number;
   anp?: string;
   periodId?: string | null;
@@ -47,13 +69,14 @@ let counter = 0;
 /** Policies for one code, split across statuses. Apps_No is unique, so it counts. */
 async function policies(smId: string, spec: RowSpec) {
   const rows: Array<Record<string, unknown>> = [];
-  const push = (status: string, times: number) => {
+  const push = (status: string, status2: string | null, times: number) => {
     for (let i = 0; i < times; i += 1) {
       counter += 1;
       rows.push({
         appsNo: `APP${String(counter).padStart(6, '0')}`,
         smId,
         status,
+        status2,
         anp: spec.anp ?? '100.00',
         fp: '10.00',
         periodId: spec.periodId ?? null,
@@ -62,10 +85,14 @@ async function policies(smId: string, spec: RowSpec) {
     }
   };
 
-  push('ISSUED', spec.issued ?? 0);
-  push('REJECTED', spec.refused ?? 0);
-  push('PENDING', spec.pending ?? 0);
-  push('C_OFFER', spec.stray ?? 0);
+  push('ISSUED', 'ISSUED', spec.issued ?? 0);
+  push('REJECTED', 'REJECTED', spec.rejected ?? 0);
+  push('PENDING', null, spec.pending ?? 0);
+  push('ISSUED', 'APPROVED', spec.approved ?? 0);
+  push('ISSUED', 'FREELOOK CANCEL', spec.freelook ?? 0);
+  push('ISSUED', 'PRE-UNITIZE', spec.preUnitize ?? 0);
+  push('REJECTED', 'PSTPNE6', spec.postponed ?? 0);
+  push('SOMETHING NEW', 'SOMETHING NEW', spec.stray ?? 0);
 
   if (rows.length > 0) await db.insert(salesRecord).values(rows as never);
 }
@@ -109,10 +136,10 @@ beforeEach(async () => {
     .returning({ id: period.id });
   julyId = july.id;
 
-  await policies('ICCSP1', { issued: 7, refused: 2, pending: 1, periodId: julyId });
-  await policies('ICCSP2', { issued: 1, refused: 4, periodId: julyId });
+  await policies('ICCSP1', { issued: 7, rejected: 2, pending: 1, periodId: julyId });
+  await policies('ICCSP2', { issued: 1, rejected: 4, periodId: julyId });
   await policies('ICCSP3', { issued: 5, pending: 5, periodId: julyId });
-  await policies('ICCSP4', { issued: 3, refused: 3, periodId: julyId });
+  await policies('ICCSP4', { issued: 3, rejected: 3, periodId: julyId });
   await policies('DIY', { issued: 6, pending: 2, periodId: julyId });
   await policies('111222-UN', { issued: 1, periodId: julyId });
   // A code the dump names that the roster has never heard of.
@@ -197,9 +224,9 @@ describe('the figures themselves', () => {
     for (const rung of ['sm', 'tl', 'acm'] as const) {
       const report = await loadPerformance({ viewer: admin, rung, periodId: julyId });
       for (const row of [...report.rows, ...report.placeholders]) {
-        expect(row.issued + row.refused + row.pending).toBe(row.logins);
+        expect(row.issued + row.rejected + row.pending).toBe(row.logins);
       }
-      expect(report.totals.issued + report.totals.refused + report.totals.pending).toBe(
+      expect(report.totals.issued + report.totals.rejected + report.totals.pending).toBe(
         report.totals.logins,
       );
     }
@@ -213,13 +240,61 @@ describe('the figures themselves', () => {
 
     expect(row.logins).toBe(13);
     expect(row.issued).toBe(7);
-    expect(row.refused).toBe(2);
-    // It lands in pending — the invariant holds — and `unclassified` is what
-    // makes the discrepancy visible instead of it reading as pending business.
+    expect(row.rejected).toBe(2);
+    // They land in pending — the invariant holds and production is not
+    // overstated — and `unclassified` is what makes the guess visible instead
+    // of it reading as ordinary pending business.
     expect(row.pending).toBe(4);
-    expect(row.issued + row.refused + row.pending).toBe(row.logins);
+    expect(row.issued + row.rejected + row.pending).toBe(row.logins);
     expect(row.unclassified).toBe(3);
     expect(report.totals.unclassified).toBe(3);
+  });
+
+  it('lets Status 2 correct Status in the two cases it may, and no others', async () => {
+    // The bug this correction exists for, in miniature: four more applications
+    // the sheet files under ISSUED, of which only two really are.
+    await policies('ICCSP2', {
+      approved: 2,
+      freelook: 1,
+      preUnitize: 1,
+      postponed: 1,
+      periodId: julyId,
+    });
+
+    const report = await loadPerformance({ viewer: tl, rung: 'sm', periodId: julyId });
+    const row = report.rows.find((r) => r.code === 'ICCSP2');
+
+    expect(row?.logins).toBe(10);
+    // ISSUED/ISSUED and ISSUED/PRE-UNITIZE. PRE-UNITIZE has no rule moving it,
+    // so `status` stands — the correction is two cases, not a re-model.
+    expect(row?.issued).toBe(2);
+    // ISSUED/APPROVED is approved, not issued.
+    expect(row?.pending).toBe(2);
+    // Four declines, one free-look cancellation, one postponement: one outcome.
+    expect(row?.rejected).toBe(6);
+    expect(row?.unclassified).toBe(0);
+    expect((row?.issued ?? 0) + (row?.rejected ?? 0) + (row?.pending ?? 0)).toBe(row?.logins);
+  });
+
+  it('reports the reason behind each outcome, and a blank as no reason', async () => {
+    await policies('ICCSP1', { approved: 2, postponed: 1, preUnitize: 1, periodId: julyId });
+
+    const reasons = await loadOutcomeReasons(rep, julyId);
+    const of = (outcome: string, reason: string | null) =>
+      reasons.find((r) => r.outcome === outcome && r.reason === reason)?.count ?? 0;
+
+    expect(of('issued', 'ISSUED')).toBe(7);
+    // Issued, with the units not yet allotted — issued business with a caveat,
+    // and the caveat is the whole reason this panel exists.
+    expect(of('issued', 'PRE-UNITIZE')).toBe(1);
+    expect(of('pending', 'APPROVED')).toBe(2);
+    expect(of('rejected', 'PSTPNE6')).toBe(1);
+    expect(of('rejected', 'REJECTED')).toBe(2);
+    // The common case: pending with nothing recorded. Null, never the string
+    // '' and never a reason invented to fill the cell.
+    expect(of('pending', null)).toBe(1);
+    // And the blank sorts last, because it is the absence of an explanation.
+    expect(reasons[reasons.length - 1].reason).toBeNull();
   });
 
   it('sums ANP and FP exactly, as strings', async () => {
@@ -303,5 +378,62 @@ describe("a rep's standing in their team", () => {
   it('refuses an account with no SM_ID rather than reporting on everybody', async () => {
     const broken = session({ id: rep.id, role: 'sales', smId: null });
     await expect(loadRepStanding(broken)).rejects.toBeInstanceOf(AuthzError);
+  });
+
+  it('ranks the rep among their team without naming a single colleague', async () => {
+    const { standing } = await loadRepStanding(rep, julyId);
+
+    // ICCSP1 issued 7 of 10, ICCSP2 issued 1 of 5. Two ranked, the rep first.
+    expect(standing?.rung).toBe('sm');
+    expect(standing?.rank).toBe(1);
+    expect(standing?.peers).toBe(2);
+    expect(standing?.rate).toBeCloseTo(0.7);
+    expect(standing?.median).toBeCloseTo(0.45);
+    // Pooled across the team: 8 issued of 15 logged.
+    expect(standing?.average).toBeCloseTo(8 / 15);
+
+    // The property that matters more than any of the numbers: nothing in the
+    // result identifies the other rep. A rank is not a leaderboard.
+    expect(JSON.stringify(standing)).not.toContain('ICCSP2');
+  });
+});
+
+describe('a manager against their peers', () => {
+  it('ranks a team leader among every team leader in the company', async () => {
+    const standing = await loadManagerStanding('tl', TL1, julyId);
+
+    // TL1 8/15, TL2 5/10, TL3 3/6 — and never DIY, which is not a team.
+    expect(standing.peers).toBe(3);
+    expect(standing.rank).toBe(1);
+    expect(standing.rate).toBeCloseTo(8 / 15);
+    expect(standing.median).toBeCloseTo(0.5);
+  });
+
+  it('ties on the same place rather than inventing an order between them', async () => {
+    // TL2 and TL3 both issue exactly half. Neither is above the other.
+    const second = await loadManagerStanding('tl', TL2, julyId);
+    const third = await loadManagerStanding('tl', TL3, julyId);
+
+    expect(second.rank).toBe(2);
+    expect(third.rank).toBe(2);
+  });
+
+  it('gives an area manager the same reading one rung up', async () => {
+    const standing = await loadManagerStanding('acm', ACM1, julyId);
+
+    expect(standing.peers).toBe(2);
+    expect(standing.rate).toBeCloseTo(13 / 25);
+    // 52.0% against ACM2's 50.0% — narrowly ahead.
+    expect(standing.rank).toBe(1);
+  });
+
+  it('holds no position for a manager with nothing logged', async () => {
+    const standing = await loadManagerStanding('tl', 'TL404', julyId);
+
+    // Not last place — no place. A rank of "worst" would be a claim about a
+    // team that has not been measured.
+    expect(standing.rank).toBeNull();
+    expect(standing.rate).toBeNull();
+    expect(standing.peers).toBe(3);
   });
 });

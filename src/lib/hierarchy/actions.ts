@@ -2,11 +2,10 @@
 
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
-import { and, eq, isNull, notInArray, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { manpower, manpowerOverride } from '@/db/schema';
 import { requireRole } from '@/lib/auth/rbac';
-import { PLACEHOLDER_CODE_LIST } from '@/lib/roster/placeholders';
 import { writeAudit } from '@/lib/audit/log';
 import { fail, ok, type ActionResult } from '@/lib/result';
 

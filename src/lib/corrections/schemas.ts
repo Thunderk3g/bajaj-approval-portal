@@ -64,12 +64,6 @@ export const CATEGORY_LABELS: Record<CorrectionCategory, string> = {
 export const MAPPING_DIRECTIONS = ['CLAIM_IN', 'TRANSFER_OUT'] as const;
 export type MappingDirection = (typeof MAPPING_DIRECTIONS)[number];
 
-/** Written from the submitting rep's point of view — they are one of the parties. */
-export const DIRECTION_LABELS: Record<MappingDirection, string> = {
-  CLAIM_IN: 'Claim a sale into my book',
-  TRANSFER_OUT: 'Transfer a sale out of my book',
-};
-
 export const DESCRIPTION_MAX = 2000;
 
 const OTHERS_DESCRIPTION_MESSAGE =

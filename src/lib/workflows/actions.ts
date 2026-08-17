@@ -8,6 +8,7 @@ import { writeAudit } from '@/lib/audit/log';
 import { fail, ok, type ActionResult } from '@/lib/result';
 import { CHAIN_KEYS, getChain, setChainActive, setChainStages, type ChainKey } from './chains';
 import { WorkflowError } from './errors';
+import { retryRoutingForChain, retryStageRouting } from './engine';
 
 /**
  * Editing an approval chain — 2026-08-06 spec section 7.
@@ -46,7 +47,7 @@ function refresh(chainKey: string) {
 
 export async function saveChainStagesAction(
   raw: SaveChainInput,
-): Promise<ActionResult<{ stageKeys: string[] }>> {
+): Promise<ActionResult<{ stageKeys: string[]; rerouted: number; stillStuck: number }>> {
   const actor = await requireRole('admin');
 
   const parsed = saveSchema.safeParse(raw);
@@ -82,8 +83,11 @@ export async function saveChainStagesAction(
           metadata: {
             chainKey,
             // Requests already running this chain hold their own copy of the old
-            // steps and are unaffected. Recorded so a later reader does not have
-            // to reconstruct whether an edit could have disturbed work in flight.
+            // steps and are unaffected — with one deliberate exception, applied
+            // after this transaction commits: a rung that resolved to NOBODY
+            // froze nothing worth keeping, so naming a person on it here is what
+            // finally routes the requests stranded behind it. See
+            // `retryRoutingForChain`.
             inFlightUnaffected: true,
           },
         },
@@ -93,8 +97,27 @@ export async function saveChainStagesAction(
       return rows;
     });
 
+    /**
+     * Route whatever was stranded on this chain, now that it can be routed.
+     *
+     * AFTER the commit, never inside it. The chain edit is the thing the admin
+     * asked for and it must not be rolled back because one of the requests
+     * behind it turns out to be unroutable for an unrelated reason — and each
+     * re-resolution takes its own row locks, which is a poor thing to do while
+     * holding the chain lock this transaction took.
+     *
+     * This is the answer to "I assigned a verifier afterwards and the request
+     * still went nowhere": before, the stranded rungs stayed stranded and
+     * nothing in the product could move them.
+     */
+    const rerouted = await retryRoutingForChain(chainKey).catch(() => []);
+
     refresh(chainKey);
-    return ok({ stageKeys: saved.map((s) => s.stageKey) });
+    return ok({
+      stageKeys: saved.map((s) => s.stageKey),
+      rerouted: rerouted.filter((r) => r.routed).length,
+      stillStuck: rerouted.filter((r) => !r.routed).length,
+    });
   } catch (error) {
     if (error instanceof WorkflowError) return fail(error.message);
     throw error;
@@ -159,4 +182,40 @@ export async function setChainActiveAction(
 
   refresh(chainKey);
   return ok({ isActive });
+}
+
+const retrySchema = z.object({ requestId: z.uuid() });
+
+/**
+ * Re-routes one stranded rung, on demand.
+ *
+ * The chain-edit path (`saveChainStagesAction`) covers the case where the fix was
+ * naming somebody on the chain. This covers the other one, which the chain never
+ * sees: the rung named a real manager all along and that manager simply had no
+ * portal account, so `resolveApprover` answered `NOT_PROVISIONED`. Creating the
+ * account fixes the roster and touches no chain, so nothing would otherwise tell
+ * the stranded request to look again.
+ *
+ * Admin-only, because these rungs are already the administrators' to clear —
+ * `assertMayDecide` says so, and this is the same authority exercised earlier:
+ * routing it to its rightful owner rather than deciding it on their behalf.
+ */
+export async function retryStageRoutingAction(
+  raw: unknown,
+): Promise<ActionResult<{ routed: boolean; stageKey: string; reason: string | null }>> {
+  await requireRole('admin');
+
+  const parsed = retrySchema.safeParse(raw);
+  if (!parsed.success) return fail('That request could not be identified.');
+
+  const outcome = await retryStageRouting(parsed.data.requestId);
+
+  if (!outcome) {
+    return fail('That request has no open step — there is nothing waiting to be routed.');
+  }
+
+  revalidatePath('/admin/corrections');
+  revalidatePath(`/admin/corrections/${parsed.data.requestId}`);
+
+  return ok({ routed: outcome.routed, stageKey: outcome.stageKey, reason: outcome.reason });
 }

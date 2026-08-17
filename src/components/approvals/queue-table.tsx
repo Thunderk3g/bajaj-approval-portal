@@ -214,7 +214,11 @@ export function HistoryTable({
   basePath = '/approver',
   actorLabel = 'Approver',
 }: {
-  rows: Array<HistoryRow | (Omit<HistoryRow, never> & { actorRole?: string | null })>;
+  /**
+   * The verifier's rows carry an extra `actorRole` this table never reads, and
+   * structural typing accepts them here without it being named.
+   */
+  rows: HistoryRow[];
   basePath?: string;
   actorLabel?: string;
 }) {
