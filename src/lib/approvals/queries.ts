@@ -21,7 +21,7 @@ import {
 } from '@/lib/auth/rbac';
 import { AuthzError } from '@/lib/auth/errors';
 import { likePattern } from '@/lib/records/query';
-import { actorStageCondition } from '@/lib/workflows/engine';
+import { actorStageCondition, partyToStageCondition } from '@/lib/workflows/engine';
 import {
   HISTORY_ACTIONS,
   OPEN_QUEUE_STATUSES,
@@ -354,6 +354,14 @@ export type RequestDetail = NonNullable<Awaited<ReturnType<typeof getRequestDeta
  *   raised by me          you can always read what you filed, whatever it was
  *                         filed against. This is the arm the record predicate
  *                         cannot express and the one whose absence was the bug.
+ *   routed to me          a rung of this request's chain names me — open now, or
+ *                         already decided by me. Ownership-shaped arms cannot
+ *                         express this one either: the chains that staff a review
+ *                         position with a named person (`AUTOPAY`, `MAPPING_DIY`,
+ *                         `ISSUANCE_DATE`, `OTHERS`, `AGENT_ID`) put a team
+ *                         leader on a request whose rep is in somebody else's
+ *                         team, so their own approvals queue linked to a page
+ *                         that answered "not found". See `partyToStageCondition`.
  *   concerns my people    `correction_request.sm_id` is the rep the request is
  *                         ABOUT — the destination of a claim, the owner of an
  *                         autopay fix. That is the question a manager is
@@ -373,6 +381,7 @@ function readableRequestCondition(viewer: SessionUser): SQL | undefined {
   if (GLOBAL_READ_ROLES.includes(viewer.role)) return undefined;
 
   const raisedByMe = eq(correctionRequest.submittedBy, viewer.id);
+  const routedToMe = partyToStageCondition(viewer);
 
   if (viewer.role === 'tl' || viewer.role === 'acm') {
     const column = viewer.role === 'tl' ? 'tl_id' : 'ccm_id';
@@ -383,13 +392,14 @@ function readableRequestCondition(viewer: SessionUser): SQL | undefined {
 
     return or(
       raisedByMe,
+      routedToMe,
       sql`${correctionRequest.smId} in ${teamSmIds(column, code)}`,
       scopedRecordCondition(viewer),
     ) as SQL;
   }
 
   if (!viewer.smId) throw new AuthzError('FORBIDDEN', 'Sales user has no SM_ID');
-  return or(raisedByMe, eq(correctionRequest.smId, viewer.smId)) as SQL;
+  return or(raisedByMe, routedToMe, eq(correctionRequest.smId, viewer.smId)) as SQL;
 }
 
 /**

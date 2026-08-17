@@ -1,7 +1,8 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, or, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { correctionAttachment, correctionRequest, salesRecord } from '@/db/schema';
 import { writeAudit } from '@/lib/audit/log';
+import { partyToStageCondition } from '@/lib/workflows/engine';
 import {
   GLOBAL_READ_ROLES,
   requireSession,
@@ -77,6 +78,13 @@ function canView(user: SessionUser, submittedBy: string): boolean {
  * attached to their own team's records and no others. Asked as its own query
  * only when the cheap checks have already failed, so the common paths pay
  * nothing for it.
+ *
+ * The record predicate is not the whole of it, and the second arm is the same
+ * correction `readableRequestCondition` needed. A chain that staffs a review
+ * position with a NAMED person routes to a manager the record scope does not
+ * contain — every `USER` rung on `AUTOPAY`, `MAPPING_DIY`, `ISSUANCE_DATE`,
+ * `OTHERS` and `AGENT_ID` — so the one manager the request is actually waiting on
+ * was the one served a 404 for its proof.
  */
 async function managerMayView(user: SessionUser, requestId: string): Promise<boolean> {
   if (user.role !== 'tl' && user.role !== 'acm') return false;
@@ -85,7 +93,12 @@ async function managerMayView(user: SessionUser, requestId: string): Promise<boo
     .select({ one: sql`1` })
     .from(correctionRequest)
     .innerJoin(salesRecord, eq(salesRecord.id, correctionRequest.recordId))
-    .where(and(eq(correctionRequest.id, requestId), scopedRecordCondition(user)))
+    .where(
+      and(
+        eq(correctionRequest.id, requestId),
+        or(scopedRecordCondition(user), partyToStageCondition(user)),
+      ),
+    )
     .limit(1);
 
   return Boolean(hit);

@@ -4,7 +4,7 @@ import { requireRole } from '@/lib/auth/rbac';
 import { AuthzError } from '@/lib/auth/errors';
 import { formatDateTime, orDash } from '@/lib/format';
 import { buildQuery, pageCount, parsePageParams } from '@/lib/pagination';
-import { listRoster, listUsers, userCounts } from '@/lib/users/queries';
+import { listRoster, listUserIds, listUsers, userCounts } from '@/lib/users/queries';
 import { rosterKey } from '@/lib/roster/entries';
 import { resolveHierarchy } from '@/lib/hierarchy/queries';
 import { ROLES } from '@/lib/users/schema';
@@ -77,14 +77,13 @@ export default async function UsersPage({
   const roleFilter = one(params.role);
   const activeFilter = one(params.active);
 
-  const [{ rows, total }, roster, counts] = await Promise.all([
-    listUsers({
-      q,
-      role: roleFilter,
-      active: activeFilter === 'active' || activeFilter === 'inactive' ? activeFilter : null,
-      limit: pageSize,
-      offset,
-    }),
+  const active = activeFilter === 'active' || activeFilter === 'inactive' ? activeFilter : null;
+
+  const [{ rows, total }, matchingIds, roster, counts] = await Promise.all([
+    listUsers({ q, role: roleFilter, active, limit: pageSize, offset }),
+    // The whole filtered set, so "select all matching" can mean what it says
+    // rather than "all 25 of them that fitted on this page".
+    listUserIds({ q, role: roleFilter, active }),
     listRoster(),
     userCounts(),
   ]);
@@ -176,7 +175,14 @@ export default async function UsersPage({
           <EmptyState title="No accounts match those filters" />
         ) : (
           <>
-            <BulkRemove selectableIds={rows.filter((r) => r.id !== admin.id).map((r) => r.id)}>
+            <BulkRemove
+              selectableIds={rows.filter((r) => r.id !== admin.id).map((r) => r.id)}
+              // Never the admin's own account, on either control. Removing it
+              // signs them out mid-batch and, if they were the last admin,
+              // leaves nobody able to undo any of it.
+              allMatchingIds={matchingIds.filter((id) => id !== admin.id)}
+              filtered={Boolean(q || roleFilter || activeFilter)}
+            >
               <Table>
                 <thead>
                   <tr>

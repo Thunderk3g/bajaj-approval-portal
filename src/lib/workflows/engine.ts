@@ -992,7 +992,11 @@ function article(word: string): string {
  * their own space, and a link into somebody else's role prefix is bounced by the
  * guard on arrival — a notification the recipient cannot follow.
  */
-function stageLink(stage: StageRow, requestId: string, recipientRole?: string | null): string {
+function stageLink(
+  stage: Pick<StageRow, 'resolverKey' | 'resolverConfig'>,
+  requestId: string,
+  recipientRole?: string | null,
+): string {
   /**
    * The RECIPIENT's role decides the prefix, not the resolver's shape.
    *
@@ -1128,6 +1132,46 @@ export function actorStageCondition(actor: { id: string; role: string }): SQL {
            ${actor.role} = 'admin'
            and acs.assigned_user_id is null
            and acs.resolver_key <> 'ROLE'
+         )
+       )
+  )`;
+}
+
+/**
+ * "Some rung of this request is, or was, mine" — as a predicate.
+ *
+ * The wider twin of `actorStageCondition`, and the one the READ side needs. That
+ * one answers "may I act on this right now", which is the queue's question. This
+ * one answers "am I a party to this request at all", which is the detail screen's
+ * — and the two are not the same question the moment a chain routes to somebody
+ * the request does not otherwise belong to.
+ *
+ * That case is not exotic; it is how every `USER` rung works. `AUTOPAY`,
+ * `MAPPING_DIY`, `ISSUANCE_DATE`, `OTHERS` and `AGENT_ID` each name a person on
+ * their V-steps, and the business staffs those with team leaders. A TL named on
+ * V1 is not the rep's own TL, did not raise the request, and does not own the
+ * record — so `readableRequestCondition` matched none of its three arms, and the
+ * request sitting at the top of that TL's own approvals queue opened as "page not
+ * found". Every one of those five categories failed exactly this way, and the two
+ * MAPPING chains that route through `TL_OF_SM` did not, because there the rung
+ * resolves to the manager the team predicate already covers.
+ *
+ * Decided rungs count as well as open ones: a manager who signed something off
+ * last week must still be able to open what they put their name to.
+ */
+export function partyToStageCondition(actor: { id: string; role: string }): SQL {
+  return sql`exists (
+    select 1
+      from correction_request_stage acs
+     where acs.request_id = ${correctionRequest.id}
+       and (
+         acs.assigned_user_id = ${actor.id}
+         or acs.decided_by = ${actor.id}
+         or (
+           acs.status = 'ACTIVE'
+           and acs.assigned_user_id is null
+           and acs.resolver_key = 'ROLE'
+           and acs.resolver_config ->> 'role' = ${actor.role}
          )
        )
   )`;
@@ -1392,6 +1436,115 @@ export async function retryStageRouting(
   };
 
   return tx ? run(tx) : db.transaction(run);
+}
+
+export type StageReassignment = {
+  stageKey: string;
+  /** Requests whose open rung moved to the newly named person. */
+  moved: number;
+  notified: number;
+};
+
+/**
+ * Moves an OPEN rung to whoever the chain names for it now.
+ *
+ * The deliberate exception to the freeze, and a narrower one than it looks. A
+ * request's stages are copied at submission and never re-read, so an admin
+ * editing a chain cannot reorder, add or remove rungs under work in flight —
+ * that rule is untouched. What it also froze, and should not have, is WHO a
+ * named review position belongs to: reassigning V1 from one team leader to
+ * another changed the chain and left every request already sitting on V1 in the
+ * old leader's queue, waiting on somebody the business had just taken off the
+ * desk. Nothing in the product could move them, and the new assignee could not
+ * see them at all.
+ *
+ * Three conditions, and each one is what keeps this from being a general
+ * re-resolution:
+ *
+ *   ACTIVE only        a rung already decided is history and stays attributed to
+ *                      the person who decided it.
+ *   `USER` only        a hierarchy rung resolves from the roster per request and
+ *                      a role pool has no assignee; neither is what was edited.
+ *   pinned to somebody a rung pinned to NOBODY is the stranded case, and
+ *      else            `retryStageRouting` owns that one. Nothing here overlaps it.
+ *
+ * `resolver_config` is rewritten alongside `assigned_user_id`, not just the
+ * column the queue reads. `assertMayDecide` re-resolves the rung from the
+ * stage's OWN copy of the config, so moving the pin without the config would put
+ * the request in the new assignee's queue and then refuse their decision.
+ */
+export async function reassignOpenStages(
+  chainKey: ChainKey,
+  assignees: Array<{ stageKey: string; userId: string }>,
+): Promise<StageReassignment[]> {
+  const outcomes: StageReassignment[] = [];
+
+  for (const { stageKey, userId } of assignees) {
+    // A plain conditional UPDATE rather than SELECT … FOR UPDATE and then write:
+    // under READ COMMITTED the predicate is re-checked against the row version
+    // this statement waited for, so a rung a verifier decided in the meantime is
+    // no longer ACTIVE and is left alone — without taking the request lock that
+    // `lockForDecision` holds in the opposite order.
+    const moved = await db
+      .update(correctionRequestStage)
+      .set({ assignedUserId: userId, resolverConfig: { userId } })
+      .where(
+        and(
+          eq(correctionRequestStage.status, 'ACTIVE'),
+          eq(correctionRequestStage.stageKey, stageKey),
+          eq(correctionRequestStage.resolverKey, 'USER'),
+          sql`${correctionRequestStage.assignedUserId} is not null`,
+          ne(correctionRequestStage.assignedUserId, userId),
+          sql`exists (
+            select 1 from correction_request cr
+             where cr.id = ${correctionRequestStage.requestId}
+               and cr.chain_key = ${chainKey}
+               and cr.status in ('PENDING', 'VERIFIED')
+          )`,
+        ),
+      )
+      .returning({ requestId: correctionRequestStage.requestId });
+
+    if (moved.length === 0) continue;
+
+    const requests = await db
+      .select({
+        id: correctionRequest.id,
+        appsNo: correctionRequest.appsNo,
+        category: correctionRequest.category,
+        fieldLabel: correctionRequest.fieldLabel,
+        originalValue: correctionRequest.originalValue,
+        proposedValue: correctionRequest.proposedValue,
+      })
+      .from(correctionRequest)
+      .where(inArray(correctionRequest.id, moved.map((m) => m.requestId)));
+
+    const [recipient] = await db
+      .select({ role: userTable.role })
+      .from(userTable)
+      .where(eq(userTable.id, userId))
+      .limit(1);
+
+    // Told, because nothing else would tell them: the rung opened before they
+    // held it, so its original notification went to the person they replaced.
+    await notifyMany(
+      requests.map((request) => {
+        const categoryLabel =
+          CATEGORY_LABELS[request.category as CorrectionCategory] ?? request.category;
+        return {
+          userId,
+          type: 'CORRECTION_VERIFIED' as const,
+          title: `${stageKey}: ${categoryLabel} correction — ${request.appsNo}`,
+          body: `${request.fieldLabel} on application ${request.appsNo}: ${request.originalValue ?? '(blank)'} → ${request.proposedValue}. This step has been reassigned to you.`,
+          link: stageLink({ resolverKey: 'USER', resolverConfig: { userId } }, request.id, recipient?.role),
+        };
+      }),
+    );
+
+    outcomes.push({ stageKey, moved: moved.length, notified: requests.length });
+  }
+
+  return outcomes;
 }
 
 /**

@@ -43,9 +43,15 @@ function isRole(value: string): value is UserRole {
   return ROLES.has(value);
 }
 
-export async function listUsers(
-  options: UserListOptions,
-): Promise<{ rows: UserRow[]; total: number }> {
+/**
+ * The filter behind the list, as a predicate.
+ *
+ * Extracted so `listUserIds` cannot drift from `listUsers`. "Select everyone
+ * these filters match" is only safe while the two agree exactly on what they
+ * match — a selection built from a subtly different predicate deletes accounts
+ * the admin was never shown.
+ */
+function userFilter(options: Omit<UserListOptions, 'limit' | 'offset'>): SQL | undefined {
   const parts: SQL[] = [];
 
   const q = options.q?.trim();
@@ -69,7 +75,13 @@ export async function listUsers(
   if (options.active === 'active') parts.push(eq(user.isActive, true));
   if (options.active === 'inactive') parts.push(eq(user.isActive, false));
 
-  const where = parts.length === 0 ? undefined : parts.length === 1 ? parts[0] : and(...parts);
+  return parts.length === 0 ? undefined : parts.length === 1 ? parts[0] : and(...parts);
+}
+
+export async function listUsers(
+  options: UserListOptions,
+): Promise<{ rows: UserRow[]; total: number }> {
+  const where = userFilter(options);
 
   const [rows, [totals]] = await Promise.all([
     db
@@ -95,6 +107,32 @@ export async function listUsers(
   ]);
 
   return { rows, total: totals?.value ?? 0 };
+}
+
+/**
+ * Every id the current filters match, not just the page being looked at.
+ *
+ * What "select all" has to mean before a mass removal is possible at all. The
+ * checkbox column can only offer the 25 rows the page rendered, so removing 400
+ * deactivated accounts meant sixteen rounds of select-page, type-the-count,
+ * confirm — and the count changes under you each time, because deleting a page
+ * pulls the next one up into its place.
+ *
+ * Ids only, and ordered, so a few thousand of them cost one indexed scan and
+ * about 40 bytes each on the way to the browser. The removal itself still goes
+ * through `removeUsers`, one account at a time, with every one of its rules
+ * intact — this widens the SELECTION, not what may be deleted.
+ */
+export async function listUserIds(
+  options: Omit<UserListOptions, 'limit' | 'offset'>,
+): Promise<string[]> {
+  const rows = await db
+    .select({ id: user.id })
+    .from(user)
+    .where(userFilter(options))
+    .orderBy(desc(user.isActive), desc(user.createdAt));
+
+  return rows.map((r) => r.id);
 }
 
 export type RosterWorklistEntry = RosterEntry & {

@@ -8,7 +8,7 @@ import { writeAudit } from '@/lib/audit/log';
 import { fail, ok, type ActionResult } from '@/lib/result';
 import { CHAIN_KEYS, getChain, setChainActive, setChainStages, type ChainKey } from './chains';
 import { WorkflowError } from './errors';
-import { retryRoutingForChain, retryStageRouting } from './engine';
+import { reassignOpenStages, retryRoutingForChain, retryStageRouting } from './engine';
 
 /**
  * Editing an approval chain — 2026-08-06 spec section 7.
@@ -47,7 +47,15 @@ function refresh(chainKey: string) {
 
 export async function saveChainStagesAction(
   raw: SaveChainInput,
-): Promise<ActionResult<{ stageKeys: string[]; rerouted: number; stillStuck: number }>> {
+): Promise<
+  ActionResult<{
+    stageKeys: string[];
+    rerouted: number;
+    stillStuck: number;
+    /** In-flight requests moved to a review position's new owner. */
+    reassigned: number;
+  }>
+> {
   const actor = await requireRole('admin');
 
   const parsed = saveSchema.safeParse(raw);
@@ -82,13 +90,16 @@ export async function saveChainStagesAction(
           after: { stages: rows.map(describe) },
           metadata: {
             chainKey,
-            // Requests already running this chain hold their own copy of the old
-            // steps and are unaffected — with one deliberate exception, applied
-            // after this transaction commits: a rung that resolved to NOBODY
-            // froze nothing worth keeping, so naming a person on it here is what
-            // finally routes the requests stranded behind it. See
-            // `retryRoutingForChain`.
-            inFlightUnaffected: true,
+            // Requests already running this chain hold their own copy of the
+            // ordered steps, and that list is never rewritten under them — no
+            // rung is added, removed or reordered mid-flight.
+            //
+            // WHO an open rung belongs to is the exception, applied after this
+            // transaction commits and in two shapes: a rung that resolved to
+            // NOBODY froze nothing worth keeping (`retryRoutingForChain`), and a
+            // review position handed to a different person follows the person
+            // (`reassignOpenStages`).
+            inFlightStageListFrozen: true,
           },
         },
         tx,
@@ -112,11 +123,33 @@ export async function saveChainStagesAction(
      */
     const rerouted = await retryRoutingForChain(chainKey).catch(() => []);
 
+    /**
+     * And move whatever is sitting on a rung this edit just handed to somebody
+     * else — the other half of the same complaint.
+     *
+     * `retryRoutingForChain` above covers a rung that resolved to NOBODY.
+     * Reassigning a review position from one person to another is the case it
+     * cannot see: the rung resolved fine, to the person who no longer holds the
+     * desk, so the request stayed in their queue and was invisible to the person
+     * who now does. Only ACTIVE `USER` rungs move, and never one already decided
+     * — see `reassignOpenStages`.
+     */
+    const reassigned = await reassignOpenStages(
+      chainKey,
+      saved.flatMap((stage) => {
+        const userId = (stage.resolverConfig as { userId?: unknown })?.userId;
+        return stage.resolverKey === 'USER' && typeof userId === 'string' && userId
+          ? [{ stageKey: stage.stageKey, userId }]
+          : [];
+      }),
+    ).catch(() => []);
+
     refresh(chainKey);
     return ok({
       stageKeys: saved.map((s) => s.stageKey),
       rerouted: rerouted.filter((r) => r.routed).length,
       stillStuck: rerouted.filter((r) => !r.routed).length,
+      reassigned: reassigned.reduce((sum, r) => sum + r.moved, 0),
     });
   } catch (error) {
     if (error instanceof WorkflowError) return fail(error.message);

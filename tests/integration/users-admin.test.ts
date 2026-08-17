@@ -3,7 +3,7 @@ import { eq, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { auditLog, manpower, salesRecord, uploadBatch, user } from '@/db/schema';
 import { createUser, removeUsers, setUserActive, updateUser } from '@/lib/users/service';
-import { listRoster, listUsers, rosterStatus, userCounts } from '@/lib/users/queries';
+import { listRoster, listUserIds, listUsers, rosterStatus, userCounts } from '@/lib/users/queries';
 import { rosterKey } from '@/lib/roster/entries';
 import { createUserSchema } from '@/lib/users/schema';
 import { expectDbError, makeUser, truncateAll } from '../helpers/db';
@@ -348,6 +348,30 @@ describe('deactivation, never deletion (spec 4.2)', () => {
     const inactive = await listUsers({ active: 'inactive', limit: 25, offset: 0 });
     expect(inactive.total).toBe(1);
     expect(inactive.rows[0].id).toBe(target.id);
+  });
+
+  /**
+   * "Select all" has to mean the whole filtered set, not the page.
+   *
+   * The checkbox column can only offer what the page rendered, and a page is 25
+   * rows — so removing four hundred accounts meant sixteen rounds of
+   * select-page, type-the-count, confirm, with the pages shifting under the
+   * admin as each batch went. `listUserIds` is what the mass control selects.
+   */
+  it('lists every id the filters match, past the end of the page', async () => {
+    for (let n = 0; n < 30; n += 1) {
+      await makeUser({ role: 'sales', smId: `C2CM3${String(n).padStart(4, '0')}` });
+    }
+    const keep = await makeUser({ role: 'approver', smId: null });
+
+    const page = await listUsers({ role: 'sales', limit: 25, offset: 0 });
+    const all = await listUserIds({ role: 'sales' });
+
+    expect(page.rows).toHaveLength(25);
+    expect(all).toHaveLength(30);
+    // The same filter, or the selection would reach accounts the admin was
+    // never shown — here, an approver while the list said "sales".
+    expect(all).not.toContain(keep.id);
   });
 });
 

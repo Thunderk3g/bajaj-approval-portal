@@ -101,7 +101,7 @@ export function ChainEditor({
   const [dragging, setDragging] = useState<number | null>(null);
   const [over, setOver] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [saved, setSaved] = useState<{ reassigned: number; rerouted: number } | null>(null);
   const [pending, startTransition] = useTransition();
 
   const dirty = JSON.stringify(stages) !== JSON.stringify(initial);
@@ -112,7 +112,7 @@ export function ChainEditor({
     const [row] = next.splice(from, 1);
     next.splice(to, 0, row);
     setStages(next);
-    setSaved(false);
+    setSaved(null);
   }
 
   function remove(index: number) {
@@ -125,7 +125,7 @@ export function ChainEditor({
     }
     setStages(stages.filter((_, i) => i !== index));
     setError(null);
-    setSaved(false);
+    setSaved(null);
   }
 
   function add(optionId: string) {
@@ -143,12 +143,12 @@ export function ChainEditor({
         },
       },
     ]);
-    setSaved(false);
+    setSaved(null);
   }
 
   function patch(index: number, change: Partial<EditableStage>) {
     setStages(stages.map((s, i) => (i === index ? { ...s, ...change } : s)));
-    setSaved(false);
+    setSaved(null);
   }
 
   function save() {
@@ -168,7 +168,7 @@ export function ChainEditor({
         setError(result.error);
         return;
       }
-      setSaved(true);
+      setSaved({ reassigned: result.data.reassigned, rerouted: result.data.rerouted });
     });
   }
 
@@ -329,7 +329,21 @@ export function ChainEditor({
       </Field>
 
       {error ? <Alert tone="danger">{error}</Alert> : null}
-      {saved && !dirty ? <Alert tone="success">Saved. New requests will follow this chain.</Alert> : null}
+      {saved && !dirty ? (
+        <Alert tone="success">
+          Saved. New requests will follow this chain.
+          {/* Requests already in flight keep their own copy of the steps — except
+              for who an OPEN review position belongs to, which follows the person
+              the chain now names. Reported, because it is a change to somebody
+              else's queue that the admin did not explicitly ask for. */}
+          {saved.reassigned > 0
+            ? ` ${saved.reassigned} request${saved.reassigned === 1 ? '' : 's'} already waiting on a reassigned step ${saved.reassigned === 1 ? 'has' : 'have'} moved to whoever holds it now.`
+            : ''}
+          {saved.rerouted > 0
+            ? ` ${saved.rerouted} request${saved.rerouted === 1 ? '' : 's'} that had nobody to route to ${saved.rerouted === 1 ? 'is' : 'are'} moving again.`
+            : ''}
+        </Alert>
+      ) : null}
 
       <div className="flex items-center gap-3">
         <Button type="button" onClick={save} disabled={pending || !dirty}>

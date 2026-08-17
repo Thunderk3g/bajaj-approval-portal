@@ -24,10 +24,24 @@ import { Alert, Button, Input, buttonClass } from '@/components/ui';
 export function BulkRemove({
   children,
   selectableIds,
+  allMatchingIds,
+  filtered = false,
   onSelectionChange,
 }: {
   children: ReactNode;
+  /** The rows this page rendered — everything the checkbox column can reach. */
   selectableIds: string[];
+  /**
+   * Every account the current filters match, across every page.
+   *
+   * The mass path. Without it "select all" could only ever mean the 25 rows in
+   * front of the admin, so removing four hundred deactivated accounts was
+   * sixteen rounds of select-page, type-the-count, confirm — with the pages
+   * shifting under them as each batch went.
+   */
+  allMatchingIds: string[];
+  /** Whether a filter is narrowing the list, so the control can say which set. */
+  filtered?: boolean;
   onSelectionChange?: (selected: string[]) => void;
 }) {
   const [selected, setSelected] = useState<string[]>([]);
@@ -63,7 +77,12 @@ export function BulkRemove({
     });
   }
 
-  const allSelected = selected.length > 0 && selected.length === selectableIds.length;
+  // "Every row on this page is selected", which after a mass selection is true
+  // while `selected` also holds ids from pages the admin never rendered — so it
+  // is asked of the page's own ids rather than of the two lengths.
+  const pageSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.includes(id));
+  const beyondPage = allMatchingIds.length > selectableIds.length;
+  const allMatchingSelected = allMatchingIds.length > 0 && selected.length === allMatchingIds.length;
 
   return (
     <div className="space-y-4">
@@ -71,16 +90,35 @@ export function BulkRemove({
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
-            checked={allSelected}
+            checked={pageSelected}
             // Indeterminate is the honest state for a partial selection and
             // cannot be expressed through `checked` alone.
             ref={(el) => {
-              if (el) el.indeterminate = selected.length > 0 && !allSelected;
+              if (el) el.indeterminate = selected.length > 0 && !pageSelected;
             }}
             onChange={(event) => update(event.currentTarget.checked ? selectableIds : [])}
           />
           Select all on this page
         </label>
+
+        {/*
+          The mass path, offered only when there is something beyond this page to
+          reach. Selecting is separated from removing on purpose: this button
+          fills the selection and shows the count, and the removal still goes
+          through the same confirmation — including typing the number back —
+          that a hand-built selection does.
+        */}
+        {beyondPage ? (
+          <button
+            type="button"
+            className={buttonClass('secondary', 'text-sm')}
+            onClick={() => update(allMatchingSelected ? [] : allMatchingIds)}
+          >
+            {allMatchingSelected
+              ? 'Clear selection'
+              : `Select all ${allMatchingIds.length}${filtered ? ' matching these filters' : ''}`}
+          </button>
+        ) : null}
 
         {selected.length > 0 ? (
           <span className="text-sm text-slate-600">{selected.length} selected</span>

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '@/db/client';
-import { auditLog, correctionAttachment, salesRecord } from '@/db/schema';
+import { auditLog, correctionAttachment, correctionRequestStage, salesRecord } from '@/db/schema';
 import type { SessionUser } from '@/lib/auth/rbac';
 import { deleteStoredProofs } from '@/lib/storage/files';
 import { makeUser, truncateAll } from '../helpers/db';
@@ -145,6 +145,43 @@ describe('proof access control (spec 4.4)', () => {
   it('returns 404 with no session at all', async () => {
     const { attachment } = await seedAttachment();
     session.user = null;
+
+    expect((await get(attachment.id)).status).toBe(404);
+  });
+
+  /**
+   * The manager a NAMED review step routes to, who owns neither the record nor
+   * the rep. Every chain with a `USER` rung — AutoPay, DIY, SM ID, issuance
+   * date, other fields — staffs it that way, so this is the one manager the
+   * request is actually waiting on, and a 404 here means they can approve a
+   * document they were never allowed to look at.
+   */
+  it('serves it to the team leader a named review step routes to', async () => {
+    const { attachment } = await seedAttachment();
+    const tl = await makeUser({ role: 'tl', tlCode: 'TL-REVIEWER' });
+
+    // Staffing the open rung with a named person, which is what an admin does on
+    // the chain screen — the submission above already materialised the stages.
+    await db
+      .update(correctionRequestStage)
+      .set({ stageKey: 'V1', resolverKey: 'USER', resolverConfig: { userId: tl.id }, assignedUserId: tl.id })
+      .where(
+        and(
+          eq(correctionRequestStage.requestId, attachment.requestId),
+          eq(correctionRequestStage.status, 'ACTIVE'),
+        ),
+      );
+
+    session.user = { ...sessionFor(tl), tlCode: tl.tlCode };
+
+    expect((await get(attachment.id)).status).toBe(200);
+  });
+
+  it('still refuses a team leader with no rung on it and no claim to the record', async () => {
+    const { attachment } = await seedAttachment();
+    const outsider = await makeUser({ role: 'tl', tlCode: 'TL-OUTSIDER' });
+
+    session.user = { ...sessionFor(outsider), tlCode: outsider.tlCode };
 
     expect((await get(attachment.id)).status).toBe(404);
   });
