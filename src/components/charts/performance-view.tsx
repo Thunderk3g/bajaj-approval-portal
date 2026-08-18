@@ -6,6 +6,7 @@ import {
   EmptyState,
   Meter,
   PageHeader,
+  Pagination,
   StatCard,
   Table,
   Td,
@@ -13,6 +14,8 @@ import {
   buttonClass,
   cx,
 } from '@/components/ui';
+import { DEFAULT_PAGE_SIZE, pageCount, parsePageParams, type PageParams } from '@/lib/pagination';
+import { RungPending } from './rung-pending';
 import { AuthzError } from '@/lib/auth/errors';
 import type { SessionUser } from '@/lib/auth/rbac';
 import { formatMoney } from '@/lib/format';
@@ -132,6 +135,7 @@ export async function PerformanceScreen({
       periods={period.options}
       standing={standing}
       reasons={reasons}
+      pageParams={parsePageParams(params)}
     />
   );
 }
@@ -171,6 +175,22 @@ export type PerformanceViewProps = {
   standing?: PeerStanding | null;
   /** The `status_2` behind each outcome — why the pending are pending. */
   reasons?: readonly OutcomeReason[];
+  /**
+   * Which slice of the table to render.
+   *
+   * The rep rung is one row per rep in the reader's scope, and for an admin that
+   * is every rep in the company. Unpaginated, that made switching to "Sales
+   * manager" the single heaviest thing the portal could be asked to do — and
+   * because a query-string change on the same route re-triggers no loading
+   * boundary, the click updated nothing and did not even move the address bar
+   * until the whole payload had arrived. It read as a button that had stopped
+   * working, which is exactly what it was reported as.
+   *
+   * Sliced here rather than in SQL: the totals, the peer standing and the sort
+   * are all computed over the FULL set, and a LIMIT in the query would quietly
+   * change what the stat cards mean.
+   */
+  pageParams?: PageParams;
 };
 
 export function PerformanceView(props: PerformanceViewProps) {
@@ -179,13 +199,23 @@ export function PerformanceView(props: PerformanceViewProps) {
   const standing = props.standing ?? null;
   const reasons = props.reasons ?? [];
 
-  const rows = sortPerformanceRows(report.rows, totals, view.sort, view.dir);
+  const { page, pageSize, offset } = props.pageParams ?? { page: 1, pageSize: DEFAULT_PAGE_SIZE, offset: 0 };
+  const sorted = sortPerformanceRows(report.rows, totals, view.sort, view.dir);
+  const rows = sorted.slice(offset, offset + pageSize);
   const selectedPeriod = periods.find((p) => p.code === view.period);
   // A code in the URL that names no period is a stale bookmark, not an error
   // worth a crash screen — the report falls back to every period and says so.
   const unknownPeriod = view.period !== '' && view.period !== 'all' && !selectedPeriod;
 
-  const href = (patch: Partial<PerformanceParams>) => {
+  /**
+   * A link to this screen with one thing changed.
+   *
+   * `page` is NOT carried across a rung or sort change, and that is deliberate:
+   * regrouping the table renumbers every row, so page 7 of the old grouping
+   * names nothing in the new one. It is passed explicitly by the pager, which is
+   * the only control that means to keep the view and move within it.
+   */
+  const href = (patch: Partial<PerformanceParams>, toPage = 1) => {
     const merged = { ...view, ...patch };
     const query = new URLSearchParams({
       rung: merged.rung,
@@ -193,6 +223,8 @@ export function PerformanceView(props: PerformanceViewProps) {
       dir: merged.dir,
     });
     if (merged.period) query.set('period', merged.period);
+    if (toPage > 1) query.set('page', String(toPage));
+    if (pageSize !== DEFAULT_PAGE_SIZE) query.set('pageSize', String(pageSize));
     return `${basePath}?${query.toString()}`;
   };
 
@@ -216,6 +248,7 @@ export function PerformanceView(props: PerformanceViewProps) {
                 className={buttonClass(rung === view.rung ? 'primary' : 'secondary')}
               >
                 {props.rungTabs?.[rung] ?? RUNG_LABELS[rung]}
+                <RungPending />
               </Link>
             ))}
           </nav>
@@ -326,7 +359,10 @@ export function PerformanceView(props: PerformanceViewProps) {
       {props.children ? <div className="mt-4">{props.children}</div> : null}
 
       <div className="mt-4">
-        {rows.length === 0 ? (
+        {/* Asked of the whole report, not of this page: a `?page=99` on a
+            three-page table has no rows either, and "no records in this period"
+            would be a false answer to a question about the period. */}
+        {sorted.length === 0 ? (
           <EmptyState title={props.emptyTitle} description={props.emptyDescription} />
         ) : (
           <Table>
@@ -376,6 +412,13 @@ export function PerformanceView(props: PerformanceViewProps) {
             </tbody>
           </Table>
         )}
+
+        <Pagination
+          page={page}
+          pageCount={pageCount(sorted.length, pageSize)}
+          totalRows={sorted.length}
+          hrefFor={(next) => href({}, next)}
+        />
       </div>
 
       {report.placeholders.length > 0 ? (

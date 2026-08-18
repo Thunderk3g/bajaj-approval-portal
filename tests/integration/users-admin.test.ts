@@ -1,7 +1,15 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
-import { auditLog, manpower, salesRecord, uploadBatch, user } from '@/db/schema';
+import {
+  auditLog,
+  correctionRequest,
+  correctionRequestStage,
+  manpower,
+  salesRecord,
+  uploadBatch,
+  user,
+} from '@/db/schema';
 import { createUser, removeUsers, setUserActive, updateUser } from '@/lib/users/service';
 import { listRoster, listUserIds, listUsers, rosterStatus, userCounts } from '@/lib/users/queries';
 import { rosterKey } from '@/lib/roster/entries';
@@ -435,6 +443,77 @@ describe('removing an account over its own audit history', () => {
 
     const [row] = await db.select().from(user).where(eq(user.id, target.id));
     expect(row.isActive).toBe(false);
+  });
+
+  /**
+   * The account with no history that still cannot be deleted.
+   *
+   * Reported as "most users are deleted, then an error page, and the rest are
+   * still there". An account with nothing in the audit log took the plain delete
+   * path, which ran unguarded — and every other reference to a user is
+   * `ON DELETE NO ACTION`, so one correction it submitted or one review step it
+   * was assigned raised a 23503 that came out of the loop, out of the Server
+   * Action and onto the screen as a 500. Everything already processed had
+   * committed; everything after it was untouched; the admin was told neither.
+   *
+   * A freshly provisioned manager is exactly this shape: named on a chain step,
+   * never acted, nothing audited.
+   */
+  it('deactivates an account that work still references, and finishes the batch', async () => {
+    const admin = actorFrom(await makeUser({ role: 'admin', smId: null }));
+    const assigned = await makeUser({ role: 'tl', tlCode: 'TL777', name: 'Named on a step' });
+    const clean = await makeUser({ role: 'approver', smId: null, name: 'Nothing Holds Me' });
+
+    const [record] = await db
+      .insert(salesRecord)
+      .values({ appsNo: '7100999001', smId: 'C2CM21350', status: 'ISSUED' })
+      .returning();
+
+    const [request] = await db
+      .insert(correctionRequest)
+      .values({
+        recordId: record.id,
+        appsNo: record.appsNo,
+        category: 'AUTOPAY',
+        fieldName: 'autopayStatus',
+        fieldLabel: 'AutoPay status',
+        proposedValue: 'Y',
+        submittedBy: admin.id,
+        smId: 'C2CM21350',
+        chainKey: 'AUTOPAY',
+        totalStages: 1,
+      })
+      .returning();
+
+    await db.insert(correctionRequestStage).values({
+      requestId: request.id,
+      sequence: 0,
+      stageKey: 'V1',
+      resolverKey: 'USER',
+      resolverConfig: { userId: assigned.id },
+      canReject: false,
+      status: 'ACTIVE',
+      assignedUserId: assigned.id,
+    });
+
+    // The blocked account FIRST, so a throw would take the second one with it.
+    const result = await removeUsers(admin, [assigned.id, clean.id]);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.skipped).toHaveLength(1);
+    expect(result.data.skipped[0].email).toBe(assigned.email);
+    expect(result.data.skipped[0].reason).toMatch(/still referenced by work it did/);
+    // The rest of the batch still ran — the whole point of not throwing.
+    expect(result.data.deleted).toEqual([clean.email]);
+
+    const [row] = await db.select().from(user).where(eq(user.id, assigned.id));
+    expect(row.isActive).toBe(false);
+
+    // Deactivating somebody leaves a record of it, on this path too.
+    const trail = await auditFor(assigned.id);
+    expect(trail.map((e) => e.action)).toContain('USER_DEACTIVATE');
   });
 
   it('deletes the entries along with the account when it is', async () => {

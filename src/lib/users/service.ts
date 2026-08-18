@@ -590,6 +590,52 @@ export type BulkRemovalOutcome = {
  * account those tables are holding is reported as skipped with the constraint
  * named, having been deactivated rather than left untouched.
  */
+/**
+ * A delete something else is holding: deactivate instead, and say what held it.
+ *
+ * Returns the `skipped` entry when the failure was a foreign key, and null when
+ * it was anything else — the caller rethrows those, because a bug must not be
+ * reported to an admin as "this account is still referenced".
+ *
+ * 23503 is the only failure with a safe fallback here. Something other than the
+ * audit log still references the account: a correction it submitted, an upload
+ * it committed, a review step it was assigned. Those rows are work, not history,
+ * and deleting them is not on offer — so the account loses its access and the
+ * constraint is named, which is the difference between an admin who knows where
+ * to look and one staring at a 500.
+ */
+async function deactivateBlocked(
+  actor: Actor,
+  row: typeof user.$inferSelect,
+  error: unknown,
+): Promise<{ email: string; reason: string } | null> {
+  const failure = pgError(error);
+  if (failure?.code !== '23503') return null;
+
+  if (row.isActive) {
+    await db.update(user).set({ isActive: false, updatedAt: new Date() }).where(eq(user.id, row.id));
+
+    // A deactivation that leaves no entry is a hole in the trail this whole
+    // system exists to keep — and this is the one path that used to leave one.
+    await writeAudit({
+      actor,
+      action: 'USER_DEACTIVATE',
+      entityType: 'user',
+      entityId: row.id,
+      before: snapshot(row),
+      after: { ...snapshot(row), isActive: false },
+      metadata: { via: 'bulk', requestedDelete: true, blockedBy: failure.constraint ?? null },
+    });
+  }
+
+  return {
+    email: row.email,
+    reason:
+      `still referenced by work it did${failure.constraint ? ` (${failure.constraint})` : ''}, ` +
+      'so it was deactivated instead. That reference is not removable.',
+  };
+}
+
 export async function removeUsers(
   actor: Actor,
   userIds: string[],
@@ -675,27 +721,9 @@ export async function removeUsers(
           await tx.delete(user).where(eq(user.id, row.id));
         });
       } catch (error) {
-        // 23503: something other than the audit log still references this
-        // account — a correction it submitted, an upload it committed. Those
-        // rows are work, not history, and deleting them is not on offer, so the
-        // account is deactivated and the constraint is named. A generic failure
-        // here would leave the admin with no idea which table to look at.
-        const failure = pgError(error);
-        if (failure?.code !== '23503') throw error;
-
-        const constraint = failure.constraint;
-        if (row.isActive) {
-          await db
-            .update(user)
-            .set({ isActive: false, updatedAt: new Date() })
-            .where(eq(user.id, row.id));
-        }
-        outcome.skipped.push({
-          email: row.email,
-          reason:
-            `still referenced by work it did${constraint ? ` (${constraint})` : ''}, ` +
-            'so it was deactivated instead. That reference is not removable.',
-        });
+        const blocked = await deactivateBlocked(actor, row, error);
+        if (!blocked) throw error;
+        outcome.skipped.push(blocked);
         continue;
       }
 
@@ -703,21 +731,51 @@ export async function removeUsers(
       continue;
     }
 
-    // Written BEFORE the delete: afterwards there is no row to describe, and
-    // this entry is the only remaining evidence the account ever existed. The
-    // audit actor is the admin, never the deleted user, so the RESTRICT
-    // constraint above cannot be tripped by the row we are about to write.
-    await writeAudit({
-      actor,
-      action: 'USER_DEACTIVATE',
-      entityType: 'user',
-      entityId: row.id,
-      before: snapshot(row),
-      after: null,
-      metadata: { via: 'bulk', deleted: true },
-    });
+    /**
+     * No audit history, so the account can go — if nothing ELSE is holding it.
+     *
+     * This delete used to run unguarded, and that was the bug behind "most of
+     * them went, then the error page". An account with no audit rows can still
+     * be referenced by work: a correction it submitted, a rung it was assigned,
+     * a record version it changed — every one of those is `ON DELETE NO ACTION`,
+     * which is a RESTRICT. Freshly provisioned manager accounts are the common
+     * case: assigned a review step, never acted on it, nothing audited. The
+     * 23503 propagated out of the loop, out of the Server Action, and rendered
+     * as a 500 — with the accounts already processed committed and every one
+     * after it untouched, and no report of either.
+     *
+     * Same handling as the force path above, which had it right all along:
+     * deactivate, name the constraint, keep going.
+     *
+     * The audit row is written INSIDE the transaction with the delete, so the
+     * two commit together. Written first, because afterwards there is no row to
+     * describe; its actor is the admin, never the deleted user, so the RESTRICT
+     * on `audit_log.actor_id` cannot be tripped by the row being written.
+     */
+    try {
+      await db.transaction(async (tx) => {
+        await writeAudit(
+          {
+            actor,
+            action: 'USER_DEACTIVATE',
+            entityType: 'user',
+            entityId: row.id,
+            before: snapshot(row),
+            after: null,
+            metadata: { via: 'bulk', deleted: true },
+          },
+          tx,
+        );
 
-    await db.delete(user).where(eq(user.id, row.id));
+        await tx.delete(user).where(eq(user.id, row.id));
+      });
+    } catch (error) {
+      const blocked = await deactivateBlocked(actor, row, error);
+      if (!blocked) throw error;
+      outcome.skipped.push(blocked);
+      continue;
+    }
+
     outcome.deleted.push(row.email);
   }
 
